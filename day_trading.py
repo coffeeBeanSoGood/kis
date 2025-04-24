@@ -6215,6 +6215,42 @@ def check_momentum_conditions(stock_data, return_score=False):
         except Exception as e:
             logger.error(f"이동평균 분석 중 에러: {str(e)}")
 
+        # 거래대금 분석 섹션 추가
+        turnover_score = 0
+        try:
+            # 거래대금 조회
+            turnover = calculate_turnover(stock_data['code'])
+            
+            # 최근 5일 평균 거래대금 계산
+            df = stock_data['ohlcv']
+            avg_turnover = df['volume'].mean() * df['close'].mean()  # 거래대금 = 거래량 * 종가
+            
+            # 거래대금 비율 계산
+            turnover_ratio = turnover / avg_turnover if avg_turnover > 0 else 0
+            
+            # 로깅
+            logger.info(f"\n거래대금 분석:")
+            logger.info(f"- 현재 거래대금: {turnover:,.0f}원")
+            logger.info(f"- 평균 거래대금: {avg_turnover:,.0f}원")
+            logger.info(f"- 거래대금 비율: {turnover_ratio:.2f}배")
+            
+            # 거래대금 점수 계산
+            if turnover_ratio >= 2.0:  # 평균 대비 2배 이상
+                turnover_score += 15
+                logger.info(f"거래대금 점수: {turnover_score}/15 (2배 이상)")
+            elif turnover_ratio >= 1.5:  # 평균 대비 1.5배 이상
+                turnover_score += 10
+                logger.info(f"거래대금 점수: {turnover_score}/15 (1.5배 이상)")
+            elif turnover_ratio >= 1.2:  # 평균 대비 1.2배 이상
+                turnover_score += 5
+                logger.info(f"거래대금 점수: {turnover_score}/15 (1.2배 이상)")
+            
+            # 모멘텀 점수에 거래대금 점수 추가
+            momentum_score += turnover_score
+            
+        except Exception as e:
+            logger.error(f"거래대금 분석 중 에러: {str(e)}")
+
         # 거래량 분석 (25점)
         volume_score = 0
         try:
@@ -6381,26 +6417,26 @@ def save_detected_stocks(state):
 def calculate_turnover(stock_code):
     """거래대금 계산"""
     try:
-        current_data = KisKR.GetCurrentStatus(stock_code)
-        # 디버깅을 위한 데이터 출력
-        logger.info(f"Current data for {stock_code}: {current_data}")
+        # 거래대금 순위 조회 (코스피 시장, 상위 종목)
+        trading_volume_stocks = KisKR.GetVolumeRank(
+            market_code="J",  # 코스피
+            vol_type="20172",  # 거래대금 기준
+            top_n=100,  # 충분히 많은 종목 확인
+            max_price=150000  # 주가 제한
+        )
         
-        # 'value' 키가 없는 경우 대체 키 확인
-        if 'value' not in current_data:
-            # 거래대금이 다른 키로 제공되는지 확인
-            # 예: 'tradeValue', 'amount', 'trading_value' 등
-            if 'tradeValue' in current_data:
-                return float(current_data['tradeValue'])
-            elif 'amount' in current_data:
-                return float(current_data['amount'])
-            else:
-                logger.info(f"Available keys: {current_data.keys()}")
-                return 0
-                
-        return float(current_data['value'])
+        # 해당 종목의 거래대금 찾기
+        for stock in trading_volume_stocks:
+            if stock['code'] == stock_code:
+                logger.info(f"{stock_code} 거래대금: {stock['volume']:,.0f}원")
+                return stock['volume']
+        
+        logger.info(f"{stock_code} 거래대금 데이터 없음")
+        return 0
+    
     except Exception as e:
-        logger.error(f"거래대금 계산 중 에러: {str(e)}")     
-        return 0  # return 문 추가 필요           
+        logger.error(f"거래대금 계산 중 에러: {str(e)}")
+        return 0        
 
 def calculate_rise_rate(stock_data):
     """상승률 계산"""
