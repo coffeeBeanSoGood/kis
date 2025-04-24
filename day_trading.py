@@ -3428,7 +3428,7 @@ def wait_for_order_execution(stock_code, order_amount, max_wait_time=45, order_t
     order_side = "BUY" if order_type == "BUY" else "SELL"
     stock_name = KisKR.GetStockName(stock_code)
     
-    logger.info(f"{stock_name}({stock_code}) {order_type} 주문 체결 대기...")
+    logger.info(f"{stock_name}({stock_code}) {order_type} 주문 체결 대기... 주문량: {order_amount}주")
     executed_amount = 0
     executed_price = 0
     
@@ -3509,35 +3509,37 @@ def wait_for_order_execution(stock_code, order_amount, max_wait_time=45, order_t
                 if stock['StockCode'] == stock_code:
                     current_amount = int(stock.get('StockAmt', 0))
                     
-                    # 보유 수량 변화 감지
-                    if (order_type == "BUY" and current_amount > initial_amount) or \
-                       (order_type == "SELL" and current_amount < initial_amount):
-                        
-                        # 수량 변화량 계산
-                        if order_type == "BUY":
+                    # 보유 수량 변화 감지 - 여기가 핵심 수정 부분
+                    if order_type == "BUY":
+                        if current_amount > initial_amount:
                             changed_amount = current_amount - initial_amount
-                        else:  # SELL
-                            changed_amount = initial_amount - current_amount
-                        
-                        # 체결가 결정 - 다양한 소스에서 가장 신뢰할 수 있는 것 선택
-                        # 1. 평균단가 (가능한 경우)
-                        avg_price = float(stock.get('AvrPrice', 0))
-                        
-                        # 2. 현재가 (API에서)
-                        current_market_price = KisKR.GetCurrentPrice(stock_code)
-                        
-                        # 3. 호가 정보 (더 정확한 체결가를 위해)
-                        order_book = KisKR.GetOrderBook(stock_code)
-                        best_price = 0
-                        if order_book and 'levels' in order_book and len(order_book['levels']) > 0:
-                            if order_type == "BUY":
+                            
+                            # 변경: 주문량과 실제 변화량 비교 로직 추가
+                            if changed_amount != order_amount:
+                                logger.warning(f"주문 수량({order_amount}주)과 실제 변화량({changed_amount}주)이 다릅니다!")
+                                
+                                # 실제 주문된 수량(order_amount)과 변화량 비교
+                                # 만약 변화량이 주문량보다 적으면 부분 체결로 간주
+                                if changed_amount < order_amount:
+                                    logger.info(f"부분 체결로 판단됨: {changed_amount}주 (주문: {order_amount}주)")
+                                # 만약 변화량이 주문량보다 많으면, 예상치 못한 상황이므로 로그 기록
+                                elif changed_amount > order_amount:
+                                    logger.warning(f"예상보다 많은 수량 체결됨: {changed_amount}주 (주문: {order_amount}주)")
+                            
+                            # 체결가 결정 - 다양한 소스에서 가장 신뢰할 수 있는 것 선택
+                            # 1. 평균단가 (가능한 경우)
+                            avg_price = float(stock.get('AvrPrice', 0))
+                            
+                            # 2. 현재가 (API에서)
+                            current_market_price = KisKR.GetCurrentPrice(stock_code)
+                            
+                            # 3. 호가 정보 (더 정확한 체결가를 위해)
+                            order_book = KisKR.GetOrderBook(stock_code)
+                            best_price = 0
+                            if order_book and 'levels' in order_book and len(order_book['levels']) > 0:
                                 best_price = order_book['levels'][0]['ask_price']  # 최우선매도호가
-                            else:  # SELL
-                                best_price = order_book['levels'][0]['bid_price']  # 최우선매수호가
-                        
-                        # 체결가 결정 로직 - 우선순위 변경
-                        if order_type == "BUY":
-                            # 매수 시 우선순위: 평균단가 > 호가 > 지정가 > 현재가
+                            
+                            # 체결가 결정 로직
                             if avg_price > 0:
                                 price_to_use = avg_price
                                 logger.info(f"체결가 결정: 계좌 평균단가 기준 ({avg_price:,.0f}원)")
@@ -3550,32 +3552,65 @@ def wait_for_order_execution(stock_code, order_amount, max_wait_time=45, order_t
                             else:
                                 price_to_use = current_market_price
                                 logger.info(f"체결가 결정: 현재가 기준 ({current_market_price:,.0f}원)")
-                        else:  # SELL
-                            # 매도 시 우선순위: 평균단가 > 호가 > 현재가 > 지정가
-                            if avg_price > 0:
-                                price_to_use = avg_price
-                                logger.info(f"체결가 결정: 계좌 평균단가 기준 ({avg_price:,.0f}원)")
-                            elif best_price > 0:
+                            
+                            # 중요: 실제 변화된 수량 반환 (주문량 아님)
+                            logger.info(f"{stock_name}({stock_code}) {order_type} 주문 체결 확인 (계좌 데이터 기반): {changed_amount}주 @ {price_to_use:,.0f}원")
+                            
+                            # 체결 정보를 로그에 더 자세히 기록
+                            if changed_amount == order_amount:
+                                logger.info(f"{stock_name}({stock_code}) - 완전 체결: 주문량({order_amount}주) = 체결량({changed_amount}주)")
+                            else:
+                                logger.info(f"{stock_name}({stock_code}) - 부분 체결: 주문량({order_amount}주) vs 체결량({changed_amount}주)")
+                            
+                            return price_to_use, changed_amount
+                    else:  # SELL
+                        if current_amount < initial_amount:
+                            changed_amount = initial_amount - current_amount
+                            
+                            # 변경: 주문량과 실제 변화량 비교 로직 추가
+                            if changed_amount != order_amount:
+                                logger.warning(f"주문 수량({order_amount}주)과 실제 변화량({changed_amount}주)이 다릅니다!")
+                                
+                                # 실제 주문된 수량(order_amount)과 변화량 비교
+                                if changed_amount < order_amount:
+                                    logger.info(f"부분 체결로 판단됨: {changed_amount}주 (주문: {order_amount}주)")
+                                elif changed_amount > order_amount:
+                                    logger.warning(f"예상보다 많은 수량 체결됨: {changed_amount}주 (주문: {order_amount}주)")
+                            
+                            # 체결가 결정 로직 (매도 버전)
+                            # 현재가 및 호가 정보 가져오기
+                            current_market_price = KisKR.GetCurrentPrice(stock_code)
+                            order_book = KisKR.GetOrderBook(stock_code)
+                            best_price = 0
+                            if order_book and 'levels' in order_book and len(order_book['levels']) > 0:
+                                best_price = order_book['levels'][0]['bid_price']  # 최우선매수호가
+                            
+                            # 체결가 결정
+                            if best_price > 0:
                                 price_to_use = best_price
                                 logger.info(f"체결가 결정: 호가 기준 ({best_price:,.0f}원)")
                             elif current_market_price > 0:
                                 price_to_use = current_market_price
                                 logger.info(f"체결가 결정: 현재가 기준 ({current_market_price:,.0f}원)")
-                            else:
+                            elif order_price is not None and order_price > 0:
                                 price_to_use = order_price
                                 logger.info(f"체결가 결정: 지정가 기준 ({order_price:,.0f}원)")
-                        
-                        # 최종 결과 반환
-                        logger.info(f"{stock_name}({stock_code}) {order_type} 주문 체결 확인 (계좌 데이터 기반): {changed_amount}주 @ {price_to_use:,.0f}원")
-                        return price_to_use, changed_amount
-                    else:
-                        logger.info(f"{stock_name}({stock_code}) 보유수량 변화 없음: {current_amount}주 (초기: {initial_amount}주)")
-                        
+                            else:
+                                # 기본값 (최후의 수단)
+                                price_to_use = order_price if order_price else current_price
+                                logger.info(f"체결가 결정: 기본값 사용 ({price_to_use:,.0f}원)")
+                            
+                            logger.info(f"{stock_name}({stock_code}) {order_type} 주문 체결 확인 (계좌 데이터 기반): {changed_amount}주 @ {price_to_use:,.0f}원")
+                            return price_to_use, changed_amount
+                    
+                    # 변화가 없는 경우 로그 기록
+                    logger.info(f"{stock_name}({stock_code}) 보유수량 변화 없음: {current_amount}주 (초기: {initial_amount}주)")
+            
             # 주기적인 대기 메시지 출력
             elapsed = time.time() - start_time
             if int(elapsed) % 5 == 0 and elapsed > 0:
                 logger.info(f"{stock_name}({stock_code}) {order_type} 주문 체결 대기 중... ({int(elapsed)}초/{max_wait_time}초)")
-                
+            
             # API 호출 빈도 조절
             sleep_time = 2 if elapsed < 10 else 3
             time.sleep(sleep_time)
@@ -3603,6 +3638,10 @@ def wait_for_order_execution(stock_code, order_amount, max_wait_time=45, order_t
                     else:  # SELL
                         changed_amount = initial_amount - final_amount
                     
+                    # 주문량과 실제 변화량 차이 로깅
+                    if changed_amount != order_amount:
+                        logger.warning(f"최종 확인: 주문량({order_amount}주)과 실제 변화량({changed_amount}주) 불일치!")
+                    
                     # 가격 정보 확보 (다양한 소스에서)
                     # 1. 호가 정보 가져오기
                     order_book = None
@@ -3623,7 +3662,6 @@ def wait_for_order_execution(stock_code, order_amount, max_wait_time=45, order_t
                     
                     # 3. 현재가 가져오기
                     current_price = KisKR.GetCurrentPrice(stock_code)
-                    
                     
                     # 최종 가격 결정 로직
                     if best_price > 0:
@@ -3648,7 +3686,6 @@ def wait_for_order_execution(stock_code, order_amount, max_wait_time=45, order_t
     
     # 여기에 도달하면 체결 확인에 실패한 것
     return 0, 0
-
 
 ############### 고위험 매수 방지를 위한 함수 추가 ###################
 
