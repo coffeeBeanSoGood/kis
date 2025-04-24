@@ -3599,7 +3599,15 @@ def wait_for_order_execution(stock_code, order_amount, max_wait_time=45, order_t
                                 # 기본값 (최후의 수단)
                                 price_to_use = order_price if order_price else current_price
                                 logger.info(f"체결가 결정: 기본값 사용 ({price_to_use:,.0f}원)")
-                            
+
+                            # 상세 로깅 추가
+                            logger.info(f"""
+                        매도 가격 상세 정보:
+                        - 최우선매수호가: {best_price:,.0f}원
+                        - 현재가: {current_market_price:,.0f}원
+                        - 최종 체결가: {price_to_use:,.0f}원
+                        """)
+
                             logger.info(f"{stock_name}({stock_code}) {order_type} 주문 체결 확인 (계좌 데이터 기반): {changed_amount}주 @ {price_to_use:,.0f}원")
                             return price_to_use, changed_amount
                     
@@ -9763,12 +9771,17 @@ def main():
                                continue
 
                             # 수정된 부분: 체결된 경우에만 포지션 정보 업데이트하고, 조정된 수량 사용
-                           if executed_price and executed_price > 0 and executed_amount > 0:
-                               # 매수 수수료 계산 - 실제 체결량 기준
-                               buy_fee = calculate_trading_fee(executed_price, executed_amount, is_buy=True)
-
-                               try:
-                                   # 새로운 포지션 (첫 매수)
+                            # 포지션 상태 업데이트 시도
+                           try:
+                               # 이미 해당 종목이 포지션에 있는 경우
+                               if stock['code'] in trading_state['positions']:
+                                   position = trading_state['positions'][stock['code']]
+                                    
+                                   # 현재 매수 단계 확인 및 다음 단계로 진행
+                                   current_stage = position.get('buy_stage', 1)
+                                   next_stage = current_stage + 1
+                                    
+                                   # 분할매수 정보 업데이트
                                    trading_state['positions'][stock['code']] = {
                                        'entry_price': executed_price,
                                        'amount': executed_amount,
@@ -9776,26 +9789,40 @@ def main():
                                        'trading_fee': buy_fee,
                                        'code': stock['code'],
                                        'strategy': 'momentum_buy',
-                                       # 분할매수 정보 추가
-                                       'buy_stage': 1,  # 첫 번째 단계
+                                       'buy_stage': next_stage,  # 다음 단계로 진행
                                        'last_buy_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                                       'total_planned_amount': buy_amount  # 원래 계산된 매수량을 total_planned_amount로 저장
+                                       'total_planned_amount': buy_amount  # 원래 계획된 총 매수량
                                    }
                                     
-                                   # 로깅 추가
-                                   logger.info(f"신규 포지션 생성: {stock['name']}({stock['code']})")
+                                   logger.info(f"분할매수 단계 진행:")
+                                   logger.info(f"- 종목: {stock['name']}({stock['code']})")
+                                   logger.info(f"- 이전 단계: {current_stage}")
+                                   logger.info(f"- 현재 단계: {next_stage}")
                                    logger.info(f"- 매수가: {executed_price:,.0f}원")
                                    logger.info(f"- 수량: {executed_amount}주")
-                                   logger.info(f"- 수수료: {buy_fee:,.0f}원")
-
-                                   # 트레이딩 상태 저장
-                                   save_trading_state(trading_state)
+                                
+                               # 신규 매수인 경우
+                               else:
+                                   trading_state['positions'][stock['code']] = {
+                                       'entry_price': executed_price,
+                                       'amount': executed_amount,
+                                       'entry_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                                       'trading_fee': buy_fee,
+                                       'code': stock['code'],
+                                       'strategy': 'momentum_buy',
+                                       'buy_stage': 1,  # 첫 번째 단계
+                                       'last_buy_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                                       'total_planned_amount': buy_amount  # 원래 계획된 총 매수량
+                                   }
                                     
-                               except Exception as e:
-                                   # 오류 처리 추가
-                                   logger.error(f"포지션 저장 중 오류 발생: {str(e)}")
-                                   error_msg = f"⚠️ 포지션 저장 오류 - {stock['name']}({stock['code']}): {str(e)}"
-                                   discord_alert.SendMessage(error_msg)
+                                   logger.info(f"신규 매수 - 첫 번째 단계: {stock['name']}({stock['code']})")
+                                
+                               # 상태 저장
+                               save_trading_state(trading_state)
+                           except Exception as e:
+                               error_msg = f"⚠️ 포지션 저장 오류 - {stock['name']}({stock['code']}): {str(e)}"
+                               logger.error(error_msg)
+                               discord_alert.SendMessage(error_msg)
 
                        except Exception as e:
                            error_msg = f"매수 주문 중 에러 발생: {str(e)}"
