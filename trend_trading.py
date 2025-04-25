@@ -1057,19 +1057,9 @@ def create_config_file(config_path: str = "trend_trader_config.json") -> None:
     """
     config = {
         "watch_list": [
-            "042660",  # 한화오션
-            "000100",  # 유한양행
-            "439580",  # 블루엠텍
-            "449450",  # PLUS K방산
-            "005490",  # POSCO홀딩스
-            "373220"  # LG에너지솔루션
+            "005490"  # POSCO홀딩스
         ],
         "sector_list": [
-            "조선",
-            "바이오",
-            "바이오",
-            "방산"
-            "2차전지",
             "2차전지"
         ],
         "budget": 1000000,  # 종목당 최대 투자금액
