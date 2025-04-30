@@ -2667,80 +2667,68 @@ def main():
         logger.warning(f"API 모드 설정 중 오류: {e}")
         logger.info("기본 모드를 사용합니다.")
         
-        # 설정 파일 존재 확인 및 생성
-        config_path = "trend_trader_config.json"
-        if not os.path.exists(config_path):
-            create_config_file(config_path)
-            logger.info(f"API 정보 확인이 필요한 경우 {config_path} 파일에 추가 정보를 입력하세요.")
-        
-        # 매매봇 인스턴스 생성
-        trend_bot = TrendTraderBot(config_path)
-        
-        # 실행 모드 선택
-        if len(sys.argv) > 1:
-            # 백테스트 모드
-            if sys.argv[1] == "backtest":
-                # 백테스트 기간 설정
-                start_date = sys.argv[2] if len(sys.argv) > 2 else (datetime.datetime.now() - datetime.timedelta(days=90)).strftime("%Y%m%d")
-                end_date = sys.argv[3] if len(sys.argv) > 3 else None
+    # 설정 파일 존재 확인 및 생성
+    config_path = "trend_trader_config.json"
+    if not os.path.exists(config_path):
+        create_config_file(config_path)
+        logger.info(f"API 정보 확인이 필요한 경우 {config_path} 파일에 추가 정보를 입력하세요.")
+    
+    # 매매봇 인스턴스 생성
+    trend_bot = TrendTraderBot(config_path)
+    
+    # 실행 모드 선택
+    if len(sys.argv) > 1:
+        # 백테스트 모드
+        if sys.argv[1] == "backtest":
+            # 백테스트 기간 설정
+            start_date = sys.argv[2] if len(sys.argv) > 2 else (datetime.datetime.now() - datetime.timedelta(days=90)).strftime("%Y%m%d")
+            end_date = sys.argv[3] if len(sys.argv) > 3 else None
+            
+            logger.info(f"백테스트 모드 실행: {start_date} ~ {end_date or '현재'}")
+            results = trend_bot.run_backtest(start_date, end_date)
+            
+            # 백테스트 결과 저장
+            results_file = f"backtest_result_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            with open(results_file, 'w', encoding='utf-8') as f:
+                # default=str 옵션 추가 - 모든 직렬화 불가능한 객체를 문자열로 변환
+                json.dump(results, f, ensure_ascii=False, indent=4, default=str)            
                 
-                logger.info(f"백테스트 모드 실행: {start_date} ~ {end_date or '현재'}")
-                results = trend_bot.run_backtest(start_date, end_date)
+            logger.info(f"백테스트 결과 저장 완료: {results_file}")
+            
+            # 전략별 성과 출력
+            print("\n=== 전략별 성과 ===")
+            for strategy_name, perf in results.get("strategy_performance", {}).items():
+                print(f"전략: {strategy_name}")
+                print(f"  - 거래횟수: {perf.get('trades_count', 0)}회")
+                print(f"  - 승률: {perf.get('win_rate', 0):.2f}%")
+                print(f"  - 총 수익: {perf.get('total_profit', 0):,.0f}원")
+                print(f"  - 총 손실: {perf.get('total_loss', 0):,.0f}원")
+                if perf.get('win_count', 0) > 0:
+                    print(f"  - 평균 수익: {perf.get('avg_profit', 0):,.0f}원")
+                if perf.get('trades_count', 0) - perf.get('win_count', 0) > 0:
+                    print(f"  - 평균 손실: {perf.get('avg_loss', 0):,.0f}원")
+                print()
+            
+            # 최종 성과 출력
+            print("\n=== 백테스트 최종 성과 ===")
+            print(f"초기 자본: {results.get('initial_capital', 0):,.0f}원")
+            print(f"최종 자본: {results.get('final_capital', 0):,.0f}원")
+            print(f"수익률: {results.get('profit_loss_percent', 0):.2f}%")
+            print(f"승률: {results.get('win_rate', 0):.2f}%")
+            print(f"최대 낙폭: {results.get('max_drawdown', 0):.2f}%")
+            print(f"거래횟수: {len([t for t in results.get('trades', []) if t.get('action') == 'SELL'])}회")
+            
+        elif sys.argv[1] == "virtual":
+            # 가상 계좌 모드로 변경
+            try:
+                Common.SetChangeMode("VIRTUAL")
+                logger.info("모의 계좌(VIRTUAL) 모드로 설정되었습니다.")
+            except Exception as e:
+                logger.error(f"모의 계좌 모드 설정 실패: {e}")
+                return
                 
-                # 백테스트 결과 저장
-                results_file = f"backtest_result_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-                with open(results_file, 'w', encoding='utf-8') as f:
-                    # default=str 옵션 추가 - 모든 직렬화 불가능한 객체를 문자열로 변환
-                    json.dump(results, f, ensure_ascii=False, indent=4, default=str)            
-                    
-                logger.info(f"백테스트 결과 저장 완료: {results_file}")
-                
-                # 전략별 성과 출력
-                print("\n=== 전략별 성과 ===")
-                for strategy_name, perf in results.get("strategy_performance", {}).items():
-                    print(f"전략: {strategy_name}")
-                    print(f"  - 거래횟수: {perf.get('trades_count', 0)}회")
-                    print(f"  - 승률: {perf.get('win_rate', 0):.2f}%")
-                    print(f"  - 총 수익: {perf.get('total_profit', 0):,.0f}원")
-                    print(f"  - 총 손실: {perf.get('total_loss', 0):,.0f}원")
-                    if perf.get('win_count', 0) > 0:
-                        print(f"  - 평균 수익: {perf.get('avg_profit', 0):,.0f}원")
-                    if perf.get('trades_count', 0) - perf.get('win_count', 0) > 0:
-                        print(f"  - 평균 손실: {perf.get('avg_loss', 0):,.0f}원")
-                    print()
-                
-                # 최종 성과 출력
-                print("\n=== 백테스트 최종 성과 ===")
-                print(f"초기 자본: {results.get('initial_capital', 0):,.0f}원")
-                print(f"최종 자본: {results.get('final_capital', 0):,.0f}원")
-                print(f"수익률: {results.get('profit_loss_percent', 0):.2f}%")
-                print(f"승률: {results.get('win_rate', 0):.2f}%")
-                print(f"최대 낙폭: {results.get('max_drawdown', 0):.2f}%")
-                print(f"거래횟수: {len([t for t in results.get('trades', []) if t.get('action') == 'SELL'])}회")
-                
-            elif sys.argv[1] == "virtual":
-                # 가상 계좌 모드로 변경
-                try:
-                    Common.SetChangeMode("VIRTUAL")
-                    logger.info("모의 계좌(VIRTUAL) 모드로 설정되었습니다.")
-                except Exception as e:
-                    logger.error(f"모의 계좌 모드 설정 실패: {e}")
-                    return
-                    
-                # 실시간 매매 모드
-                logger.info("모의 계좌 매매 모드 실행")
-                
-                # 장 중인지 확인
-                if KisKR.IsMarketOpen():
-                    logger.info("장 중입니다. 매매봇을 실행합니다.")
-                    trend_bot.run()
-                else:
-                    logger.info("현재 장 중이 아닙니다. 매매봇을 종료합니다.")
-            else:
-                logger.error(f"알 수 없는 실행 모드: {sys.argv[1]}")
-        else:
             # 실시간 매매 모드
-            logger.info("실시간 매매 모드 실행")
+            logger.info("모의 계좌 매매 모드 실행")
             
             # 장 중인지 확인
             if KisKR.IsMarketOpen():
@@ -2748,6 +2736,18 @@ def main():
                 trend_bot.run()
             else:
                 logger.info("현재 장 중이 아닙니다. 매매봇을 종료합니다.")
+        else:
+            logger.error(f"알 수 없는 실행 모드: {sys.argv[1]}")
+    else:
+        # 실시간 매매 모드
+        logger.info("실시간 매매 모드 실행")
+        
+        # 장 중인지 확인
+        if KisKR.IsMarketOpen():
+            logger.info("장 중입니다. 매매봇을 실행합니다.")
+            trend_bot.run()
+        else:
+            logger.info("현재 장 중이 아닙니다. 매매봇을 종료합니다.")
 
 if __name__ == "__main__":
     main()
