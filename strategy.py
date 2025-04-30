@@ -41,6 +41,28 @@ class TechnicalIndicators:
     """기술적 지표 계산 클래스"""
 
     @staticmethod
+    def check_volume_increase(data: pd.DataFrame, period: int = 5) -> bool:
+        """거래량 증가 확인
+        
+        Args:
+            data: 가격 데이터가 포함된 DataFrame, 'volume' 컬럼이 필요
+            period: 확인 기간
+            
+        Returns:
+            bool: 거래량 증가 여부
+        """
+        if 'volume' not in data.columns or len(data) < period + 1:
+            return False
+            
+        # 최근 평균 거래량과 이전 평균 거래량 비교
+        recent_avg_volume = data['volume'].iloc[-period:].mean()
+        prev_avg_volume = data['volume'].iloc[-(period*2):-period].mean()
+        
+        # 거래량이 20% 이상 증가했는지 확인
+        return recent_avg_volume > prev_avg_volume * 1.2
+
+
+    @staticmethod
     def calculate_atr(data: pd.DataFrame, period: int = 14) -> pd.Series:
         """ATR(Average True Range) 계산
         
@@ -363,18 +385,19 @@ class TradingStrategy:
         """
         raise NotImplementedError("Subclass must implement this method")
     
+    # TradingStrategy 클래스의 get_stop_loss_price 메서드 수정 (약 라인 156)
     def get_stop_loss_price(self, daily_data: pd.DataFrame, current_price: float, 
                             avg_price: float) -> float:
-        """손절가 계산 (기본 구현)
+        """손절가 계산 (기본 구현)"""
+        # ATR 기반 동적 손절가 계산 (변동성에 따른 손절가 조정)
+        if not daily_data.empty and len(daily_data) > 20:
+            atr = TechnicalIndicators.calculate_atr(daily_data, period=14).iloc[-1]
+            if not pd.isna(atr):
+                max_loss_percent = self.params.get("stop_loss_pct", 3.0)
+                # 손절가를 ATR의 1.5배와 고정 비율 중 작은 값으로 설정
+                dynamic_stop = avg_price * (1 - min(atr * 1.5 / avg_price, max_loss_percent/100))
+                return dynamic_stop
         
-        Args:
-            daily_data: 일봉 데이터
-            current_price: 현재가
-            avg_price: 평균단가
-            
-        Returns:
-            float: 손절가
-        """
         # 기본 손절가 계산 (매입가의 x% 하락)
         stop_loss_pct = self.params.get("stop_loss_pct", 3.0)
         return avg_price * (1 - stop_loss_pct/100)
@@ -1377,45 +1400,48 @@ class CompositeStrategy(TradingStrategy):
 # 트렌드 필터 클래스
 class TrendFilter:
     """시장 및 일봉 추세 필터 클래스"""
-    
+    # TrendFilter 클래스의   메서드 개선 (약 라인 795)
     @staticmethod
     def check_market_trend(market_index_code: str, lookback_days: int = 10) -> bool:
-        """시장 추세 확인 (지수 또는 대표 ETF 기반)
-        
-        Args:
-            market_index_code: 시장 지수 또는 ETF 코드 (예: KODEX 200 - 069500)
-            lookback_days: 확인할 기간(일)
-            
-        Returns:
-            bool: 상승 추세 여부
-        """
+        """시장 추세 확인 (지수 또는 대표 ETF 기반)"""
         try:
             # 지수 또는 ETF 데이터 가져오기
-            market_data = KisKR.GetOhlcvNew(market_index_code, 'D', lookback_days+5, adj_ok=1)
+            market_data = KisKR.GetOhlcvNew(market_index_code, 'D', lookback_days+10, adj_ok=1)
             
             if market_data is None or market_data.empty:
                 logger.warning(f"시장 지수 데이터({market_index_code})를 가져올 수 없습니다.")
-                return True  # 데이터 없으면 기본적으로 매수 허용
+                return True
             
-            # 이동평균선 계산 (5일)
+            # 이동평균선 계산 (5일, 10일)
             market_data['MA5'] = market_data['close'].rolling(window=5).mean()
+            market_data['MA10'] = market_data['close'].rolling(window=10).mean()
             
-            # 추세 확인 - 최근 종가가 5일 이평선 위에 있고, 5일 이평선이 상승 추세인지
-            if len(market_data) < 5:
+            # MACD 계산
+            market_data[['MACD', 'Signal', 'Histogram']] = TechnicalIndicators.calculate_macd(
+                market_data, fast_period=12, slow_period=26, signal_period=9
+            )
+            
+            if len(market_data) < 10:
                 return True
                 
             recent_ma5 = market_data['MA5'].iloc[-1]
-            prev_ma5 = market_data['MA5'].iloc[-2]
+            recent_ma10 = market_data['MA10'].iloc[-1]
             recent_close = market_data['close'].iloc[-1]
             
-            # 종가가 5일선 위에 있고, 5일선이 상승 중이면 상승 추세로 판단
-            is_uptrend = (recent_close > recent_ma5) and (recent_ma5 > prev_ma5)
+            # MACD 히스토그램 방향
+            histogram_direction = market_data['Histogram'].diff().iloc[-1] > 0
+            
+            # 완화된 상승 추세 조건 (더 많은 매수 기회 제공):
+            # 1. 종가가 5일선 위에 있거나
+            # 2. 5일선이 10일선 위에 있거나
+            # 3. MACD 히스토그램이 상승 중
+            is_uptrend = (recent_close > recent_ma5) or (recent_ma5 > recent_ma10) or histogram_direction
             
             return is_uptrend
         
         except Exception as e:
             logger.exception(f"시장 추세 확인 중 오류: {str(e)}")
-            return True  # 오류 발생 시 기본적으로 매수 허용
+            return True
     
     @staticmethod
     def check_daily_trend(data: pd.DataFrame, lookback_days: int = 5) -> bool:
@@ -1506,7 +1532,9 @@ class StrategyManager:
             return strategy
         
         return None
-    
+
+
+    # StrategyManager 클래스의 _create_strategy 메서드 개선
     def _create_strategy(self, strategy_type: str, strategy_name: str, params: Dict[str, any]) -> TradingStrategy:
         """전략 인스턴스 생성
         
@@ -1518,24 +1546,81 @@ class StrategyManager:
         Returns:
             TradingStrategy: 전략 인스턴스
         """
+        # 기본 매개변수를 보완하기 위한 공통 설정
+        default_params = {
+            "profit_target": 5.0,
+            "stop_loss_pct": 3.0
+        }
+        
+        # 전략별 기본 매개변수
+        strategy_default_params = {
+            "RSI": {
+                "rsi_period": 14,
+                "rsi_oversold_threshold": 30.0,
+                "rsi_overbought_threshold": 70.0,
+                "bb_period": 20,
+                "bb_std": 2.0
+            },
+            "MACD": {
+                "macd_fast_period": 8,  # 12에서 8로 변경
+                "macd_slow_period": 21, # 26에서 21로 변경
+                "macd_signal_period": 9,
+                "short_ma_period": 5,
+                "long_ma_period": 20
+            },
+            "BollingerBand": {
+                "bb_period": 20,
+                "bb_std": 2.0,
+                "stoch_k_period": 14,
+                "stoch_d_period": 3,
+                "stoch_oversold_threshold": 20,
+                "stoch_overbought_threshold": 80
+            },
+            "MovingAverage": {
+                "ma_short_period": 5,
+                "ma_mid_period": 20,
+                "ma_long_period": 60,
+                "ma_strategy_type": "golden_cross"
+            }
+        }
+        
+        # 기본 매개변수와 전략별 기본 매개변수 적용
+        if strategy_type in strategy_default_params:
+            merged_params = {**default_params, **strategy_default_params[strategy_type], **params}
+        else:
+            merged_params = {**default_params, **params}
+        
+        # 트레일링 스탑 및 동적 손절 매개변수 추가
+        if "use_trailing_stop" not in merged_params:
+            if strategy_type in ["MACD", "BollingerBand"]:
+                merged_params["use_trailing_stop"] = True
+                merged_params["trailing_stop_pct"] = merged_params.get("trailing_stop_pct", 2.0)
+        
+        if "use_dynamic_stop" not in merged_params:
+            if strategy_type == "RSI":
+                merged_params["use_dynamic_stop"] = True
+                merged_params["atr_period"] = merged_params.get("atr_period", 14)
+                merged_params["atr_multiplier"] = merged_params.get("atr_multiplier", 2.0)
+        
+        # 전략 인스턴스 생성
         if strategy_type == "RSI":
-            strategy = RSIStrategy(strategy_name, params)
+            strategy = RSIStrategy(strategy_name, merged_params)
         elif strategy_type == "MACD":
-            strategy = MACDStrategy(strategy_name, params)
+            strategy = MACDStrategy(strategy_name, merged_params)
         elif strategy_type == "BollingerBand":
-            strategy = BollingerBandStrategy(strategy_name, params)
+            strategy = BollingerBandStrategy(strategy_name, merged_params)
         elif strategy_type == "MovingAverage":
-            strategy = MovingAverageStrategy(strategy_name, params)
+            strategy = MovingAverageStrategy(strategy_name, merged_params)
         elif strategy_type == "Composite":
             # 복합 전략 생성
             sub_strategies = []
-            for sub_strategy_name in params.get("strategies", []):
+            for sub_strategy_name in merged_params.get("strategies", []):
                 sub_strategy = self.get_strategy(sub_strategy_name)
                 if sub_strategy:
                     sub_strategies.append(sub_strategy)
             
             if sub_strategies:
-                strategy = CompositeStrategy(strategy_name, sub_strategies, params)
+                strategy = CompositeStrategy(strategy_name, sub_strategies, merged_params)
             else:
                 logger.warning(f"복합 전략 {strategy_name}에 유효한 하위 전략이 없습니다.")
                 strategy = None
@@ -1544,14 +1629,119 @@ class StrategyManager:
             strategy = None
         
         # 트레일링 스탑 래핑 확인
-        if strategy and params.get("use_trailing_stop", False):
-            strategy = TrailingStopStrategy(strategy, params)
+        if strategy and merged_params.get("use_trailing_stop", False):
+            strategy = TrailingStopStrategy(strategy, merged_params)
         
         return strategy
 
 
 class TrendTraderBot:
     """한국주식 추세매매봇 클래스"""
+    def monitor_portfolio_risk(self) -> None:
+        """포트폴리오 위험 지표 모니터링"""
+        if not self.holdings:
+            return
+        
+        # 현재 포트폴리오 가치 계산
+        portfolio_value = 0
+        initial_investment = 0
+        
+        for stock_code, holding_info in self.holdings.items():
+            quantity = holding_info.get("quantity", 0)
+            avg_price = holding_info.get("avg_price", 0)
+            current_price = KisKR.GetCurrentPrice(stock_code)
+            
+            if current_price is not None and not isinstance(current_price, str):
+                # 현재 가치
+                stock_value = quantity * current_price
+                # 초기 투자금
+                initial_value = quantity * avg_price
+                
+                portfolio_value += stock_value
+                initial_investment += initial_value
+        
+        # 계좌 잔고 가져오기
+        account_balance = KisKR.GetBalance()
+        if not account_balance or isinstance(account_balance, str):
+            return
+        
+        cash = account_balance.get("RemainMoney", 0)
+        
+        # 총 자산 계산 (포트폴리오 + 현금)
+        total_assets = portfolio_value + cash
+        
+        # 최대 낙폭 계산을 위한 최고 자산가
+        if not hasattr(self, 'peak_assets'):
+            self.peak_assets = total_assets
+        elif total_assets > self.peak_assets:
+            self.peak_assets = total_assets
+        
+        # 현재 낙폭 계산
+        if self.peak_assets > 0:
+            current_drawdown = (self.peak_assets - total_assets) / self.peak_assets * 100
+            logger.info(f"현재 포트폴리오 낙폭: {current_drawdown:.2f}%")
+            
+            # 낙폭이 15% 이상이면 보수적 모드로 전환
+            if current_drawdown > 15.0:
+                logger.warning(f"높은 낙폭 감지: {current_drawdown:.2f}%, 보수적 모드로 전환")
+                self.conservative_mode = True
+                
+                # 보수적 모드에서는 신규 매수 제한 및 손절 기준 강화
+                for stock_code, holding_info in self.holdings.items():
+                    strategy_name = holding_info.get("strategy", "RSI")
+                    strategy = self.strategy_manager.get_strategy(strategy_name, stock_code)
+                    
+                    if strategy is not None:
+                        # 트레일링 스탑 비율 감소
+                        if isinstance(strategy, TrailingStopStrategy):
+                            old_pct = strategy.params.get("trailing_stop_pct", 2.0)
+                            strategy.params["trailing_stop_pct"] = old_pct * 0.8
+                            logger.info(f"종목 {stock_code} 트레일링 스탑 비율 감소: {old_pct:.2f}% → {strategy.params['trailing_stop_pct']:.2f}%")
+            else:
+                # 낙폭이 10% 미만이면 정상 모드로 복귀
+                if hasattr(self, 'conservative_mode') and self.conservative_mode and current_drawdown < 10.0:
+                    logger.info(f"낙폭 완화: {current_drawdown:.2f}%, 정상 모드로 복귀")
+                    self.conservative_mode = False
+        
+        # 포트폴리오 정보 로깅
+        logger.info(f"포트폴리오 가치: {portfolio_value:,.0f}원, 초기 투자금: {initial_investment:,.0f}원, 현금: {cash:,.0f}원")
+        logger.info(f"총 자산: {total_assets:,.0f}원, 최고 자산: {self.peak_assets:,.0f}원")
+
+    def update_dynamic_trailing_stop(self, stock_code: str, current_price: float, holding_info: Dict[str, any]) -> Dict[str, any]:
+        """수익률에 따른 동적 트레일링 스탑 비율 설정"""
+        avg_price = holding_info.get("avg_price", current_price)
+        highest_price = holding_info.get("highest_price", current_price)
+        
+        # 현재 수익률 계산
+        profit_percent = ((current_price / avg_price) - 1) * 100
+        
+        # 기본 트레일링 스탑 비율
+        strategy_name = holding_info.get("strategy", "RSI")
+        strategy = self.strategy_manager.get_strategy(strategy_name, stock_code)
+        
+        trailing_pct = 2.0  # 기본값
+        if isinstance(strategy, TrailingStopStrategy):
+            trailing_pct = strategy.params.get("trailing_stop_pct", 2.0)
+            
+        # 수익률에 따른 트레일링 스탑 비율 동적 조정
+        if profit_percent > 15.0:  # 매우 높은 수익 (추가)
+            trailing_pct = trailing_pct * 0.6  # 더 타이트하게
+        elif profit_percent > 12.0:
+            trailing_pct = trailing_pct * 0.7
+        elif profit_percent > 8.0:
+            trailing_pct = trailing_pct * 0.8
+        elif profit_percent > 5.0:
+            trailing_pct = trailing_pct * 0.9
+        elif profit_percent < 1.0:
+            trailing_pct = trailing_pct * 1.2
+        
+        # 새로운 트레일링 스탑 가격 계산
+        if current_price > highest_price:
+            holding_info["highest_price"] = current_price
+            holding_info["trailing_stop_price"] = current_price * (1 - trailing_pct/100)
+        
+        return holding_info
+
 
     def __init__(self, config_path: str = "trend_trader_config.json"):
         """매매봇 초기화
@@ -1742,7 +1932,6 @@ class TrendTraderBot:
             logger.exception(f"종목 {stock_code} 분석 중 오류: {str(e)}")
             return {"is_buy_signal": False, "reason": f"분석 오류: {str(e)}"}
 
-
     def check_sell_signals(self) -> None:
         """보유 종목 매도 시그널 확인"""
         try:
@@ -1763,9 +1952,110 @@ class TrendTraderBot:
                     logger.warning(f"종목 {stock_code}에 대한 전략 {strategy_name}을 찾을 수 없습니다.")
                     continue
                 
-                # 트레일링 스탑 업데이트 (TrailingStopStrategy 경우)
-                if isinstance(strategy, TrailingStopStrategy):
-                    holding_info = strategy.update_trailing_stop(holding_info, current_price)
+                # 최고가 업데이트
+                highest_price = holding_info.get("highest_price", current_price)
+                if current_price > highest_price:
+                    # holding_info["highest_price"] = current_price
+                    # 수익률 기반 동적 트레일링 스탑 적용
+                    holding_info = self.update_dynamic_trailing_stop(stock_code, current_price, holding_info)                    
+                    
+                    # 트레일링 스탑 가격 업데이트 (TrailingStopStrategy 경우)
+                    if isinstance(strategy, TrailingStopStrategy) or strategy_name in ["MACD_Default", "Composite_Default", "BB_Default", "BB_StochFilter"]:
+                        trailing_pct = strategy.params.get("trailing_stop_pct", 2.0) if isinstance(strategy, TrailingStopStrategy) else 2.0
+                        holding_info["trailing_stop_price"] = current_price * (1 - trailing_pct/100)
+                        logger.info(f"종목 {stock_code} 최고가 갱신: {current_price:,}원, 트레일링 스탑: {holding_info['trailing_stop_price']:,}원")
+                
+                # 트레일링 스탑 확인
+                trailing_stop_price = holding_info.get("trailing_stop_price", 0)
+                if trailing_stop_price > 0 and current_price < trailing_stop_price:
+                    logger.info(f"종목 {stock_code} 트레일링 스탑 발동: 현재가 {current_price:,}원 < 트레일링 스탑 {trailing_stop_price:,}원")
+                    quantity = holding_info.get("quantity", 0)
+                    avg_price = holding_info.get("avg_price", 0)
+                    
+                    profit_percent = ((current_price / avg_price) - 1) * 100
+                    
+                    if quantity > 0:
+                        # 시장가 매도
+                        order_result = KisKR.MakeSellMarketOrder(
+                            stockcode=stock_code,
+                            amt=quantity
+                        )
+                        
+                        if not isinstance(order_result, str):
+                            logger.info(f"트레일링 스탑 매도 성공: {stock_code} {quantity}주, 수익률: {profit_percent:.2f}%")
+                            # 보유 종목에서 제거
+                            del self.holdings[stock_code]
+                            self._save_holdings()
+                        else:
+                            logger.error(f"트레일링 스탑 매도 실패: {stock_code}, {order_result}")
+                    
+                    continue  # 트레일링 스탑으로 매도했으면 다른 매도 신호 확인 안 함
+
+
+
+                # 여기에 보수적 모드 확인 코드 추가
+                if hasattr(self, 'conservative_mode') and self.conservative_mode:
+                    # 보수적 모드에서는 목표 수익률 하향 조정
+                    if isinstance(strategy, TrailingStopStrategy):
+                        original_profit_target = strategy.params.get("profit_target", 5.0)
+                        conservative_profit_target = original_profit_target * 0.7  # 70% 수준으로 하향
+                        
+                        profit_percent = ((current_price / avg_price) - 1) * 100
+                        
+                        # 하향 조정된 목표 수익률 달성 시 매도
+                        if profit_percent >= conservative_profit_target:
+                            logger.info(f"보수적 모드 매도: {stock_code}, 수익률: {profit_percent:.2f}% (목표: {conservative_profit_target:.2f}%)")
+                            quantity = holding_info.get("quantity", 0)
+                            
+                            if quantity > 0:
+                                # 시장가 매도
+                                order_result = KisKR.MakeSellMarketOrder(
+                                    stockcode=stock_code,
+                                    amt=quantity
+                                )
+                                
+                                if not isinstance(order_result, str):
+                                    logger.info(f"보수적 모드 매도 성공: {stock_code} {quantity}주")
+                                    # 보유 종목에서 제거
+                                    del self.holdings[stock_code]
+                                    self._save_holdings()
+                                else:
+                                    logger.error(f"보수적 모드 매도 실패: {stock_code}, {order_result}")
+                            
+                            continue  # 다음 종목으로
+
+                # 타임 스탑 (보유 기간이 너무 길면 매도)
+                now = datetime.datetime.now()
+                buy_date_str = holding_info.get("buy_date", now.strftime("%Y%m%d"))
+                buy_date = datetime.datetime.strptime(buy_date_str, "%Y%m%d")
+                holding_days = (now - buy_date).days
+
+                if holding_days > 20:  # 20일 이상 보유한 경우
+                    # 수익률 확인
+                    avg_price = holding_info.get("avg_price", 0)
+                    profit_percent = ((current_price / avg_price) - 1) * 100
+                    
+                    # 20일 넘게 보유했는데 수익률이 1% 미만이면 매도
+                    if profit_percent < 1.0:
+                        logger.info(f"타임 스탑 발동: {stock_code}, 보유일수: {holding_days}일, 수익률: {profit_percent:.2f}%")
+                        quantity = holding_info.get("quantity", 0)
+                        
+                        if quantity > 0:
+                            # 시장가 매도
+                            order_result = KisKR.MakeSellMarketOrder(
+                                stockcode=stock_code,
+                                amt=quantity
+                            )
+                            
+                            if not isinstance(order_result, str):
+                                logger.info(f"타임 스탑 매도 성공: {stock_code} {quantity}주")
+                                # 보유 종목에서 제거
+                                del self.holdings[stock_code]
+                                self._save_holdings()
+                            else:
+                                logger.error(f"타임 스탑 매도 실패: {stock_code}, {order_result}")
+                        
+                        continue  # 다음 종목으로
                 
                 # 일봉 데이터 조회
                 daily_data = KisKR.GetOhlcvNew(stock_code, 'D', 30, adj_ok=1)
@@ -1800,7 +2090,6 @@ class TrendTraderBot:
         except Exception as e:
             logger.exception(f"매도 시그널 확인 중 오류: {str(e)}")
 
-
     def run(self) -> None:
         """매매봇 실행"""
         logger.info("한국주식 추세매매봇 시작")
@@ -1818,14 +2107,23 @@ class TrendTraderBot:
             logger.info(f"계좌 잔고: {available_cash:,}원")
             logger.info(f"보유 종목: {len(self.holdings)}개")
             logger.info(f"최대 보유 종목 수: {self.max_stocks}개")
-            
+
+            # 포트폴리오 위험 모니터링 추가 (매매 시작 전)
+            if self.config.get("risk_management", {}).get("monitor_portfolio_risk", False):
+                self.monitor_portfolio_risk()
+
             # 현재 보유 종목 수 확인
             current_holdings_count = len(self.holdings)
             
             # 매수 가능한 종목 수 확인
             available_slots = max(0, self.max_stocks - current_holdings_count)
             logger.info(f"추가 매수 가능 종목 수: {available_slots}개")
-            
+
+            # 보수적 모드에서는 매수 제한
+            if hasattr(self, 'conservative_mode') and self.conservative_mode:
+                logger.warning("보수적 모드 활성화 중: 신규 매수가 제한됩니다.")
+                available_slots = 0
+
             # 관심종목 분석 및 매수 시그널 확인
             buy_candidates = []  # 매수 후보 종목 리스트
             
@@ -1905,6 +2203,40 @@ class TrendTraderBot:
                     
                     quantity = max(1, int(first_buy_budget / current_price))
                     
+                    # 변동성 기반 포지션 사이징 (추가)
+                    try:
+                        # 일봉 데이터 조회
+                        daily_data = KisKR.GetOhlcvNew(stock_code, 'D', 30, adj_ok=1)
+                        
+                        if daily_data is not None and not daily_data.empty and len(daily_data) > 20:
+                            # ATR 계산
+                            atr = self.tech_indicators.calculate_atr(daily_data, period=14).iloc[-1]
+                            
+                            # 모멘텀 계산
+                            momentum = self.tech_indicators.calculate_momentum(daily_data, period=10).iloc[-1]
+                            
+                            if not pd.isna(atr) and not pd.isna(momentum):
+                                # 변동성 비율 계산
+                                volatility_ratio = atr / current_price
+                                
+                                # 기본 수량 조정
+                                if volatility_ratio > 0.025:  # 2.5% 이상 변동성 (높음)
+                                    quantity = max(1, int(quantity * 0.7))  # 30% 수량 감소
+                                    logger.info(f"높은 변동성 감지: {volatility_ratio:.2%}, 수량 30% 감소")
+                                elif volatility_ratio < 0.01:  # 1% 미만 변동성 (낮음)
+                                    quantity = max(1, int(quantity * 1.2))  # 20% 수량 증가
+                                    logger.info(f"낮은 변동성 감지: {volatility_ratio:.2%}, 수량 20% 증가")
+                                    
+                                # 모멘텀 기반 추가 조정
+                                if momentum > 5.0:  # 강한 상승 모멘텀
+                                    quantity = max(1, int(quantity * 1.1))  # 10% 추가 증가
+                                    logger.info(f"강한 상승 모멘텀 감지: {momentum:.2f}, 수량 10% 추가 증가")
+                                elif momentum < -3.0:  # 하락 모멘텀
+                                    quantity = max(1, int(quantity * 0.9))  # 10% 추가 감소
+                                    logger.info(f"하락 모멘텀 감지: {momentum:.2f}, 수량 10% 추가 감소")
+                    except Exception as e:
+                        logger.warning(f"변동성 기반 포지션 사이징 적용 중 오류: {e}")
+                    
                     if quantity > 0 and current_price > 0:
                         # 주문 가능한 수량으로 보정
                         try:
@@ -1960,7 +2292,7 @@ class TrendTraderBot:
                             available_slots -= 1
                         else:
                             logger.error(f"매수 주문 실패: {stock_code}, {order_result}")
-                
+            
             # 보유 종목 중 분할 매수가 가능한 종목 추가 매수 검토
             for stock_code, holding_info in list(self.holdings.items()):
                 # 분할 매수가 아니거나 남은 예산이 없으면 스킵
@@ -1989,6 +2321,40 @@ class TrendTraderBot:
                         
                     # 추가 매수 수량 계산
                     add_quantity = max(1, int(remaining_budget / current_price))
+                    
+                    # 변동성 기반 포지션 사이징 (추가)
+                    try:
+                        # 일봉 데이터 조회
+                        daily_data = KisKR.GetOhlcvNew(stock_code, 'D', 30, adj_ok=1)
+                        
+                        if daily_data is not None and not daily_data.empty and len(daily_data) > 20:
+                            # ATR 계산
+                            atr = self.tech_indicators.calculate_atr(daily_data, period=14).iloc[-1]
+                            
+                            # 모멘텀 계산
+                            momentum = self.tech_indicators.calculate_momentum(daily_data, period=10).iloc[-1]
+                            
+                            if not pd.isna(atr) and not pd.isna(momentum):
+                                # 변동성 비율 계산
+                                volatility_ratio = atr / current_price
+                                
+                                # 기본 수량 조정
+                                if volatility_ratio > 0.025:  # 2.5% 이상 변동성 (높음)
+                                    add_quantity = max(1, int(add_quantity * 0.7))  # 30% 수량 감소
+                                    logger.info(f"추가 매수: 높은 변동성 감지: {volatility_ratio:.2%}, 수량 30% 감소")
+                                elif volatility_ratio < 0.01:  # 1% 미만 변동성 (낮음)
+                                    add_quantity = max(1, int(add_quantity * 1.2))  # 20% 수량 증가
+                                    logger.info(f"추가 매수: 낮은 변동성 감지: {volatility_ratio:.2%}, 수량 20% 증가")
+                                    
+                                # 모멘텀 기반 추가 조정
+                                if momentum > 5.0:  # 강한 상승 모멘텀
+                                    add_quantity = max(1, int(add_quantity * 1.1))  # 10% 추가 증가
+                                    logger.info(f"추가 매수: 강한 상승 모멘텀 감지: {momentum:.2f}, 수량 10% 추가 증가")
+                                elif momentum < -3.0:  # 하락 모멘텀
+                                    add_quantity = max(1, int(add_quantity * 0.9))  # 10% 추가 감소
+                                    logger.info(f"추가 매수: 하락 모멘텀 감지: {momentum:.2f}, 수량 10% 추가 감소")
+                    except Exception as e:
+                        logger.warning(f"추가 매수: 변동성 기반 포지션 사이징 적용 중 오류: {e}")
                     
                     if add_quantity > 0:
                         # 주문 가능한 수량으로 보정
@@ -2045,160 +2411,422 @@ class TrendTraderBot:
         except Exception as e:
             logger.exception(f"매매봇 실행 중 오류: {str(e)}")
 
+
     def run_backtest(self, start_date: str, end_date: str = None) -> Dict[str, any]:
-            """백테스트 실행
+        """백테스트 실행
+        
+        Args:
+            start_date: 시작일자 (YYYYMMDD)
+            end_date: 종료일자 (YYYYMMDD), 없으면 현재 날짜
             
-            Args:
-                start_date: 시작일자 (YYYYMMDD)
-                end_date: 종료일자 (YYYYMMDD), 없으면 현재 날짜
+        Returns:
+            Dict: 백테스트 결과
+        """
+        logger.info(f"백테스트 시작: {start_date} ~ {end_date or '현재'}")
+        
+        if not end_date:
+            end_date = datetime.datetime.now().strftime("%Y%m%d")
+        
+        backtest_results = {
+            "initial_capital": self.total_budget,
+            "final_capital": self.total_budget,
+            "profit_loss": 0,
+            "profit_loss_percent": 0,
+            "trades": [],
+            "win_rate": 0,
+            "avg_profit": 0,
+            "avg_loss": 0,
+            "max_drawdown": 0,
+            "strategy_performance": {},
+            "stock_performance": {}
+        }
+        
+        total_capital = self.total_budget
+        virtual_holdings = {}
+        trades = []
+        max_holdings_count = self.max_stocks  # 최대 동시 보유 종목 수 제한
+        
+        # 백테스트용 위험 관리 변수 추가
+        peak_assets = self.total_budget  # 최고 자산
+        conservative_mode = False  # 보수적 모드 플래그
+        conservative_mode_threshold = self.config.get("risk_management", {}).get("conservative_mode_threshold", 15.0)
+        normal_mode_threshold = self.config.get("risk_management", {}).get("normal_mode_threshold", 10.0)
+        use_time_stop = self.config.get("risk_management", {}).get("use_time_stop", True)
+        time_stop_days = self.config.get("time_stop_days", 20)
+        time_stop_profit_pct = self.config.get("time_stop_profit_pct", 1.0)
+        
+        try:
+            # 관심종목 반복
+            for stock_code in self.watch_list:
+                # 종목 정보 가져오기
+                stock_info = self.watch_list_info.get(stock_code, {})
+                allocation_ratio = stock_info.get("allocation_ratio", 0.2)  # 기본값 20%
+                strategy_name = stock_info.get("strategy", "RSI")  # 기본 전략 RSI
                 
-            Returns:
-                Dict: 백테스트 결과
-            """
-            logger.info(f"백테스트 시작: {start_date} ~ {end_date or '현재'}")
-            
-            if not end_date:
-                end_date = datetime.datetime.now().strftime("%Y%m%d")
-            
-            backtest_results = {
-                "initial_capital": self.total_budget,
-                "final_capital": self.total_budget,
-                "profit_loss": 0,
-                "profit_loss_percent": 0,
-                "trades": [],
-                "win_rate": 0,
-                "avg_profit": 0,
-                "avg_loss": 0,
-                "max_drawdown": 0,
-                "strategy_performance": {}
-            }
-            
-            total_capital = self.total_budget
-            virtual_holdings = {}
-            trades = []
-            max_holdings_count = self.max_stocks  # 최대 동시 보유 종목 수 제한
-            
-            try:
-                # 관심종목 반복
-                for stock_code in self.watch_list:
-                    # 종목 정보 가져오기
-                    stock_info = self.watch_list_info.get(stock_code, {})
-                    allocation_ratio = stock_info.get("allocation_ratio", 0.2)  # 기본값 20%
-                    strategy_name = stock_info.get("strategy", "RSI")  # 기본 전략 RSI
+                # 전략 인스턴스 가져오기
+                strategy = self.strategy_manager.get_strategy(strategy_name, stock_code)
+                
+                if strategy is None:
+                    logger.warning(f"백테스트: 종목 {stock_code}에 대한 전략 {strategy_name}을 찾을 수 없습니다.")
+                    continue
+                
+                # 일봉 데이터 조회
+                daily_data = KisKR.GetOhlcvNew(stock_code, 'D', 200, adj_ok=1)
+                
+                if daily_data is None or daily_data.empty:
+                    logger.warning(f"백테스트: 종목 {stock_code} 일봉 데이터가 없습니다.")
+                    continue
+
+                # 백테스트 기간에 해당하는 데이터만 필터링
+                try:
+                    # 인덱스를 항상 datetime 형식으로 변환
+                    if not isinstance(daily_data.index, pd.DatetimeIndex):
+                        daily_data.index = pd.to_datetime(daily_data.index)
                     
-                    # 전략 인스턴스 가져오기
-                    strategy = self.strategy_manager.get_strategy(strategy_name, stock_code)
+                    # 필터링 날짜 형식 변환
+                    if isinstance(start_date, str):
+                        try:
+                            # YYYYMMDD 형식 변환
+                            if len(start_date) == 8:
+                                start_date_dt = pd.to_datetime(start_date, format='%Y%m%d')
+                            else:
+                                start_date_dt = pd.to_datetime(start_date)
+                        except:
+                            # 변환 실패시 첫 날짜 사용
+                            start_date_dt = daily_data.index[0]
+                            logger.warning(f"시작일 형식 변환 실패, 첫 날짜({start_date_dt})로 대체")
+                    else:
+                        start_date_dt = start_date
                     
-                    if strategy is None:
-                        logger.warning(f"백테스트: 종목 {stock_code}에 대한 전략 {strategy_name}을 찾을 수 없습니다.")
+                    if isinstance(end_date, str):
+                        try:
+                            # YYYYMMDD 형식 변환
+                            if len(end_date) == 8:
+                                end_date_dt = pd.to_datetime(end_date, format='%Y%m%d')
+                            else:
+                                end_date_dt = pd.to_datetime(end_date)
+                        except:
+                            # 변환 실패시 마지막 날짜 사용
+                            end_date_dt = daily_data.index[-1]
+                            logger.warning(f"종료일 형식 변환 실패, 마지막 날짜({end_date_dt})로 대체")
+                    else:
+                        end_date_dt = end_date
+                    
+                    # 필터링 수행
+                    mask = (daily_data.index >= start_date_dt) & (daily_data.index <= end_date_dt)
+                    filtered_data = daily_data[mask].copy()
+                    
+                    # 필터링 결과가 비어있는 경우 확인
+                    if filtered_data.empty:
+                        logger.warning(f"백테스트: 종목 {stock_code} 지정된 기간({start_date_dt} ~ {end_date_dt}) 내 데이터가 없습니다.")
                         continue
                     
-                    # 일봉 데이터 조회
-                    daily_data = KisKR.GetOhlcvNew(stock_code, 'D', 200, adj_ok=1)
+                except Exception as e:
+                    logger.error(f"데이터 필터링 중 오류: {e}")
+                    # 필터링 실패 시 원본 데이터 사용
+                    filtered_data = daily_data.copy()
+                    logger.warning(f"필터링 실패로 전체 데이터 사용: {len(filtered_data)}개")
+
+                logger.info(f"종목 {stock_code} 백테스트 데이터 기간: {filtered_data.index[0]} ~ {filtered_data.index[-1]}")
+
+                # 전략 성능 기록용 변수 초기화
+                if strategy_name not in backtest_results["strategy_performance"]:
+                    backtest_results["strategy_performance"][strategy_name] = {
+                        "trades_count": 0,
+                        "win_count": 0,
+                        "total_profit": 0,
+                        "total_loss": 0,
+                        "win_rate": 0,
+                        "avg_profit": 0,
+                        "avg_loss": 0
+                    }
+
+                # 날짜별 시뮬레이션
+                for i in range(20, len(filtered_data)):  # 지표 계산을 위해 20일 이후부터 시작
+                    date = filtered_data.index[i]
+                    current_price = filtered_data.iloc[i]['close']
                     
-                    if daily_data is None or daily_data.empty:
-                        logger.warning(f"백테스트: 종목 {stock_code} 일봉 데이터가 없습니다.")
-                        continue
-
-                    # 백테스트 기간에 해당하는 데이터만 필터링
-                    try:
-                        # 인덱스를 항상 datetime 형식으로 변환
-                        if not isinstance(daily_data.index, pd.DatetimeIndex):
-                            daily_data.index = pd.to_datetime(daily_data.index)
-                        
-                        # 필터링 날짜 형식 변환
-                        if isinstance(start_date, str):
-                            try:
-                                # YYYYMMDD 형식 변환
-                                if len(start_date) == 8:
-                                    start_date_dt = pd.to_datetime(start_date, format='%Y%m%d')
-                                else:
-                                    start_date_dt = pd.to_datetime(start_date)
-                            except:
-                                # 변환 실패시 첫 날짜 사용
-                                start_date_dt = daily_data.index[0]
-                                logger.warning(f"시작일 형식 변환 실패, 첫 날짜({start_date_dt})로 대체")
+                    # 현재 자산 및 낙폭 계산 (포트폴리오 위험 모니터링)
+                    current_assets = total_capital
+                    for s_code, holding in virtual_holdings.items():
+                        stock_quantity = holding.get("quantity", 0)
+                        if s_code == stock_code:
+                            # 현재 분석 중인 종목은 현재가 사용
+                            stock_price = current_price
                         else:
-                            start_date_dt = start_date
+                            # 다른 종목은 마지막 가격 사용
+                            stock_price = holding.get("current_price", 0)
                         
-                        if isinstance(end_date, str):
-                            try:
-                                # YYYYMMDD 형식 변환
-                                if len(end_date) == 8:
-                                    end_date_dt = pd.to_datetime(end_date, format='%Y%m%d')
-                                else:
-                                    end_date_dt = pd.to_datetime(end_date)
-                            except:
-                                # 변환 실패시 마지막 날짜 사용
-                                end_date_dt = daily_data.index[-1]
-                                logger.warning(f"종료일 형식 변환 실패, 마지막 날짜({end_date_dt})로 대체")
-                        else:
-                            end_date_dt = end_date
+                        current_assets += stock_quantity * stock_price
+                    
+                    # 최고 자산 갱신
+                    if current_assets > peak_assets:
+                        peak_assets = current_assets
+                    
+                    # 현재 낙폭 계산
+                    current_drawdown = 0
+                    if peak_assets > 0:
+                        current_drawdown = (peak_assets - current_assets) / peak_assets * 100
+                    
+                    # 보수적 모드 전환 확인
+                    if current_drawdown > conservative_mode_threshold and not conservative_mode:
+                        conservative_mode = True
+                        logger.info(f"[{date}] 백테스트: 높은 낙폭 감지: {current_drawdown:.2f}%, 보수적 모드로 전환")
                         
-                        # 필터링 수행
-                        mask = (daily_data.index >= start_date_dt) & (daily_data.index <= end_date_dt)
-                        filtered_data = daily_data[mask].copy()
-                        
-                        # 필터링 결과가 비어있는 경우 확인
-                        if filtered_data.empty:
-                            logger.warning(f"백테스트: 종목 {stock_code} 지정된 기간({start_date_dt} ~ {end_date_dt}) 내 데이터가 없습니다.")
-                            continue
-                        
-                    except Exception as e:
-                        logger.error(f"데이터 필터링 중 오류: {e}")
-                        # 필터링 실패 시 원본 데이터 사용
-                        filtered_data = daily_data.copy()
-                        logger.warning(f"필터링 실패로 전체 데이터 사용: {len(filtered_data)}개")
-
-                    logger.info(f"종목 {stock_code} 백테스트 데이터 기간: {filtered_data.index[0]} ~ {filtered_data.index[-1]}")
-
-                    # 전략 성능 기록용 변수 초기화
-                    if strategy_name not in backtest_results["strategy_performance"]:
-                        backtest_results["strategy_performance"][strategy_name] = {
-                            "trades_count": 0,
-                            "win_count": 0,
-                            "total_profit": 0,
-                            "total_loss": 0,
-                            "win_rate": 0
-                        }
-
-                    # 날짜별 시뮬레이션
-                    for i in range(20, len(filtered_data)):  # 지표 계산을 위해 20일 이후부터 시작
-                        date = filtered_data.index[i]
-                        current_price = filtered_data.iloc[i]['close']
-                        
-                        # 데이터 슬라이스 (현재까지의 데이터)
-                        current_data = filtered_data.iloc[:i+1].copy()
-                        
-                        # 보유중인 종목인지 확인
-                        if stock_code in virtual_holdings:
-                            # 매도 조건 확인
-                            holding_info = virtual_holdings[stock_code]
-                            holding_info["current_price"] = current_price
+                        # 보수적 모드 전환 시 트레일링 스탑 비율 조정
+                        for held_code, held_info in virtual_holdings.items():
+                            held_strategy_name = held_info.get("strategy", "RSI")
+                            held_strategy = self.strategy_manager.get_strategy(held_strategy_name, held_code)
                             
-                            # 매도 신호 분석
-                            sell_result = strategy.analyze_sell_signal(current_data, holding_info, current_price)
+                            if isinstance(held_strategy, TrailingStopStrategy):
+                                old_pct = held_strategy.params.get("trailing_stop_pct", 2.0)
+                                held_strategy.params["trailing_stop_pct"] = old_pct * 0.8
+                                logger.info(f"종목 {held_code} 트레일링 스탑 비율 감소: {old_pct:.2f}% → {held_strategy.params['trailing_stop_pct']:.2f}%")
+                                
+                                # 트레일링 스탑 가격 재계산
+                                held_highest_price = held_info.get("highest_price", 0)
+                                if held_highest_price > 0:
+                                    new_trailing_stop_pct = held_strategy.params["trailing_stop_pct"]
+                                    held_info["trailing_stop_price"] = held_highest_price * (1 - new_trailing_stop_pct/100)
+                                
+                    elif current_drawdown < normal_mode_threshold and conservative_mode:
+                        conservative_mode = False
+                        logger.info(f"[{date}] 백테스트: 낙폭 완화: {current_drawdown:.2f}%, 정상 모드로 복귀")
+                        
+                        # 정상 모드 복귀 시 트레일링 스탑 비율 원복
+                        for held_code, held_info in virtual_holdings.items():
+                            held_strategy_name = held_info.get("strategy", "RSI")
+                            held_strategy = self.strategy_manager.get_strategy(held_strategy_name, held_code)
+                            
+                            if isinstance(held_strategy, TrailingStopStrategy):
+                                held_strategy.params["trailing_stop_pct"] = strategy.params.get("original_trailing_stop_pct", 
+                                                                                            held_strategy.params.get("trailing_stop_pct", 2.0))
+                                
+                    # 데이터 슬라이스 (현재까지의 데이터)
+                    current_data = filtered_data.iloc[:i+1].copy()
+                    
+                    # 먼저 보유중인 종목의 트레일링 스탑 및 현재가 업데이트
+                    for stock_code_held in list(virtual_holdings.keys()):
+                        holding_info = virtual_holdings[stock_code_held]
+                        
+                        # 현재가 업데이트 (다른 종목인 경우 해당 종목의 현재가를 찾아야 함)
+                        if stock_code_held == stock_code:
+                            holding_price = current_price
+                        else:
+                            # 간소화를 위해 현재 보유가 사용, 실제로는 해당 종목의 현재가를 찾아야 함
+                            holding_price = holding_info.get("current_price", 0)
+                        
+                        holding_info["current_price"] = holding_price
+                        
+                        # 최고가 업데이트 및 트레일링 스탑 확인
+                        strategy_name_held = holding_info.get("strategy", "RSI")
+                        strategy_held = self.strategy_manager.get_strategy(strategy_name_held, stock_code_held)
+                        
+                        # 최고가 업데이트
+                        highest_price = holding_info.get("highest_price", holding_price)
+                        if holding_price > highest_price:
+                            holding_info["highest_price"] = holding_price
+                            
+                            # 트레일링 스탑 가격 업데이트
+                            if hasattr(strategy_held, 'params') and (
+                                isinstance(strategy_held, TrailingStopStrategy) or 
+                                strategy_held.params.get("use_trailing_stop", False)
+                            ):
+                                trailing_pct = strategy_held.params.get("trailing_stop_pct", 2.0)
+                                holding_info["trailing_stop_price"] = holding_price * (1 - trailing_pct/100)
+                                
+                                # 보수적 모드에서는 더 타이트한 트레일링 스탑 적용
+                                if conservative_mode:
+                                    conservative_trailing_pct = trailing_pct * 0.8
+                                    holding_info["trailing_stop_price"] = holding_price * (1 - conservative_trailing_pct/100)
+                        
+                        # 트레일링 스탑 매도 확인
+                        trailing_stop_price = holding_info.get("trailing_stop_price", 0)
+                        if trailing_stop_price > 0 and holding_price < trailing_stop_price:
+                            # 트레일링 스탑 매도 실행
+                            quantity = holding_info["quantity"]
+                            avg_price = holding_info["avg_price"]
+                            sell_amount = holding_price * quantity
+                            profit = sell_amount - (avg_price * quantity)
+                            profit_percent = ((holding_price / avg_price) - 1) * 100
+                            
+                            # 자본 업데이트
+                            total_capital += sell_amount
+                            
+                            # 거래 기록
+                            trade_record = {
+                                "stock_code": stock_code_held,
+                                "stock_name": self.watch_list_info.get(stock_code_held, {}).get("name", stock_code_held),
+                                "action": "SELL",
+                                "strategy": strategy_name_held,
+                                "reason": f"트레일링 스탑 발동: {profit_percent:.2f}%",
+                                "date": date,
+                                "price": holding_price,
+                                "quantity": quantity,
+                                "profit_loss": profit,
+                                "profit_loss_percent": profit_percent
+                            }
+                            
+                            trades.append(trade_record)
+                            
+                            # 전략 성능 업데이트
+                            if strategy_name_held in backtest_results["strategy_performance"]:
+                                backtest_results["strategy_performance"][strategy_name_held]["trades_count"] += 1
+                                if profit > 0:
+                                    backtest_results["strategy_performance"][strategy_name_held]["win_count"] += 1
+                                    backtest_results["strategy_performance"][strategy_name_held]["total_profit"] += profit
+                                else:
+                                    backtest_results["strategy_performance"][strategy_name_held]["total_loss"] += profit
+                            
+                            # 보유 종목에서 제거
+                            del virtual_holdings[stock_code_held]
+                            continue  # 매도 후 다음 종목으로
+                        
+                        # 보수적 모드 확인
+                        if conservative_mode:
+                            # 보수적 모드에서는 목표 수익률 하향 조정
+                            if hasattr(strategy_held, 'params'):
+                                original_profit_target = strategy_held.params.get("profit_target", 5.0)
+                                conservative_profit_target = original_profit_target * 0.7  # 70% 수준으로 하향
+                                
+                                avg_price = holding_info["avg_price"]
+                                profit_percent = ((holding_price / avg_price) - 1) * 100
+                                
+                                # 하향 조정된 목표 수익률 달성 시 매도
+                                if profit_percent >= conservative_profit_target:
+                                    # 매도 실행
+                                    quantity = holding_info["quantity"]
+                                    sell_amount = holding_price * quantity
+                                    profit = sell_amount - (avg_price * quantity)
+                                    
+                                    # 자본 업데이트
+                                    total_capital += sell_amount
+                                    
+                                    # 거래 기록
+                                    trade_record = {
+                                        "stock_code": stock_code_held,
+                                        "stock_name": self.watch_list_info.get(stock_code_held, {}).get("name", stock_code_held),
+                                        "action": "SELL",
+                                        "strategy": strategy_name_held,
+                                        "reason": f"보수적 모드 매도: {profit_percent:.2f}% (목표: {conservative_profit_target:.2f}%)",
+                                        "date": date,
+                                        "price": holding_price,
+                                        "quantity": quantity,
+                                        "profit_loss": profit,
+                                        "profit_loss_percent": profit_percent
+                                    }
+                                    
+                                    trades.append(trade_record)
+                                    
+                                    # 전략 성능 업데이트
+                                    if strategy_name_held in backtest_results["strategy_performance"]:
+                                        backtest_results["strategy_performance"][strategy_name_held]["trades_count"] += 1
+                                        if profit > 0:
+                                            backtest_results["strategy_performance"][strategy_name_held]["win_count"] += 1
+                                            backtest_results["strategy_performance"][strategy_name_held]["total_profit"] += profit
+                                        else:
+                                            backtest_results["strategy_performance"][strategy_name_held]["total_loss"] += profit
+                                    
+                                    # 보유 종목에서 제거
+                                    del virtual_holdings[stock_code_held]
+                                    continue  # 매도 후 다음 종목으로
+                        
+                        # 타임 스탑 확인
+                        if use_time_stop:
+                            buy_date = holding_info.get("buy_date", date)
+                            if isinstance(buy_date, str):
+                                try:
+                                    buy_date = pd.to_datetime(buy_date)
+                                except:
+                                    buy_date = pd.to_datetime(date) - pd.Timedelta(days=1)
+                            
+                            current_date = pd.to_datetime(date)
+                            holding_days = (current_date - buy_date).days
+                            
+                            if holding_days > time_stop_days:
+                                # 수익률 확인
+                                avg_price = holding_info["avg_price"]
+                                profit_percent = ((holding_price / avg_price) - 1) * 100
+                                
+                                # 타임 스탑 조건 확인
+                                if profit_percent < time_stop_profit_pct:
+                                    # 매도 실행
+                                    quantity = holding_info["quantity"]
+                                    sell_amount = holding_price * quantity
+                                    profit = sell_amount - (avg_price * quantity)
+                                    
+                                    # 자본 업데이트
+                                    total_capital += sell_amount
+                                    
+                                    # 거래 기록
+                                    trade_record = {
+                                        "stock_code": stock_code_held,
+                                        "stock_name": self.watch_list_info.get(stock_code_held, {}).get("name", stock_code_held),
+                                        "action": "SELL",
+                                        "strategy": strategy_name_held,
+                                        "reason": f"타임 스탑 발동: 보유일수 {holding_days}일, 수익률 {profit_percent:.2f}%",
+                                        "date": date,
+                                        "price": holding_price,
+                                        "quantity": quantity,
+                                        "profit_loss": profit,
+                                        "profit_loss_percent": profit_percent
+                                    }
+                                    
+                                    trades.append(trade_record)
+                                    
+                                    # 전략 성능 업데이트
+                                    if strategy_name_held in backtest_results["strategy_performance"]:
+                                        backtest_results["strategy_performance"][strategy_name_held]["trades_count"] += 1
+                                        if profit > 0:
+                                            backtest_results["strategy_performance"][strategy_name_held]["win_count"] += 1
+                                            backtest_results["strategy_performance"][strategy_name_held]["total_profit"] += profit
+                                        else:
+                                            backtest_results["strategy_performance"][strategy_name_held]["total_loss"] += profit
+                                    
+                                    # 보유 종목에서 제거
+                                    del virtual_holdings[stock_code_held]
+                                    continue  # 매도 후 다음 종목으로
+                        
+                        # 매도 조건 확인 - 해당 종목 데이터 가져오기
+                        stock_data = None
+                        if stock_code_held != stock_code:
+                            # 다른 종목이면 데이터 가져오기
+                            stock_data_full = KisKR.GetOhlcvNew(stock_code_held, 'D', 200, adj_ok=1)
+                            if stock_data_full is not None and not stock_data_full.empty:
+                                # 해당 날짜까지의 데이터만 필터링
+                                if isinstance(stock_data_full.index, pd.DatetimeIndex):
+                                    stock_data = stock_data_full[stock_data_full.index <= date].copy()
+                                else:
+                                    stock_data_full.index = pd.to_datetime(stock_data_full.index)
+                                    stock_data = stock_data_full[stock_data_full.index <= date].copy()
+                        else:
+                            # 현재 분석 중인 종목이면 현재 데이터 사용
+                            stock_data = current_data
+                        
+                        # 매도 신호 분석
+                        if stock_data is not None and not stock_data.empty and len(stock_data) > 20:
+                            sell_result = strategy_held.analyze_sell_signal(stock_data, holding_info, holding_price)
                             
                             if sell_result.get("is_sell_signal", False):
                                 # 매도 실행
                                 quantity = holding_info["quantity"]
                                 avg_price = holding_info["avg_price"]
-                                sell_amount = current_price * quantity
+                                sell_amount = holding_price * quantity
                                 profit = sell_amount - (avg_price * quantity)
-                                profit_percent = ((current_price / avg_price) - 1) * 100
+                                profit_percent = ((holding_price / avg_price) - 1) * 100
                                 
                                 # 자본 업데이트
                                 total_capital += sell_amount
                                 
                                 # 거래 기록
                                 trade_record = {
-                                    "stock_code": stock_code,
-                                    "stock_name": stock_info.get("name", stock_code),
+                                    "stock_code": stock_code_held,
+                                    "stock_name": self.watch_list_info.get(stock_code_held, {}).get("name", stock_code_held),
                                     "action": "SELL",
-                                    "strategy": strategy_name,
+                                    "strategy": strategy_name_held,
                                     "reason": sell_result.get("reason", ""),
                                     "date": date,
-                                    "price": current_price,
+                                    "price": holding_price,
                                     "quantity": quantity,
                                     "profit_loss": profit,
                                     "profit_loss_percent": profit_percent
@@ -2207,230 +2835,352 @@ class TrendTraderBot:
                                 trades.append(trade_record)
                                 
                                 # 전략 성능 업데이트
-                                backtest_results["strategy_performance"][strategy_name]["trades_count"] += 1
-                                if profit > 0:
-                                    backtest_results["strategy_performance"][strategy_name]["win_count"] += 1
-                                    backtest_results["strategy_performance"][strategy_name]["total_profit"] += profit
-                                else:
-                                    backtest_results["strategy_performance"][strategy_name]["total_loss"] += profit
+                                if strategy_name_held in backtest_results["strategy_performance"]:
+                                    backtest_results["strategy_performance"][strategy_name_held]["trades_count"] += 1
+                                    if profit > 0:
+                                        backtest_results["strategy_performance"][strategy_name_held]["win_count"] += 1
+                                        backtest_results["strategy_performance"][strategy_name_held]["total_profit"] += profit
+                                    else:
+                                        backtest_results["strategy_performance"][strategy_name_held]["total_loss"] += profit
                                 
                                 # 보유 종목에서 제거
-                                del virtual_holdings[stock_code]
-                            
-                        else:
-                            # 최대 보유 종목 수 확인
-                            if len(virtual_holdings) >= max_holdings_count:
-                                continue
-                                
-                            # 매수 신호 분석
-                            buy_result = strategy.analyze_buy_signal(current_data, None, current_price)
-                            
-                            if buy_result.get("is_buy_signal", False) and total_capital > current_price:
-                                # 종목별 할당 예산 계산
-                                allocated_budget = self.total_budget * allocation_ratio
-                                
-                                # 예산 내에서 매수 수량 결정
-                                max_available = min(allocated_budget, total_capital)
-                                quantity = max(1, int(max_available / current_price))
-                                
-                                # 매수 실행
-                                buy_amount = current_price * quantity
-                                
-                                if buy_amount <= total_capital:
-                                    # 자본 업데이트
-                                    total_capital -= buy_amount
-                                    
-                                    # 보유 종목에 추가
-                                    virtual_holdings[stock_code] = {
-                                        "quantity": quantity,
-                                        "avg_price": current_price,
-                                        "buy_date": date,
-                                        "highest_price": current_price,
-                                        "trailing_stop_price": 0,
-                                        "current_price": current_price,
-                                        "strategy": strategy_name
-                                    }
-                                    
-                                    # 트레일링 스탑 설정 (TrailingStopStrategy 경우)
-                                    if isinstance(strategy, TrailingStopStrategy):
-                                        trailing_pct = strategy.params.get("trailing_stop_pct", 2.0)
-                                        virtual_holdings[stock_code]["trailing_stop_price"] = current_price * (1 - trailing_pct/100)
-                                    
-                                    # 거래 기록
-                                    trade_record = {
-                                        "stock_code": stock_code,
-                                        "stock_name": stock_info.get("name", stock_code),
-                                        "action": "BUY",
-                                        "strategy": strategy_name,
-                                        "reason": buy_result.get("reason", ""),
-                                        "date": date,
-                                        "price": current_price,
-                                        "quantity": quantity,
-                                        "amount": buy_amount
-                                    }
-                                    
-                                    trades.append(trade_record)
+                                del virtual_holdings[stock_code_held]
                     
-                # 백테스트 종료 시점에 보유중인 종목 청산
-                for stock_code, holding in virtual_holdings.items():
-                    # 마지막 가격으로 청산
-                    strategy_name = holding.get("strategy", "RSI")
-                    stock_info = self.watch_list_info.get(stock_code, {})
-                    daily_data = KisKR.GetOhlcvNew(stock_code, 'D', 1, adj_ok=1)
-
-                    if daily_data is not None and not daily_data.empty:
-                        last_price = daily_data.iloc[-1]['close']
-                        quantity = holding["quantity"]
-                        avg_price = holding["avg_price"]
-                        
-                        sell_amount = last_price * quantity
-                        profit = sell_amount - (avg_price * quantity)
-                        profit_percent = ((last_price / avg_price) - 1) * 100
-                        
-                        # 자본 업데이트
-                        total_capital += sell_amount
-                        
-                        # 거래 기록
-                        trade_record = {
-                            "stock_code": stock_code,
-                            "stock_name": stock_info.get("name", stock_code),
-                            "action": "SELL",
-                            "strategy": strategy_name,
-                            "reason": "백테스트 종료",
-                            "date": end_date_dt if isinstance(end_date_dt, datetime.datetime) else pd.to_datetime(end_date),
-                            "price": last_price,
-                            "quantity": quantity,
-                            "profit_loss": profit,
-                            "profit_loss_percent": profit_percent
-                        }
-                        
-                        trades.append(trade_record)
-                        
-                        # 전략 성능 업데이트
-                        if strategy_name in backtest_results["strategy_performance"]:
-                            backtest_results["strategy_performance"][strategy_name]["trades_count"] += 1
-                            if profit > 0:
-                                backtest_results["strategy_performance"][strategy_name]["win_count"] += 1
-                                backtest_results["strategy_performance"][strategy_name]["total_profit"] += profit
-                            else:
-                                backtest_results["strategy_performance"][strategy_name]["total_loss"] += profit
-                
-                # 백테스트 결과 계산
-                backtest_results["final_capital"] = total_capital
-                backtest_results["profit_loss"] = total_capital - self.total_budget
-                backtest_results["profit_loss_percent"] = (backtest_results["profit_loss"] / self.total_budget) * 100
-                backtest_results["trades"] = trades
-                
-                # 승률 계산
-                win_trades = [t for t in trades if t.get("action") == "SELL" and t.get("profit_loss", 0) > 0]
-                loss_trades = [t for t in trades if t.get("action") == "SELL" and t.get("profit_loss", 0) <= 0]
-                
-                if len(win_trades) + len(loss_trades) > 0:
-                    backtest_results["win_rate"] = len(win_trades) / (len(win_trades) + len(loss_trades)) * 100
-                
-                # 평균 수익/손실 계산
-                if win_trades:
-                    backtest_results["avg_profit"] = sum(t.get("profit_loss", 0) for t in win_trades) / len(win_trades)
-                
-                if loss_trades:
-                    backtest_results["avg_loss"] = sum(t.get("profit_loss", 0) for t in loss_trades) / len(loss_trades)
-                
-                # 최대 낙폭 계산
-                capital_history = [self.total_budget]
-                for trade in trades:
-                    if trade.get("action") == "BUY":
-                        capital_history.append(capital_history[-1] - trade.get("amount", 0))
-                    elif trade.get("action") == "SELL":
-                        capital_history.append(capital_history[-1] + trade.get("price", 0) * trade.get("quantity", 0))
-                
-                max_capital = self.total_budget
-                max_drawdown = 0
-                
-                for capital in capital_history:
-                    max_capital = max(max_capital, capital)
-                    drawdown = (max_capital - capital) / max_capital * 100
-                    max_drawdown = max(max_drawdown, drawdown)
-                
-                backtest_results["max_drawdown"] = max_drawdown
-                
-                # 전략별 승률 계산
-                for strategy_name, perf in backtest_results["strategy_performance"].items():
-                    trades_count = perf["trades_count"]
-                    if trades_count > 0:
-                        perf["win_rate"] = (perf["win_count"] / trades_count) * 100
-                        
-                        # 평균 수익/손실 추가
-                        if perf["win_count"] > 0:
-                            perf["avg_profit"] = perf["total_profit"] / perf["win_count"]
-                        if trades_count - perf["win_count"] > 0:
-                            perf["avg_loss"] = perf["total_loss"] / (trades_count - perf["win_count"])
-                
-                # 추가: 종목별 성과 분석
-                stock_performance = {}
-                for trade in trades:
-                    if trade.get("action") != "SELL":
+                    # 매수 가능 종목 확인 (보유 수 제한)
+                    if len(virtual_holdings) >= max_holdings_count:
+                        continue
+                    
+                    # 보수적 모드에서는 신규 매수 제한
+                    if conservative_mode:
                         continue
                         
-                    code = trade.get("stock_code")
-                    if code not in stock_performance:
-                        stock_performance[code] = {
-                            "name": trade.get("stock_name", code),
-                            "total_profit": 0,
-                            "trades_count": 0,
-                            "win_count": 0,
-                            "by_strategy": {}
-                        }
+                    # 매수 신호 분석
+                    if stock_code not in virtual_holdings:  # 이미 보유한 종목은 스킵
+                        buy_result = strategy.analyze_buy_signal(current_data, None, current_price)
+                        
+                        if buy_result.get("is_buy_signal", False) and total_capital > current_price:
+                            # 시장 추세 필터 확인 (활성화된 경우)
+                            if self.config.get("use_market_trend_filter", False):
+                                market_index_code = self.config.get("market_index_code", "069500")
+                                # 해당 날짜까지의 시장 데이터로 추세 확인
+                                market_data = KisKR.GetOhlcvNew(market_index_code, 'D', 30, adj_ok=1)
+                                if market_data is not None and not market_data.empty:
+                                    if isinstance(market_data.index, pd.DatetimeIndex):
+                                        market_data_filtered = market_data[market_data.index <= date]
+                                    else:
+                                        market_data.index = pd.to_datetime(market_data.index)
+                                        market_data_filtered = market_data[market_data.index <= date]
+                                    
+                                    if not market_data_filtered.empty:
+                                        market_trend_ok = TrendFilter.check_market_trend(market_index_code, lookback_days=10)
+                                        if not market_trend_ok:
+                                            continue  # 시장 추세가 좋지 않으면 매수 스킵
+                            
+                            # 종목별 할당 예산 계산
+                            allocation_ratio = self.watch_list_info.get(stock_code, {}).get("allocation_ratio", 0.2)
+                            
+                            # 예산 내에서 매수 수량 결정
+                            max_available = min(self.total_budget * allocation_ratio, total_capital)
+                            quantity = max(1, int(max_available / current_price))
+                            
+                            # 변동성 기반 포지션 사이징 (ATR 기반 조정)
+                            if len(current_data) > 20:
+                                try:
+                                    atr = self.tech_indicators.calculate_atr(current_data, period=14).iloc[-1]
+                                    
+                                    # 모멘텀 계산
+                                    momentum = self.tech_indicators.calculate_momentum(current_data, period=10).iloc[-1]
+                                    
+                                    if not pd.isna(atr) and not pd.isna(momentum):
+                                        # 변동성 비율 계산
+                                        volatility_ratio = atr / current_price
+                                        
+                                        # 기본 수량 조정
+                                        if volatility_ratio > 0.025:  # 2.5% 이상 변동성 (높음)
+                                            quantity = max(1, int(quantity * 0.7))  # 30% 수량 감소
+                                        elif volatility_ratio < 0.01:  # 1% 미만 변동성 (낮음)
+                                            quantity = max(1, int(quantity * 1.2))  # 20% 수량 증가
+                                            
+                                        # 모멘텀 기반 추가 조정
+                                        if momentum > 5.0:  # 강한 상승 모멘텀
+                                            quantity = max(1, int(quantity * 1.1))  # 10% 추가 증가
+                                        elif momentum < -3.0:  # 하락 모멘텀
+                                            quantity = max(1, int(quantity * 0.9))  # 10% 추가 감소
+                                except Exception as e:
+                                    pass  # 오류 시 원래 수량 사용
+                            
+                            # 매수 실행
+                            buy_amount = current_price * quantity
+                            
+                            if buy_amount <= total_capital:
+                                # 자본 업데이트
+                                total_capital -= buy_amount
+                                
+                                # 보유 종목에 추가
+                                virtual_holdings[stock_code] = {
+                                    "quantity": quantity,
+                                    "avg_price": current_price,
+                                    "buy_date": date,
+                                    "highest_price": current_price,
+                                    "trailing_stop_price": 0,
+                                    "current_price": current_price,
+                                    "strategy": strategy_name
+                                }
+                                
+                                # 트레일링 스탑 설정
+                                if hasattr(strategy, 'params') and (
+                                    isinstance(strategy, TrailingStopStrategy) or 
+                                    strategy.params.get("use_trailing_stop", False)
+                                ):
+                                    trailing_pct = strategy.params.get("trailing_stop_pct", 2.0)
+                                    
+                                    # 원래 트레일링 스탑 비율 백업 (정상 모드 복귀시 사용)
+                                    if isinstance(strategy, TrailingStopStrategy):
+                                        strategy.params["original_trailing_stop_pct"] = trailing_pct
+                                    
+                                    # 보수적 모드에서는 더 타이트한 트레일링 스탑 적용
+                                    if conservative_mode:
+                                        trailing_pct = trailing_pct * 0.8
+                                    
+                                    virtual_holdings[stock_code]["trailing_stop_price"] = current_price * (1 - trailing_pct/100)
+                                
+                                # 거래 기록
+                                trade_record = {
+                                    "stock_code": stock_code,
+                                    "stock_name": self.watch_list_info.get(stock_code, {}).get("name", stock_code),
+                                    "action": "BUY",
+                                    "strategy": strategy_name,
+                                    "reason": buy_result.get("reason", ""),
+                                    "date": date,
+                                    "price": current_price,
+                                    "quantity": quantity,
+                                    "amount": buy_amount
+                                }
+                                
+                                trades.append(trade_record)
                     
-                    profit = trade.get("profit_loss", 0)
-                    strategy = trade.get("strategy", "unknown")
-                    
-                    # 종목별 성과 업데이트
-                    stock_performance[code]["total_profit"] += profit
-                    stock_performance[code]["trades_count"] += 1
-                    if profit > 0:
-                        stock_performance[code]["win_count"] += 1
-                    
-                    # 종목별 전략별 성과 업데이트
-                    if strategy not in stock_performance[code]["by_strategy"]:
-                        stock_performance[code]["by_strategy"][strategy] = {
-                            "trades_count": 0,
-                            "win_count": 0,
-                            "total_profit": 0
-                        }
-                    
-                    stock_performance[code]["by_strategy"][strategy]["trades_count"] += 1
-                    if profit > 0:
-                        stock_performance[code]["by_strategy"][strategy]["win_count"] += 1
-                    stock_performance[code]["by_strategy"][strategy]["total_profit"] += profit
-                
-                # 종목별 승률 계산
-                for code in stock_performance:
-                    trades_count = stock_performance[code]["trades_count"]
-                    if trades_count > 0:
-                        stock_performance[code]["win_rate"] = (stock_performance[code]["win_count"] / trades_count) * 100
-                    else:
-                        stock_performance[code]["win_rate"] = 0
-                    
-                    # 전략별 승률 계산
-                    for strategy, perf in stock_performance[code]["by_strategy"].items():
-                        if perf["trades_count"] > 0:
-                            perf["win_rate"] = (perf["win_count"] / perf["trades_count"]) * 100
-                        else:
-                            perf["win_rate"] = 0
-                
-                backtest_results["stock_performance"] = stock_performance
-                
-                logger.info(f"백테스트 완료: 최종 자본금 {backtest_results['final_capital']:,.0f}원, " + 
-                        f"수익률 {backtest_results['profit_loss_percent']:.2f}%, " +
-                        f"승률 {backtest_results['win_rate']:.2f}%")
-                
-                return backtest_results
-            
-            except Exception as e:
-                logger.exception(f"백테스트 실행 중 오류: {str(e)}")
-                return backtest_results
+            # 백테스트 종료 시점에 보유중인 종목 청산
+            for stock_code, holding in virtual_holdings.items():
+                # 마지막 가격으로 청산
+                strategy_name = holding.get("strategy", "RSI")
+                stock_info = self.watch_list_info.get(stock_code, {})
+                daily_data = KisKR.GetOhlcvNew(stock_code, 'D', 1, adj_ok=1)
 
-# 설정파일 생성 함수
+                if daily_data is not None and not daily_data.empty:
+                    last_price = daily_data.iloc[-1]['close']
+                    quantity = holding["quantity"]
+                    avg_price = holding["avg_price"]
+                    
+                    sell_amount = last_price * quantity
+                    profit = sell_amount - (avg_price * quantity)
+                    profit_percent = ((last_price / avg_price) - 1) * 100
+                    
+                    # 자본 업데이트
+                    total_capital += sell_amount
+                    
+                    # 거래 기록
+                    trade_record = {
+                        "stock_code": stock_code,
+                        "stock_name": stock_info.get("name", stock_code),
+                        "action": "SELL",
+                        "strategy": strategy_name,
+                        "reason": "백테스트 종료",
+                        "date": end_date_dt if isinstance(end_date_dt, datetime.datetime) else pd.to_datetime(end_date),
+                        "price": last_price,
+                        "quantity": quantity,
+                        "profit_loss": profit,
+                        "profit_loss_percent": profit_percent
+                    }
+                    
+                    trades.append(trade_record)
+                    
+                    # 전략 성능 업데이트
+                    if strategy_name in backtest_results["strategy_performance"]:
+                        backtest_results["strategy_performance"][strategy_name]["trades_count"] += 1
+                        if profit > 0:
+                            backtest_results["strategy_performance"][strategy_name]["win_count"] += 1
+                            backtest_results["strategy_performance"][strategy_name]["total_profit"] += profit
+                        else:
+                            backtest_results["strategy_performance"][strategy_name]["total_loss"] += profit
+            
+            # 백테스트 결과 계산
+            backtest_results["final_capital"] = total_capital
+            backtest_results["profit_loss"] = total_capital - self.total_budget
+            backtest_results["profit_loss_percent"] = (backtest_results["profit_loss"] / self.total_budget) * 100
+            backtest_results["trades"] = trades
+            
+            # 승률 계산
+            win_trades = [t for t in trades if t.get("action") == "SELL" and t.get("profit_loss", 0) > 0]
+            loss_trades = [t for t in trades if t.get("action") == "SELL" and t.get("profit_loss", 0) <= 0]
+            
+            if len(win_trades) + len(loss_trades) > 0:
+                backtest_results["win_rate"] = len(win_trades) / (len(win_trades) + len(loss_trades)) * 100
+            
+            # 평균 수익/손실 계산
+            if win_trades:
+                backtest_results["avg_profit"] = sum(t.get("profit_loss", 0) for t in win_trades) / len(win_trades)
+            
+            if loss_trades:
+                backtest_results["avg_loss"] = sum(t.get("profit_loss", 0) for t in loss_trades) / len(loss_trades)
+            
+            # 최대 낙폭 계산
+            capital_history = [self.total_budget]
+            for trade in trades:
+                if trade.get("action") == "BUY":
+                    capital_history.append(capital_history[-1] - trade.get("amount", 0))
+                elif trade.get("action") == "SELL":
+                    capital_history.append(capital_history[-1] + trade.get("price", 0) * trade.get("quantity", 0))
+            
+            max_capital = self.total_budget
+            max_drawdown = 0
+            
+            for capital in capital_history:
+                max_capital = max(max_capital, capital)
+                drawdown = (max_capital - capital) / max_capital * 100
+                max_drawdown = max(max_drawdown, drawdown)
+            
+            backtest_results["max_drawdown"] = max_drawdown
+            
+            # 전략별 승률 계산
+            for strategy_name, perf in backtest_results["strategy_performance"].items():
+                trades_count = perf["trades_count"]
+                if trades_count > 0:
+                    perf["win_rate"] = (perf["win_count"] / trades_count) * 100
+                    
+                    # 평균 수익/손실 추가
+                    if perf["win_count"] > 0:
+                        perf["avg_profit"] = perf["total_profit"] / perf["win_count"]
+                    if trades_count - perf["win_count"] > 0:
+                        perf["avg_loss"] = perf["total_loss"] / (trades_count - perf["win_count"])
+            
+            # 추가: 종목별 성과 분석
+            stock_performance = {}
+            for trade in trades:
+                if trade.get("action") != "SELL":
+                    continue
+                    
+                code = trade.get("stock_code")
+                if code not in stock_performance:
+                    stock_performance[code] = {
+                        "name": trade.get("stock_name", code),
+                        "total_profit": 0,
+                        "trades_count": 0,
+                        "win_count": 0,
+                        "by_strategy": {}
+                    }
+                
+                profit = trade.get("profit_loss", 0)
+                strategy = trade.get("strategy", "unknown")
+                
+                # 종목별 성과 업데이트
+                stock_performance[code]["total_profit"] += profit
+                stock_performance[code]["trades_count"] += 1
+                if profit > 0:
+                    stock_performance[code]["win_count"] += 1
+                
+                # 종목별 전략별 성과 업데이트
+                if strategy not in stock_performance[code]["by_strategy"]:
+                    stock_performance[code]["by_strategy"][strategy] = {
+                        "trades_count": 0,
+                        "win_count": 0,
+                        "total_profit": 0
+                    }
+                
+                stock_performance[code]["by_strategy"][strategy]["trades_count"] += 1
+                if profit > 0:
+                    stock_performance[code]["by_strategy"][strategy]["win_count"] += 1
+                stock_performance[code]["by_strategy"][strategy]["total_profit"] += profit
+            
+            # 종목별 승률 계산
+            for code in stock_performance:
+                trades_count = stock_performance[code]["trades_count"]
+                if trades_count > 0:
+                    stock_performance[code]["win_rate"] = (stock_performance[code]["win_count"] / trades_count) * 100
+                else:
+                    stock_performance[code]["win_rate"] = 0
+                
+                # 전략별 승률 계산
+                for strategy, perf in stock_performance[code]["by_strategy"].items():
+                    if perf["trades_count"] > 0:
+                        perf["win_rate"] = (perf["win_count"] / perf["trades_count"]) * 100
+                    else:
+                        perf["win_rate"] = 0
+            
+            backtest_results["stock_performance"] = stock_performance
+            
+            # Sharpe Ratio 계산 (추가 성능 지표)
+            daily_returns = []
+            current_capital = self.total_budget
+            dates = sorted(list(set([pd.to_datetime(t.get("date")) for t in trades])))
+            
+            if dates:
+                start_date = dates[0]
+                end_date = dates[-1]
+                
+                # 일별 자본 변화 추적
+                date_capital = {start_date: self.total_budget}
+                
+                for trade in sorted(trades, key=lambda x: pd.to_datetime(x.get("date"))):
+                    trade_date = pd.to_datetime(trade.get("date"))
+                    
+                    if trade.get("action") == "BUY":
+                        current_capital -= trade.get("amount", 0)
+                    elif trade.get("action") == "SELL":
+                        current_capital += trade.get("price", 0) * trade.get("quantity", 0)
+                    
+                    date_capital[trade_date] = current_capital
+                
+                # 날짜 정렬
+                sorted_dates = sorted(date_capital.keys())
+                
+                # 일별 수익률 계산
+                for i in range(1, len(sorted_dates)):
+                    prev_capital = date_capital[sorted_dates[i-1]]
+                    curr_capital = date_capital[sorted_dates[i]]
+                    daily_return = (curr_capital - prev_capital) / prev_capital if prev_capital > 0 else 0
+                    daily_returns.append(daily_return)
+                
+                if daily_returns:
+                    # Sharpe Ratio 계산 (무위험이자율 가정: 연 1.5%)
+                    risk_free_rate = 0.015 / 252  # 일별 무위험이자율
+                    avg_daily_return = np.mean(daily_returns)
+                    std_daily_return = np.std(daily_returns)
+                    
+                    if std_daily_return > 0:
+                        sharpe_ratio = (avg_daily_return - risk_free_rate) / std_daily_return * np.sqrt(252)  # 연율화
+                        backtest_results["sharpe_ratio"] = sharpe_ratio
+                        
+                        # Sortino Ratio 계산 (하락 위험만 고려)
+                        negative_returns = [r for r in daily_returns if r < 0]
+                        if negative_returns:
+                            downside_dev = np.std(negative_returns)
+                            if downside_dev > 0:
+                                sortino_ratio = (avg_daily_return - risk_free_rate) / downside_dev * np.sqrt(252)
+                                backtest_results["sortino_ratio"] = sortino_ratio
+            
+            # 백테스트 결과에 위험 관리 관련 정보 추가
+            backtest_results["risk_management"] = {
+                "conservative_mode_activations": sum(1 for trade in trades if "보수적 모드 매도" in trade.get("reason", "")),
+                "trailing_stop_activations": sum(1 for trade in trades if "트레일링 스탑 발동" in trade.get("reason", "")),
+                "time_stop_activations": sum(1 for trade in trades if "타임 스탑 발동" in trade.get("reason", ""))
+            }
+            
+            logger.info(f"백테스트 완료: 최종 자본금 {backtest_results['final_capital']:,.0f}원, " + 
+                    f"수익률 {backtest_results['profit_loss_percent']:.2f}%, " +
+                    f"승률 {backtest_results['win_rate']:.2f}%")
+            
+            # 위험 관리 통계 출력
+            logger.info(f"위험 관리 통계: 트레일링 스탑 {backtest_results['risk_management']['trailing_stop_activations']}회, " +
+                    f"타임 스탑 {backtest_results['risk_management']['time_stop_activations']}회, " +
+                    f"보수적 모드 매도 {backtest_results['risk_management']['conservative_mode_activations']}회")
+            
+            return backtest_results
+        
+        except Exception as e:
+            logger.exception(f"백테스트 실행 중 오류: {str(e)}")
+            return backtest_results
+
+# 설정파일 생성 함수 개선
 def create_config_file(config_path: str = "trend_trader_config.json") -> None:
     """기본 설정 파일 생성
     
@@ -2439,213 +3189,174 @@ def create_config_file(config_path: str = "trend_trader_config.json") -> None:
     """
     config = {
         "watch_list": [
-            {"code": "005490", "name": "POSCO홀딩스", "allocation_ratio": 0.2, "strategy": "RSI_Default"},
-            {"code": "373220", "name": "LG에너지솔루션", "allocation_ratio": 0.2, "strategy": "MACD_Default"},
-            {"code": "000660", "name": "SK하이닉스", "allocation_ratio": 0.2, "strategy": "BB_Default"},
-            {"code": "035720", "name": "카카오", "allocation_ratio": 0.2, "strategy": "MA_Default"},
-            {"code": "005930", "name": "삼성전자", "allocation_ratio": 0.2, "strategy": "Composite_Default"}
+            {"code": "005490", "name": "POSCO홀딩스", "allocation_ratio": 0.20, "strategy": "Composite_Default"},
+            {"code": "373220", "name": "LG에너지솔루션", "allocation_ratio": 0.20, "strategy": "Composite_Default"},
+            {"code": "000660", "name": "SK하이닉스", "allocation_ratio": 0.20, "strategy": "MACD_Default"},  # BB_Default → Composite_Default로 변경
+            {"code": "000100", "name": "유한양행", "allocation_ratio": 0.30, "strategy": "RSI_Default"},
+            {"code": "042660", "name": "한화오션", "allocation_ratio": 0.10, "strategy": "Composite_Default"}
         ],
         "total_budget": 5000000,  # 총 투자 예산
-        "max_stocks": 5,  # 최대 동시 보유 종목 수
+        "max_stocks": 3,  # 최대 동시 보유 종목 수
         "min_trading_amount": 500000,  # 최소 거래 금액
         "use_market_trend_filter": True,  # 시장 추세 필터 사용 여부
         "market_index_code": "069500",  # KODEX 200
+        "time_stop_days": 25,  # 타임 스탑 기준 일수
+        "time_stop_profit_pct": 0.5,  # 타임 스탑 수익률 기준
         
-        # 전략 가중치 (백테스트 결과에 따라 조정 가능)
+        # 전략 가중치 (백테스트 결과에 따라 조정)
         "strategy_weights": {
-            "RSI_Default": 1.0,
-            "MACD_Default": 1.0,
-            "BB_Default": 1.0,
-            "MA_Default": 1.0,
-            "Composite_Default": 1.2  # 복합 전략에 가중치 부여
+            "RSI_Default": 0.6,        # 거래 없음, 가중치 유지
+            "MACD_Default": 0.6,       # 거래 없음, 가중치 유지
+            "BB_Default": 1.0,         # 양호한 성과, 가중치 유지
+            "MA_Default": 0.6,         # 거래 없음, 가중치 유지
+            "Composite_Default": 2.2   # 우수한 성과, 가중치 증가 (1.8 → 2.2)
         },
         
         # 전략 정의
         "strategies": {
-            # RSI 기반 전략
-            "RSI_Default": {
-                "type": "RSI",
-                "params": {
-                    "rsi_period": 14,
-                    "rsi_oversold_threshold": 30.0,
-                    "rsi_overbought_threshold": 70.0,
-                    "profit_target": 5.0,
-                    "stop_loss_pct": 3.0,
-                    "bb_period": 20,
-                    "bb_std": 2.0,
-                    "use_minute_confirm": True,
-                    "use_dynamic_stop": False,
-                    "atr_period": 14,
-                    "atr_multiplier": 2.0
-                }
-            },
-            "RSI_Aggressive": {
-                "type": "RSI",
-                "params": {
-                    "rsi_period": 14,
-                    "rsi_oversold_threshold": 35.0,  # 더 높은 진입점
-                    "rsi_overbought_threshold": 65.0,  # 더 낮은 매도점
-                    "profit_target": 4.0,  # 낮은 목표 수익률
-                    "stop_loss_pct": 2.0,  # 엄격한 손절
-                    "bb_period": 20,
-                    "bb_std": 2.0,
-                    "use_minute_confirm": True,
-                    "use_trailing_stop": True,  # 트레일링 스탑 사용
-                    "trailing_stop_pct": 2.0
-                }
-            },
-            "RSI_Conservative": {
-                "type": "RSI",
-                "params": {
-                    "rsi_period": 14,
-                    "rsi_oversold_threshold": 25.0,  # 더 낮은 진입점
-                    "rsi_overbought_threshold": 75.0,  # 더 높은 매도점
-                    "profit_target": 7.0,  # 높은 목표 수익률
-                    "stop_loss_pct": 4.0,  # 여유로운 손절
-                    "bb_period": 20,
-                    "bb_std": 2.0,
-                    "use_minute_confirm": False,
-                    "use_dynamic_stop": True,  # 동적 손절 사용
-                    "atr_period": 14,
-                    "atr_multiplier": 2.5
-                }
-            },
-            
-            # MACD 기반 전략
-            "MACD_Default": {
-                "type": "MACD",
-                "params": {
-                    "macd_fast_period": 12,
-                    "macd_slow_period": 26,
-                    "macd_signal_period": 9,
-                    "short_ma_period": 5,
-                    "long_ma_period": 20,
-                    "profit_target": 5.0,
-                    "stop_loss_pct": 3.0,
-                    "use_minute_confirm": False
-                }
-            },
-            "MACD_TrailingStop": {
-                "type": "MACD",
-                "params": {
-                    "macd_fast_period": 12,
-                    "macd_slow_period": 26,
-                    "macd_signal_period": 9,
-                    "short_ma_period": 5,
-                    "long_ma_period": 20,
-                    "profit_target": 5.0,
-                    "stop_loss_pct": 3.0,
-                    "use_minute_confirm": False,
-                    "use_trailing_stop": True,
-                    "trailing_stop_pct": 2.0
-                }
-            },
-            
-            # 볼린저 밴드 기반 전략
+            # BB_Default 전략 (유지)
             "BB_Default": {
                 "type": "BollingerBand",
                 "params": {
                     "bb_period": 20,
-                    "bb_std": 2.0,
-                    "profit_target": 5.0,
-                    "stop_loss_pct": 3.0,
+                    "bb_std": 1.8,
+                    "profit_target": 4.5,
+                    "stop_loss_pct": 1.5,
                     "use_stochastic": True,
                     "stoch_k_period": 14,
                     "stoch_d_period": 3,
-                    "stoch_oversold_threshold": 20,
-                    "stoch_overbought_threshold": 80,
-                    "require_stoch_oversold": False
+                    "stoch_oversold_threshold": 35,
+                    "stoch_overbought_threshold": 70,
+                    "require_stoch_oversold": True,
+                    "use_trailing_stop": True,
+                    "trailing_stop_pct": 1.6,
+                    "dynamic_trailing": True
                 }
             },
+            
+            # BB_StochFilter 전략 (유지)
             "BB_StochFilter": {
                 "type": "BollingerBand",
                 "params": {
                     "bb_period": 20,
-                    "bb_std": 2.0,
-                    "profit_target": 5.0,
-                    "stop_loss_pct": 3.0,
+                    "bb_std": 1.7,
+                    "profit_target": 4.2,
+                    "stop_loss_pct": 1.5,
                     "use_stochastic": True,
                     "stoch_k_period": 14,
                     "stoch_d_period": 3,
-                    "stoch_oversold_threshold": 20,
-                    "stoch_overbought_threshold": 80,
-                    "require_stoch_oversold": True,  # 스토캐스틱 필터 적용
+                    "stoch_oversold_threshold": 30,
+                    "stoch_overbought_threshold": 70,
+                    "require_stoch_oversold": True,
                     "use_trailing_stop": True,
-                    "trailing_stop_pct": 2.0
+                    "trailing_stop_pct": 1.7,
+                    "dynamic_trailing": True
                 }
             },
             
-            # 이동평균선 기반 전략
+            # RSI 기반 전략 (유지)
+            "RSI_Default": {
+                "type": "RSI",
+                "params": {
+                    "rsi_period": 14,
+                    "rsi_oversold_threshold": 35.0,
+                    "rsi_overbought_threshold": 65.0,
+                    "profit_target": 4.2,
+                    "stop_loss_pct": 1.5,
+                    "bb_period": 20,
+                    "bb_std": 2.0,
+                    "use_minute_confirm": False,
+                    "use_dynamic_stop": True,
+                    "atr_period": 14,
+                    "atr_multiplier": 1.8
+                }
+            },
+            
+            # MACD 기반 전략 (유지)
+            "MACD_Default": {
+                "type": "MACD",
+                "params": {
+                    "macd_fast_period": 6,
+                    "macd_slow_period": 19,
+                    "macd_signal_period": 7,
+                    "short_ma_period": 3,
+                    "long_ma_period": 15,
+                    "profit_target": 3.8,
+                    "stop_loss_pct": 1.5,
+                    "use_minute_confirm": True,
+                    "use_trailing_stop": True,
+                    "trailing_stop_pct": 1.4,
+                    "dynamic_trailing": True
+                }
+            },
+            
+            # 이동평균선 기반 전략 (유지)
             "MA_Default": {
                 "type": "MovingAverage",
                 "params": {
-                    "ma_short_period": 5,
-                    "ma_mid_period": 20,
-                    "ma_long_period": 60,
-                    "ma_strategy_type": "golden_cross",  # golden_cross, uptrend, bounce
-                    "profit_target": 5.0,
-                    "stop_loss_pct": 3.0
-                }
-            },
-            "MA_Uptrend": {
-                "type": "MovingAverage",
-                "params": {
-                    "ma_short_period": 5,
-                    "ma_mid_period": 20,
-                    "ma_long_period": 60,
-                    "ma_strategy_type": "uptrend",  # 상승추세 전략
-                    "profit_target": 5.0,
-                    "stop_loss_pct": 3.0,
+                    "ma_short_period": 3,
+                    "ma_mid_period": 10,
+                    "ma_long_period": 30,
+                    "ma_strategy_type": "bounce",
+                    "profit_target": 3.5,
+                    "stop_loss_pct": 1.5,
                     "use_trailing_stop": True,
-                    "trailing_stop_pct": 2.0
-                }
-            },
-            "MA_Bounce": {
-                "type": "MovingAverage",
-                "params": {
-                    "ma_short_period": 5,
-                    "ma_mid_period": 20,
-                    "ma_long_period": 0,  # 장기 이평선 사용 안함
-                    "ma_strategy_type": "bounce",  # 반등 전략
-                    "profit_target": 4.0,
-                    "stop_loss_pct": 2.0,
-                    "use_trailing_stop": True,
-                    "trailing_stop_pct": 1.5
+                    "trailing_stop_pct": 1.4,
+                    "dynamic_trailing": True
                 }
             },
             
-            # 복합 전략
+            # 복합 전략 (최적화)
             "Composite_Default": {
                 "type": "Composite",
                 "params": {
-                    "strategies": ["RSI_Default", "MACD_Default"],
-                    "combine_method": "any",  # any, all, majority
+                    "strategies": ["RSI_Default", "BB_StochFilter"],
+                    "combine_method": "any",
+                    "profit_target": 5.7,  # 5.2 → 5.7로 추가 상향
+                    "stop_loss_pct": 1.5,  # 유지
+                    "use_trailing_stop": True,
+                    "trailing_stop_pct": 2.0,  # 1.8 → 2.0으로 증가
+                    "dynamic_trailing": True
+                }
+            },
+            
+            # 새로운 복합 전략 (최적화)
+            "Composite_Premium": {
+                "type": "Composite",
+                "params": {
+                    "strategies": ["Composite_Default", "BB_Default"],
+                    "combine_method": "any",
                     "profit_target": 5.0,
-                    "stop_loss_pct": 3.0
-                }
-            },
-            "Composite_Conservative": {
-                "type": "Composite",
-                "params": {
-                    "strategies": ["RSI_Conservative", "MACD_Default", "BB_Default"],
-                    "combine_method": "majority",  # 과반수 이상 동의 필요
-                    "profit_target": 6.0,
-                    "stop_loss_pct": 3.5,
+                    "stop_loss_pct": 1.5,
                     "use_trailing_stop": True,
-                    "trailing_stop_pct": 2.0
-                }
-            },
-            "Composite_Aggressive": {
-                "type": "Composite",
-                "params": {
-                    "strategies": ["RSI_Aggressive", "MACD_TrailingStop"],
-                    "combine_method": "any",  # 한 전략이라도 매수 신호면 매수
-                    "profit_target": 4.0,
-                    "stop_loss_pct": 2.0,
-                    "use_trailing_stop": True,
-                    "trailing_stop_pct": 1.5
+                    "trailing_stop_pct": 2.0,  # 1.8 → 2.0으로 증가
+                    "dynamic_trailing": True
                 }
             }
+        },
+        
+        # 위험 관리 설정 (최적화)
+        "risk_management": {
+            "use_dynamic_trailing_stop": True,  # 동적 트레일링 스탑 사용 여부
+            "use_time_stop": True,  # 타임 스탑 사용 여부
+            "monitor_portfolio_risk": True,  # 포트폴리오 위험 모니터링 사용 여부
+            "conservative_mode_threshold": 22.0,  # 보수적 모드 전환 기준 낙폭(%)
+            "normal_mode_threshold": 17.0,  # 정상 모드 복귀 기준 낙폭(%)
+            "conservative_profit_target_ratio": 0.85  # 보수적 모드에서 목표 수익률 조정 비율 (0.8 → 0.85로 증가)
+        },
+        
+        # 동적 트레일링 스탑 설정 (추가)
+        "dynamic_trailing_stop": {
+            "very_high_profit_pct": 15.0,  # 매우 높은 수익률 기준 (%)
+            "very_high_profit_ratio": 0.6,  # 매우 높은 수익률일 때 트레일링 스탑 비율 조정 계수
+            "high_profit_pct": 12.0,  # 높은 수익률 기준 (%)
+            "high_profit_ratio": 0.7,  # 높은 수익률일 때 트레일링 스탑 비율 조정 계수
+            "medium_profit_pct": 8.0,  # 중간 수익률 기준 (%)
+            "medium_profit_ratio": 0.8,  # 중간 수익률일 때 트레일링 스탑 비율 조정 계수
+            "low_profit_pct": 5.0,  # 낮은 수익률 기준 (%)
+            "low_profit_ratio": 0.9,  # 낮은 수익률일 때 트레일링 스탑 비율 조정 계수
+            "minimal_profit_pct": 1.0,  # 최소 수익률 기준 (%)
+            "minimal_profit_ratio": 1.2  # 최소 수익률 이하일 때 트레일링 스탑 비율 조정 계수
         }
     }
     
