@@ -2503,7 +2503,7 @@ class StrategyManager:
         return None
 
 
-    # StrategyManager 클래스의 _create_strategy 메서드 개선
+    # StrategyManager 클래스의 _create_strategy 메서드 개선4
     def _create_strategy(self, strategy_type: str, strategy_name: str, params: Dict[str, any]) -> TradingStrategy:
         """전략 인스턴스 생성
         
@@ -2550,6 +2550,62 @@ class StrategyManager:
                 "ma_mid_period": 20,
                 "ma_long_period": 60,
                 "ma_strategy_type": "golden_cross"
+            },
+            # 추가된 전략들의 기본 매개변수
+            "EnhancedRSIStrategy": {
+                "rsi_period_short": 9,
+                "rsi_period": 14,
+                "rsi_period_long": 21,
+                "rsi_oversold_threshold": 35.0,
+                "rsi_overbought_threshold": 65.0,
+                "bb_period": 20,
+                "bb_std": 2.0
+            },
+            "EnhancedMACDStrategy": {
+                "macd_fast_period": 8,
+                "macd_slow_period": 21,
+                "macd_signal_period": 7,
+                "short_ma_period": 3,
+                "mid_ma_period": 10,
+                "long_ma_period": 20,
+                "momentum_period": 10
+            },
+            "MultiTimeframeRSIStrategy": {
+                "rsi_period": 14,
+                "daily_rsi_oversold_threshold": 35.0,
+                "daily_rsi_overbought_threshold": 65.0,
+                "weekly_rsi_oversold_threshold": 40.0,
+                "weekly_rsi_overbought_threshold": 70.0
+            },
+            "HybridTrendStrategy": {
+                "adx_period": 14,
+                "strong_trend_threshold": 25,
+                "sideways_threshold": 20,
+                "macd_fast_period": 12,
+                "macd_slow_period": 26,
+                "macd_signal_period": 9
+            },
+            "VolatilityBreakoutStrategy": {
+                "volatility_period": 20,
+                "k_value": 0.5,
+                "ma_short_period": 5,
+                "ma_long_period": 20
+            },
+            # Composite 전략 기본 매개변수
+            "Composite": {
+                "combine_method": "any",
+                "strategies": ["RSI_Default", "BB_StochFilter"]
+            },
+            # Composite_Premium 전략 기본 매개변수 (실제로는 Composite 타입)
+            "Composite_Premium": {
+                "combine_method": "any",
+                "strategies": ["EnhancedRSIStrategy", "BB_StochFilter"],
+                "profit_target": 2.0,
+                "stop_loss_pct": 1.8,
+                "use_trailing_stop": True,
+                "trailing_stop_pct": 1.5,
+                "dynamic_trailing": True,
+                "min_holding_days": 0
             }
         }
         
@@ -2561,12 +2617,12 @@ class StrategyManager:
         
         # 트레일링 스탑 및 동적 손절 매개변수 추가
         if "use_trailing_stop" not in merged_params:
-            if strategy_type in ["MACD", "BollingerBand"]:
+            if strategy_type in ["MACD", "BollingerBand", "EnhancedMACDStrategy", "HybridTrendStrategy"]:
                 merged_params["use_trailing_stop"] = True
                 merged_params["trailing_stop_pct"] = merged_params.get("trailing_stop_pct", 2.0)
         
         if "use_dynamic_stop" not in merged_params:
-            if strategy_type == "RSI":
+            if strategy_type in ["RSI", "EnhancedRSIStrategy", "MultiTimeframeRSIStrategy"]:
                 merged_params["use_dynamic_stop"] = True
                 merged_params["atr_period"] = merged_params.get("atr_period", 14)
                 merged_params["atr_multiplier"] = merged_params.get("atr_multiplier", 2.0)
@@ -2580,7 +2636,20 @@ class StrategyManager:
             strategy = BollingerBandStrategy(strategy_name, merged_params)
         elif strategy_type == "MovingAverage":
             strategy = MovingAverageStrategy(strategy_name, merged_params)
-        elif strategy_type == "Composite":
+        elif strategy_type == "EnhancedRSIStrategy":
+            strategy = EnhancedRSIStrategy(strategy_name, merged_params)
+        elif strategy_type == "EnhancedMACDStrategy":
+            strategy = EnhancedMACDStrategy(strategy_name, merged_params)
+        elif strategy_type == "MultiTimeframeRSIStrategy":
+            strategy = MultiTimeframeRSIStrategy(strategy_name, merged_params)
+        elif strategy_type == "HybridTrendStrategy":
+            strategy = HybridTrendStrategy(strategy_name, merged_params)
+        elif strategy_type == "VolatilityBreakoutStrategy":
+            # VolatilityBreakoutStrategy는 코드에 구현되어 있지 않은 것 같습니다.
+            # 실제 구현이 없다면 이 부분을 제거하거나 에러 처리해야 합니다.
+            logger.warning(f"VolatilityBreakoutStrategy 전략이 구현되어 있지 않습니다.")
+            strategy = None
+        elif strategy_type == "Composite" or strategy_name == "Composite_Premium":
             # 복합 전략 생성
             sub_strategies = []
             for sub_strategy_name in merged_params.get("strategies", []):
@@ -2602,7 +2671,6 @@ class StrategyManager:
             strategy = TrailingStopStrategy(strategy, merged_params)
         
         return strategy
-
 
 class TrendTraderBot:
     """한국주식 추세매매봇 클래스"""
@@ -2854,227 +2922,6 @@ class TrendTraderBot:
             result["reason"] += "가격 모멘텀 강화 "
         
         return result
-
-    def get_optimal_holdings_count(self) -> int:
-        """시장 상황별 최적 보유 종목 수 반환"""
-        market_condition = self.analyze_market_condition()
-        max_stocks = self.max_stocks  # 기본값 5
-        
-        if market_condition == "bull":
-            # 상승장에서는 집중 투자 - 보유 종목 수 감소
-            return max(3, max_stocks - 1)
-        elif market_condition == "bear":
-            # 하락장에서는 분산 투자 - 보유 종목 수 증가
-            return min(7, max_stocks + 2)
-        else:  # neutral
-            # 횡보장에서는 기본 설정 유지
-            return max_stocks
-
-    def should_execute_trade(self, stock_code: str, buy_signal: bool) -> bool:
-        """거래 시점 추가 분석 - 더 나은 진입/청산 시점 포착"""
-        try:
-            # 기본값은 실행
-            should_trade = True
-            
-            # 1. 시장 개장 후 30분 / 마감 전 30분 체크
-            now = datetime.datetime.now()
-            market_open = datetime.datetime(now.year, now.month, now.day, 9, 0, 0)
-            market_close = datetime.datetime(now.year, now.month, now.day, 15, 30, 0)
-            
-            # 장 초반 30분 / 장 마감 30분 전
-            is_early_market = (now - market_open).total_seconds() < 1800
-            is_late_market = (market_close - now).total_seconds() < 1800
-            
-            if buy_signal:
-                # 매수의 경우 장 초반은 피하고, 장 마감 전 저가 매수 가능 (옵션)
-                if is_early_market:
-                    logger.info(f"장 초반 매수 지연: {stock_code}")
-                    return False
-                
-                # 2. 현재 시장 변동성 체크
-                kospi_data = KisKR.GetOhlcvNew("069500", 'D', 2, adj_ok=1)  # KODEX 200
-                if not kospi_data.empty and len(kospi_data) > 1:
-                    today_range = (kospi_data['high'].iloc[-1] - kospi_data['low'].iloc[-1]) / kospi_data['open'].iloc[-1] * 100
-                    
-                    # 당일 변동성이 0.8% 이상인 경우 매수 신중하게 (매수 지연)
-                    if today_range > 0.8:
-                        daily_data = KisKR.GetOhlcvNew(stock_code, 'D', 1, adj_ok=1)
-                        
-                        if not daily_data.empty:
-                            # 종목이 당일 고점 대비 1% 이상 하락한 경우에만 매수 (저가 매수)
-                            current_price = KisKR.GetCurrentPrice(stock_code)
-                            daily_high = daily_data['high'].iloc[-1]
-                            
-                            if (current_price / daily_high - 1) * 100 > -1.0:
-                                logger.info(f"당일 고점 대비 충분한 하락이 없어 매수 지연: {stock_code}")
-                                return False
-            else:
-                # 매도의 경우 장 마감 30분 전에는 무조건 청산 검토
-                if is_late_market:
-                    # 보유 종목 정보 확인
-                    holding_info = self.holdings.get(stock_code, {})
-                    avg_price = holding_info.get("avg_price", 0)
-                    
-                    if avg_price > 0:
-                        current_price = KisKR.GetCurrentPrice(stock_code)
-                        profit_percent = ((current_price / avg_price) - 1) * 100
-                        
-                        # 수익중이면 마감 전 청산 권장
-                        if profit_percent > 0.5:
-                            logger.info(f"장 마감 전 수익 확정 권장: {stock_code}, 수익률: {profit_percent:.2f}%")
-                            return True
-            
-            return should_trade
-            
-        except Exception as e:
-            logger.warning(f"거래 시점 분석 중 오류: {e}")
-            return True  # 오류 시 기본적으로 거래 허용
-
-    def detect_weekly_pattern(self, stock_code: str, daily_data: pd.DataFrame) -> Dict[str, any]:
-        """주간 반복 패턴 감지 - 더 나은 진입/청산 포인트 탐색"""
-        result = {
-            "has_pattern": False,
-            "buy_day": None,
-            "sell_day": None,
-            "confidence": 0.0
-        }
-        
-        if daily_data is None or daily_data.empty or len(daily_data) < 20:
-            return result
-        
-        try:
-            # 요일별 성과 분석 (최근 8주)
-            if not isinstance(daily_data.index, pd.DatetimeIndex):
-                daily_data.index = pd.to_datetime(daily_data.index)
-            
-            # 요일 정보 추가
-            daily_data['weekday'] = daily_data.index.weekday  # 0: 월요일, 4: 금요일
-            
-            # 최근 40일 데이터만 사용
-            recent_data = daily_data.iloc[-40:]
-            
-            # 요일별 수익률 계산
-            day_returns = {}
-            for day in range(5):  # 0-4: 월-금
-                day_data = recent_data[recent_data['weekday'] == day]
-                if len(day_data) >= 4:  # 최소 4주 데이터 필요
-                    day_returns[day] = day_data['close'].pct_change().mean() * 100
-            
-            if len(day_returns) >= 3:  # 최소 3일 이상 데이터가 있을 때
-                # 가장 수익률이 좋은 요일과 나쁜 요일 찾기
-                best_day = max(day_returns, key=day_returns.get)
-                worst_day = min(day_returns, key=day_returns.get)
-                
-                # 패턴의 강도 계산
-                pattern_strength = day_returns[best_day] - day_returns[worst_day]
-                
-                if pattern_strength > 0.3:  # 패턴이 충분히 강한 경우
-                    result["has_pattern"] = True
-                    result["buy_day"] = worst_day  # 수익률이 가장 나쁜 날 매수
-                    result["sell_day"] = best_day  # 수익률이 가장 좋은 날 매도
-                    result["confidence"] = min(1.0, pattern_strength / 2.0)  # 신뢰도 계산
-                    
-                    day_names = ["월요일", "화요일", "수요일", "목요일", "금요일"]
-                    logger.info(f"종목 {stock_code} 주간 패턴 감지: 매수({day_names[worst_day]}), 매도({day_names[best_day]}), 신뢰도: {result['confidence']:.2f}")
-            
-            return result
-            
-        except Exception as e:
-            logger.warning(f"주간 패턴 감지 중 오류: {e}")
-            return result
-
-    def get_trading_opportunities(self) -> List[Dict]:
-        """시장 상황별 매매 기회 발굴"""
-        opportunities = []
-        
-        # 현재 시장 상황 파악
-        market_condition = self.analyze_market_condition()
-        now = datetime.datetime.now()
-        
-        try:
-            # 1. 상승장 전용 기회
-            if market_condition == "bull":
-                # 섹터 순환매 감지 (테마 순환 확인)
-                # 예: IT→금융→소비재→헬스케어→에너지 순환
-                sector_momentum = self._analyze_sector_momentum()
-                
-                for sector_code, momentum in sector_momentum.items():
-                    if momentum > 2.0:  # 모멘텀 2% 이상인 섹터
-                        # 해당 섹터 내 종목 조회
-                        sector_stocks = self._get_sector_stocks(sector_code)
-                        
-                        for stock in sector_stocks[:3]:  # 상위 3개 종목만
-                            opportunities.append({
-                                "stock_code": stock["code"],
-                                "reason": f"섹터 모멘텀 강화 ({sector_code})",
-                                "priority": momentum / 2.0,  # 우선순위 계산
-                                "type": "buy",
-                                "expiry": now + datetime.timedelta(days=2)  # 2일 내 매매 추천
-                            })
-            
-            # 2. 하락장 전용 기회
-            elif market_condition == "bear":
-                # 저평가 종목 탐색 (배당수익률 & PER 기준)
-                value_stocks = self._find_value_stocks()
-                
-                for stock in value_stocks[:5]:  # 상위 5개 종목만
-                    opportunities.append({
-                        "stock_code": stock["code"],
-                        "reason": f"저평가 종목 (배당률: {stock.get('dividend_yield', 0):.2f}%, PER: {stock.get('per', 0):.1f})",
-                        "priority": 0.7,  # 우선순위
-                        "type": "buy",
-                        "expiry": now + datetime.timedelta(days=5)  # 5일 내 매매 추천
-                    })
-            
-            # 3. 횡보장 전용 기회
-            else:
-                # 변동성 돌파 전략 적용 종목 탐색
-                volatile_stocks = self._find_volatility_breakout_candidates()
-                
-                for stock in volatile_stocks[:3]:
-                    opportunities.append({
-                        "stock_code": stock["code"],
-                        "reason": "변동성 돌파 후보",
-                        "priority": 0.8,
-                        "type": "buy",
-                        "expiry": now + datetime.timedelta(days=1)  # 1일 내 매매 추천
-                    })
-            
-            # 4. 전체 시장 대상 기회 (만기일 효과)
-            # 옵션만기일 전후 변동성 확대 시기 활용
-            if 10 <= now.day <= 14:  # 옵션만기일 전후
-                vix_stocks = self._find_vix_sensitive_stocks()
-                
-                for stock in vix_stocks[:2]:
-                    opportunities.append({
-                        "stock_code": stock["code"],
-                        "reason": "옵션만기일 변동성 효과",
-                        "priority": 0.9,
-                        "type": "buy",
-                        "expiry": now + datetime.timedelta(days=1)
-                    })
-            
-            # 5. 계절 효과 (1월 효과, 9월 효과 등)
-            if now.month == 1 and now.day < 15:
-                # 1월 효과
-                small_cap_stocks = self._find_small_cap_stocks()
-                
-                for stock in small_cap_stocks[:3]:
-                    opportunities.append({
-                        "stock_code": stock["code"],
-                        "reason": "1월 효과(소형주)",
-                        "priority": 0.7,
-                        "type": "buy",
-                        "expiry": now + datetime.timedelta(days=10)
-                    })
-            
-            # 우선순위로 정렬
-            opportunities.sort(key=lambda x: x["priority"], reverse=True)
-            return opportunities
-            
-        except Exception as e:
-            logger.warning(f"매매 기회 발굴 중 오류: {e}")
-            return opportunities
 
     def update_dynamic_trailing_stop(self, stock_code: str, current_price: float, holding_info: Dict[str, any]) -> Dict[str, any]:
         """수익률에 따른 동적 트레일링 스탑 비율 설정 (이익 구간 보호)"""
@@ -4775,14 +4622,14 @@ def create_config_file(config_path: str = "trend_trader_config.json") -> None:
     config = {
         "watch_list": [
             {"code": "005490", "name": "POSCO홀딩스", "allocation_ratio": 0.15, "strategy": "BB_StochFilter"},
-            {"code": "373220", "name": "LG에너지솔루션", "allocation_ratio": 0.15, "strategy": "EnhancedMACDStrategy"},
-            {"code": "000660", "name": "SK하이닉스", "allocation_ratio": 0.15, "strategy": "HybridTrendStrategy"},
-            {"code": "035420", "name": "NAVER", "allocation_ratio": 0.15, "strategy": "MultiTimeframeRSIStrategy"},
+            {"code": "373220", "name": "LG에너지솔루션", "allocation_ratio": 0.15, "strategy": "BB_StochFilter"},
+            {"code": "000660", "name": "SK하이닉스", "allocation_ratio": 0.15, "strategy": "BB_StochFilter"},
+            {"code": "035420", "name": "NAVER", "allocation_ratio": 0.15, "strategy": "BB_StochFilter"},
             {"code": "005380", "name": "현대차", "allocation_ratio": 0.15, "strategy": "BB_StochFilter"},
-            {"code": "000100", "name": "유한양행", "allocation_ratio": 0.12, "strategy": "EnhancedRSIStrategy"},
-            {"code": "042660", "name": "한화오션", "allocation_ratio": 0.12, "strategy": "VolatilityBreakoutStrategy"},
+            {"code": "000100", "name": "유한양행", "allocation_ratio": 0.12, "strategy": "BB_StochFilter"},
+            {"code": "042660", "name": "한화오션", "allocation_ratio": 0.12, "strategy": "BB_StochFilter"},
             {"code": "051910", "name": "LG화학", "allocation_ratio": 0.15, "strategy": "BB_StochFilter"},
-            {"code": "000270", "name": "기아", "allocation_ratio": 0.15, "strategy": "EnhancedRSIStrategy"}
+            {"code": "000270", "name": "기아", "allocation_ratio": 0.15, "strategy": "BB_StochFilter"}
         ],
         "total_budget": 5000000,  # 총 투자 예산
         "max_stocks": 7,  # 최대 동시 보유 종목 수 (6에서 7로 증가)
@@ -4927,35 +4774,7 @@ def create_config_file(config_path: str = "trend_trader_config.json") -> None:
                     "require_volume_increase": False        # True에서 False로 변경
                 }
             },
-            
-            # MACD 기반 전략 (완화)
-            "MACD_Default": {
-                "type": "MACD",
-                "params": {
-                    "macd_fast_period": 6,
-                    "macd_slow_period": 19,
-                    "macd_signal_period": 7,
-                    "short_ma_period": 3,
-                    "long_ma_period": 15,
-                    "profit_target": 2.0,      # 3.0에서 2.0으로 하향
-                    "stop_loss_pct": 1.8,      # 2.0에서 1.8로 하향
-                    "use_minute_confirm": False,
-                    "use_trailing_stop": True,
-                    "trailing_stop_pct": 1.5,  # 2.0에서 1.5로 하향
-                    "dynamic_trailing": True,
-                    
-                    # 추가: 최소 보유 기간
-                    "min_holding_days": 0,     # 1에서 0으로 감소
-                    
-                    # 추가: 히스토그램 조건 완화
-                    "require_histogram_rising_consecutive": False,  # 계속 False 유지
-                    "histogram_rising_days": 1,  # 유지
-                    
-                    # 추가: 거래량 필터
-                    "require_volume_increase": False  # True에서 False로 변경
-                }
-            },
-            
+                        
             # 이동평균선 기반 전략 (완화)
             "MA_Default": {
                 "type": "MovingAverage",
