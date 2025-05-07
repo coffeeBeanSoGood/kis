@@ -460,7 +460,21 @@ class RSIStrategy(TradingStrategy):
         result["signals"]["daily"]["near_lower_band"] = price_near_lower_band
         
         # 매수 신호 결합 (RSI 과매도 + 볼린저 밴드 하단)
-        buy_signal = is_oversold and price_near_lower_band
+        if self.params.get("rsi_rebound_only", False):
+            # RSI 반등 조건 확인
+            rsi_rebounding = False
+            if len(daily_data) >= 3:
+                if daily_data['RSI'].iloc[-1] > daily_data['RSI'].iloc[-2]:
+                    rsi_rebounding = True
+            
+            # RSI 과매도 또는 RSI 반등 중 하나만 만족해도 매수 신호
+            buy_signal = is_oversold or (rsi_rebounding and daily_data['RSI'].iloc[-1] < 50)
+        else:
+            # 기존 로직 유지하되 볼린저 밴드 조건은 선택적
+            if self.params.get("require_price_near_lower_band", True):
+                buy_signal = is_oversold and price_near_lower_band
+            else:
+                buy_signal = is_oversold
         
         # 추가 확인 (선택): 분봉 데이터 분석
         use_minute_confirm = self.params.get("use_minute_confirm", False)
@@ -4614,42 +4628,42 @@ class TrendTraderBot:
 
 # 설정파일 생성 함수 개선
 def create_config_file(config_path: str = "trend_trader_config.json") -> None:
-    """기본 설정 파일 생성 (거래 적극성 대폭 강화)
+    """기본 설정 파일 생성 (거래 효율성 극대화)
     
     Args:
         config_path: 설정 파일 경로
     """
     config = {
         "watch_list": [
-            {"code": "005490", "name": "POSCO홀딩스", "allocation_ratio": 0.15, "strategy": "BB_StochFilter"},
-            {"code": "373220", "name": "LG에너지솔루션", "allocation_ratio": 0.15, "strategy": "BB_StochFilter"},
-            {"code": "000660", "name": "SK하이닉스", "allocation_ratio": 0.15, "strategy": "BB_StochFilter"},
+            {"code": "005490", "name": "POSCO홀딩스", "allocation_ratio": 0.15, "strategy": "RSI_Default"},
+            {"code": "373220", "name": "LG에너지솔루션", "allocation_ratio": 0.15, "strategy": "EnhancedRSIStrategy"},
+            {"code": "000660", "name": "SK하이닉스", "allocation_ratio": 0.15, "strategy": "EnhancedMACDStrategy"},
             {"code": "035420", "name": "NAVER", "allocation_ratio": 0.15, "strategy": "BB_StochFilter"},
-            {"code": "005380", "name": "현대차", "allocation_ratio": 0.15, "strategy": "BB_StochFilter"},
-            {"code": "000100", "name": "유한양행", "allocation_ratio": 0.12, "strategy": "BB_StochFilter"},
-            {"code": "042660", "name": "한화오션", "allocation_ratio": 0.12, "strategy": "BB_StochFilter"},
-            {"code": "051910", "name": "LG화학", "allocation_ratio": 0.15, "strategy": "BB_StochFilter"},
-            {"code": "000270", "name": "기아", "allocation_ratio": 0.15, "strategy": "BB_StochFilter"}
+            {"code": "005380", "name": "현대차", "allocation_ratio": 0.15, "strategy": "Composite_Premium"},
+            {"code": "000100", "name": "유한양행", "allocation_ratio": 0.12, "strategy": "MultiTimeframeRSIStrategy"},
+            {"code": "042660", "name": "한화오션", "allocation_ratio": 0.12, "strategy": "HybridTrendStrategy"},
+            {"code": "051910", "name": "LG화학", "allocation_ratio": 0.15, "strategy": "MultiTimeframeRSIStrategy"},
+            {"code": "000270", "name": "기아", "allocation_ratio": 0.15, "strategy": "VolatilityBreakoutStrategy"}
         ],
         "total_budget": 5000000,  # 총 투자 예산
-        "max_stocks": 7,  # 최대 동시 보유 종목 수 (6에서 7로 증가)
-        "min_trading_amount": 300000,  # 최소 거래 금액 (400000에서 300000으로 감소)
-        "use_market_trend_filter": False,  # 시장 추세 필터 비활성화 (True에서 False로 변경)
+        "max_stocks": 9,          # 최대 동시 보유 종목 수 (7에서 9로 증가)
+        "min_trading_amount": 300000,  # 최소 거래 금액
+        "use_market_trend_filter": False,  # 시장 추세 필터 비활성화
         "market_index_code": "069500",  # KODEX 200
-        "time_stop_days": 10,  # 타임 스탑 기준 일수 (12에서 10으로 감소)
-        "time_stop_profit_pct": 0.8,  # 타임 스탑 수익률 기준 (1.0에서 0.8로 하향)
-        "max_holding_days": 10,  # 최대 보유 기간 (12에서 10으로 감소)
+        "time_stop_days": 15,      # 타임 스탑 기준 일수 (10에서 15로 증가)
+        "time_stop_profit_pct": 1.0,  # 타임 스탑 수익률 기준 (0.8에서 1.0으로 상향)
+        "max_holding_days": 15,    # 최대 보유 기간 (10에서 15로 증가)
 
         # 거래 설정
         "trade_settings": {
-            "min_trade_interval": 3,       # 최소 거래 간격 (7에서 3으로 대폭 감소)
+            "min_trade_interval": 2,       # 최소 거래 간격 (3에서 2로 추가 감소)
             "use_trade_interval": True,    # 거래 간격 제한 사용 여부
             "track_trade_history": True    # 거래 이력 추적 사용 여부
         },
         
         # 백테스트 설정
         "backtest_settings": {
-            "min_trade_interval": 3,      # 최소 거래 간격 (7에서 3으로 대폭 감소)
+            "min_trade_interval": 2,      # 최소 거래 간격 (3에서 2로 추가 감소)
             "use_trade_interval": True,   # 거래 간격 제한 사용 여부
             "analyze_results": True,      # 백테스트 결과 자동 분석
             "auto_optimize": True,        # 자동 최적화
@@ -4658,78 +4672,76 @@ def create_config_file(config_path: str = "trend_trader_config.json") -> None:
         
         # 전략 가중치
         "strategy_weights": {
-            "RSI_Default": 1.2,
-            "EnhancedRSIStrategy": 1.4,
-            "MACD_Default": 0.7,
-            "EnhancedMACDStrategy": 1.2,
-            "BB_Default": 0.8,
-            "BB_StochFilter": 1.5,         # 1.3에서 1.5로 상향 (백테스트 결과에 따라 가중치 증가)
-            "MA_Default": 0.8,
-            "MultiTimeframeRSIStrategy": 1.4,
-            "HybridTrendStrategy": 1.3,
-            "VolatilityBreakoutStrategy": 1.2,
-            "Composite_Default": 1.4,
-            "Composite_Premium": 1.4
+            "RSI_Default": 1.5,            # 1.2에서 1.5로 상향
+            "EnhancedRSIStrategy": 1.6,    # 1.4에서 1.6으로 상향
+            "MACD_Default": 1.0,           # 0.7에서 1.0으로 상향
+            "EnhancedMACDStrategy": 1.4,   # 1.2에서 1.4로 상향
+            "BB_Default": 1.2,             # 0.8에서 1.2로 상향
+            "BB_StochFilter": 1.7,         # 1.5에서 1.7로 상향
+            "MA_Default": 1.1,             # 0.8에서 1.1로 상향
+            "MultiTimeframeRSIStrategy": 1.6, # 1.4에서 1.6으로 상향
+            "HybridTrendStrategy": 1.5,    # 1.3에서 1.5로 상향
+            "VolatilityBreakoutStrategy": 1.3, # 1.2에서 1.3으로 상향
+            "Composite_Default": 1.5,      # 1.4에서 1.5로 상향
+            "Composite_Premium": 1.6       # 1.4에서 1.6으로 상향
         },
         
         # 전략 정의
         "strategies": {
-            # 볼린저 밴드 전략 (대폭 완화)
+            # 볼린저 밴드 전략 (대폭 개선)
             "BB_Default": {
                 "type": "BollingerBand",
                 "params": {
                     "bb_period": 20,
-                    "bb_std": 1.5,           # 1.8에서 1.5로 더 낮춤 (더 자주 신호 발생)
-                    "profit_target": 2.0,     # 3.0에서 2.0으로 하향 (더 빠른 수익실현)
-                    "stop_loss_pct": 1.8,     # 2.0에서 1.8로 하향 (더 빠른 손절)
+                    "bb_std": 1.5,           # 이미 1.5로 설정됨
+                    "profit_target": 4.0,     # 2.0에서 4.0으로 상향 (더 큰 수익 추구)
+                    "stop_loss_pct": 3.0,     # 1.8에서 3.0으로 확대 (더 넓은 손절 범위)
                     "use_stochastic": True,
                     "stoch_k_period": 14,
                     "stoch_d_period": 3,
-                    "stoch_oversold_threshold": 30,  # 25에서 30으로 더 완화
-                    "stoch_overbought_threshold": 70, # 75에서 70으로 완화
-                    "require_stoch_oversold": False,  # 스토캐스틱 필수 조건 해제
+                    "stoch_oversold_threshold": 35,  # 30에서 35로 더 완화
+                    "stoch_overbought_threshold": 65, # 70에서 65로 조정
+                    "require_stoch_oversold": False,  # 이미 해제됨
                     "use_trailing_stop": True,
-                    "trailing_stop_pct": 1.5,  # 2.0에서 1.5로 하향 (더 타이트하게)
+                    "trailing_stop_pct": 2.5,  # 1.5에서 2.5로 확대 (더 여유있게)
                     "dynamic_trailing": True,
                     
-                    # 추가: 밴드 폭 확인
-                    "check_band_width": False,  # True에서 False로 변경 (더 많은 진입)
-                    "min_band_width_ratio": 0.02,  # 0.025에서 0.02로 더 완화
+                    # 추가: OR 조건 사용 (둘 중 하나만 만족해도 매수)
+                    "use_or_condition": True,  # 새로운 파라미터: 조건 간 OR 연산 사용
+                    "check_band_width": False,  # 이미 False로 설정됨
+                    "require_volume_increase": False,  # 이미 False로 설정됨
                     
-                    # 추가: 거래량 필터
-                    "require_volume_increase": False,  # True에서 False로 변경 (더 많은 진입)
-                    "min_volume_ratio": 0.6,  # 0.8에서 0.6으로 더 완화
-                    
-                    # 최소 보유 기간
-                    "min_holding_days": 0  # 1에서 0으로 감소 (당일 매매 허용)
+                    # 보유 기간 관련
+                    "min_holding_days": 0,  # 이미 0으로 설정됨
+                    "max_holding_days": 15  # 10에서 15로 늘림
                 }
             },
             
-            # 스토캐스틱 필터가 적용된 볼린저 밴드 전략 (대폭 완화)
+            # 스토캐스틱 필터가 적용된 볼린저 밴드 전략 (개선)
             "BB_StochFilter": {
                 "type": "BollingerBand",
                 "params": {
                     "bb_period": 20,
                     "bb_std": 1.5,
-                    "profit_target": 2.0,
-                    "stop_loss_pct": 2.0,  # 1.8에서 2.0으로 상향 (더 여유 있게)
+                    "profit_target": 4.0,     # 2.0에서 4.0으로 상향
+                    "stop_loss_pct": 3.0,     # 2.0에서 3.0으로 확대
                     "use_stochastic": True,
                     "stoch_k_period": 14,
                     "stoch_d_period": 3,
-                    "stoch_oversold_threshold": 30,
-                    "stoch_overbought_threshold": 70,
-                    "require_stochastic": False,
+                    "stoch_oversold_threshold": 35,  # 30에서 35로 더 완화
+                    "stoch_overbought_threshold": 65, # 70에서 65로 조정
+                    "require_stochastic": False,  # 이미 False로 설정됨
                     "use_trailing_stop": True,
-                    "trailing_stop_pct": 3.0,  # 1.5에서 3.0으로 대폭 상향 (더 여유 있게)
+                    "trailing_stop_pct": 2.5,  # 3.0에서 2.5로 조정 (적절한 범위)
                     "dynamic_trailing": True,
                     
                     # RSI 필터
                     "use_rsi_filter": False,
                     "rsi_period": 14,
-                    "rsi_oversold_threshold": 40,
+                    "rsi_oversold_threshold": 45,  # 40에서 45로 더 완화
                     
                     # 추가: 반등 확인 (매수 시점 최적화)
-                    "require_rebound": True,  # 새로 추가: 반등 확인
+                    "require_rebound": True,  # 새로운 파라미터: 반등 확인
                     "rebound_days": 1,        # 최소 1일 반등
                     "rebound_percent": 0.5,   # 0.5% 이상 반등
                     
@@ -4738,8 +4750,8 @@ def create_config_file(config_path: str = "trend_trader_config.json") -> None:
                     "min_band_width_ratio": 0.02,
                     
                     # 최소/최대 보유 기간
-                    "min_holding_days": 1,  # 0에서 1로 상향 (너무 짧은 거래 방지)
-                    "max_holding_days": 8,  # 최대 보유 기간 설정
+                    "min_holding_days": 0,  # 1에서 0으로 하향 (더 빠른 매도 가능)
+                    "max_holding_days": 15,  # 8에서 15로 상향
                     
                     # 거래량 조건
                     "require_volume_increase": False,
@@ -4747,208 +4759,203 @@ def create_config_file(config_path: str = "trend_trader_config.json") -> None:
                 }
             },
             
-            # RSI 기반 전략 (완화)
+            # RSI 기반 전략 (개선)
             "RSI_Default": {
                 "type": "RSI",
                 "params": {
                     "rsi_period": 14,
-                    "rsi_oversold_threshold": 40.0,  # 35에서 40으로 더 완화
-                    "rsi_overbought_threshold": 60.0, # 65에서 60으로 완화
-                    "profit_target": 2.0,        # 3.0에서 2.0으로 하향
-                    "stop_loss_pct": 1.8,        # 2.0에서 1.8로 하향
+                    "rsi_oversold_threshold": 45.0,  # 40에서 45로 더 완화
+                    "rsi_overbought_threshold": 60.0, # 이미 60으로 설정됨
+                    "profit_target": 4.0,        # 2.0에서 4.0으로 상향
+                    "stop_loss_pct": 3.0,        # 1.8에서 3.0으로 확대
                     "bb_period": 20,
-                    "bb_std": 1.5,               # 1.8에서 1.5로 낮춤
+                    "bb_std": 2.0,               # 1.5에서 2.0으로 원복
                     "use_minute_confirm": False,
                     "use_dynamic_stop": True,
                     "atr_period": 14,
-                    "atr_multiplier": 1.8,       # 2.0에서 1.8로 하향
+                    "atr_multiplier": 2.0,       # 1.8에서 2.0으로 상향
                     "use_trailing_stop": True,
-                    "trailing_stop_pct": 1.5,    # 2.0에서 1.5로 하향
+                    "trailing_stop_pct": 2.5,    # 1.5에서 2.5로 확대
                     "dynamic_trailing": True,
                     
-                    # 추가: 최소 보유 기간
-                    "min_holding_days": 0,     # 1에서 0으로 감소
-                    
-                    # 추가: 매수 시 추가 필터
-                    "require_price_near_lower_band": False,  # 계속 False 유지
-                    "require_volume_increase": False        # True에서 False로 변경
+                    # 추가: RSI 반등만으로도 매수 허용
+                    "rsi_rebound_only": True,   # 새로운 파라미터: RSI 반등만으로도 매수 신호 생성 
+                    "rsi_rebound_periods": 2,   # 2일 연속 RSI 상승 시 매수 신호 
+                    "require_price_near_lower_band": False,  # 이미 False로 설정됨
+                    "require_volume_increase": False        # 이미 False로 설정됨
                 }
             },
                         
-            # 이동평균선 기반 전략 (완화)
+            # 이동평균선 기반 전략 (개선)
             "MA_Default": {
                 "type": "MovingAverage",
                 "params": {
-                    "ma_short_period": 3,
-                    "ma_mid_period": 10,
-                    "ma_long_period": 30,
+                    "ma_short_period": 5,      # 3에서 5로 증가 (노이즈 감소)
+                    "ma_mid_period": 15,       # 10에서 15로 증가
+                    "ma_long_period": 40,      # 30에서 40으로 증가
                     "ma_strategy_type": "bounce",
-                    "profit_target": 2.0,      # 3.0에서 2.0으로 하향
-                    "stop_loss_pct": 1.8,      # 2.0에서 1.8로 하향
+                    "profit_target": 4.0,      # 2.0에서 4.0으로 상향
+                    "stop_loss_pct": 3.0,      # 1.8에서 3.0으로 확대
                     "use_trailing_stop": True,
-                    "trailing_stop_pct": 1.5,  # 2.0에서 1.5로 하향
+                    "trailing_stop_pct": 2.5,  # 1.5에서 2.5로 확대
                     "dynamic_trailing": True,
                     
-                    # 추가: 최소 보유 기간
-                    "min_holding_days": 0,     # 1에서 0으로 감소
-                    
-                    # 추가: 볼륨 필터
-                    "require_volume_increase": False,  # True에서 False로 변경
-                    
-                    # 추가: MA 정렬 필터
-                    "require_ma_alignment": False  # 계속 False 유지
+                    # 추가: 이평선 유연한 조건
+                    "flexible_ma_condition": True,  # 새로운 파라미터: 유연한 이평선 조건 사용
+                    "ma_distance_threshold": 1.0,   # 이평선 간 거리가 1% 이내면 정렬로 간주
+                    "min_holding_days": 0,     # 이미 0으로 설정됨
+                    "require_volume_increase": False,  # 이미 False로 설정됨
+                    "require_ma_alignment": False  # 이미 False로 설정됨
                 }
             },
             
-            # 기본 복합 전략 (완화)
+            # 기본 복합 전략 (개선)
             "Composite_Default": {
                 "type": "Composite",
                 "params": {
                     "strategies": ["RSI_Default", "BB_StochFilter"],
-                    "combine_method": "any",   # 계속 any 유지
-                    "profit_target": 2.0,      # 3.0에서 2.0으로 하향
-                    "stop_loss_pct": 1.8,      # 2.0에서 1.8로 하향
+                    "combine_method": "any",   # 이미 any로 설정됨
+                    "profit_target": 4.0,      # 2.0에서 4.0으로 상향
+                    "stop_loss_pct": 3.0,      # 1.8에서 3.0으로 확대
                     "use_trailing_stop": True,
-                    "trailing_stop_pct": 1.5,  # 2.0에서 1.5로 하향
+                    "trailing_stop_pct": 2.5,  # 1.5에서 2.5로 확대
                     "dynamic_trailing": True,
                     
-                    # 추가: 최소 보유 기간
-                    "min_holding_days": 0,     # 1에서 0으로 감소
+                    # 추가: 각 전략의 신호 강도에 가중치 부여
+                    "strategy_weights": {
+                        "RSI_Default": 1.2,
+                        "BB_StochFilter": 1.0
+                    },
+                    "weighted_threshold": 1.0,  # 가중 합이 이 값을 넘으면 매수 신호 발생
+                    "min_holding_days": 0,     # 이미 0으로 설정됨
                     
                     # 추가: 시장 상황 필터
-                    "use_market_filter": False,  # True에서 False로 변경
+                    "use_market_filter": False,  # 이미 False로 설정됨
                     
                     # 추가: 거래량 필터
-                    "require_volume_increase": False  # True에서 False로 변경
+                    "require_volume_increase": False  # 이미 False로 설정됨
                 }
             },
             
-            # 새로운 전략: 향상된 RSI 전략 (완화)
+            # 새로운 전략: 향상된 RSI 전략 (개선)
             "EnhancedRSIStrategy": {
                 "type": "EnhancedRSIStrategy",
                 "params": {
                     "rsi_period_short": 9,
                     "rsi_period": 14,
                     "rsi_period_long": 21,
-                    "rsi_oversold_threshold": 40.0,  # 35에서 40으로 더 완화
-                    "rsi_overbought_threshold": 60.0, # 65에서 60으로 완화
-                    "profit_target": 2.0,        # 3.0에서 2.0으로 하향
-                    "stop_loss_pct": 1.8,        # 2.0에서 1.8로 하향
+                    "rsi_oversold_threshold": 45.0,  # 40에서 45로 더 완화
+                    "rsi_overbought_threshold": 60.0, # 이미 60으로 설정됨
+                    "profit_target": 4.0,        # 2.0에서 4.0으로 상향
+                    "stop_loss_pct": 3.0,        # 1.8에서 3.0으로 확대
                     "bb_period": 20,
-                    "bb_std": 1.5,               # 1.8에서 1.5로 낮춤
+                    "bb_std": 2.0,               # 1.5에서 2.0으로 원복
                     "use_minute_confirm": False,
                     "use_dynamic_stop": True,
                     "atr_period": 14,
-                    "atr_multiplier": 1.8,       # 2.0에서 1.8로 하향
+                    "atr_multiplier": 2.0,       # 1.8에서 2.0으로 상향
                     "use_trailing_stop": True,
-                    "trailing_stop_pct": 1.5,    # 2.0에서 1.5로 하향
+                    "trailing_stop_pct": 2.5,    # 1.5에서 2.5로 확대
                     "dynamic_trailing": True,
                     
-                    # 추가: 다이버전스 감지
-                    "detect_divergence": False,  # True에서 False로 변경 (더 많은 진입)
-                    
-                    # 추가: 최소 보유 기간
-                    "min_holding_days": 0,      # 1에서 0으로 감소
-                    
-                    # 추가: 거래량 필터
-                    "require_volume_increase": False  # True에서 False로 변경
+                    # 다이버전스 감지 기능 활성화
+                    "detect_divergence": True,  # False에서 True로 변경
+                    "prioritize_short_rsi": True,  # 새로운 파라미터: 단기 RSI 우선
+                    "rsi_rebound_strength": 3.0,   # 새로운 파라미터: RSI 반등 최소 강도
+                    "min_holding_days": 0,      # 이미 0으로 설정됨
+                    "require_volume_increase": False  # 이미 False로 설정됨
                 }
             },
             
-            # 새로운 전략: 향상된 MACD 전략 (완화)
+            # 새로운 전략: 향상된 MACD 전략 (개선)
             "EnhancedMACDStrategy": {
                 "type": "EnhancedMACDStrategy",
                 "params": {
-                    "macd_fast_period": 8,
-                    "macd_slow_period": 21,
-                    "macd_signal_period": 7,
+                    "macd_fast_period": 6,      # 8에서 6으로 더 단축 (더 빠른 신호)
+                    "macd_slow_period": 19,     # 21에서 19로 단축
+                    "macd_signal_period": 5,    # 7에서 5로 단축
                     "short_ma_period": 3,
                     "mid_ma_period": 10,
                     "long_ma_period": 20,
                     "momentum_period": 10,
-                    "profit_target": 2.0,       # 3.0에서 2.0으로 하향
-                    "stop_loss_pct": 1.8,       # 2.0에서 1.8로 하향
+                    "profit_target": 4.0,       # 2.0에서 4.0으로 상향
+                    "stop_loss_pct": 3.0,       # 1.8에서 3.0으로 확대
                     "use_minute_confirm": False,
                     "use_trailing_stop": True,
-                    "trailing_stop_pct": 1.5,   # 2.0에서 1.5로 하향
+                    "trailing_stop_pct": 2.5,   # 1.5에서 2.5로 확대
                     "dynamic_trailing": True,
-                    "min_profit_for_hist_sell": 2.0,  # 3.0에서 2.0으로 하향
+                    "min_profit_for_hist_sell": 3.0,  # 2.0에서 3.0으로 상향
                     
-                    # 추가: 최소 보유 기간
-                    "min_holding_days": 0,     # 1에서 0으로 감소
-                    
-                    # 추가: 거래량 필터
-                    "require_volume_increase": False,  # True에서 False로 변경
-                    
-                    # 추가: MA 정렬 필터
-                    "require_ma_alignment": False  # 계속 False 유지
+                    # 추가: 현재가 < 20일 이평선 조건 제거
+                    "require_price_below_ma": False,  # 새로운 파라미터: 가격이 이평선 아래일 필요 없음
+                    # 추가: 히스토그램 상승 조건 완화
+                    "histogram_rising_periods": 1,    # 1일만 상승해도 신호 인정
+                    "min_holding_days": 0,     # 이미 0으로 설정됨
+                    "require_volume_increase": False,  # 이미 False로 설정됨
+                    "require_ma_alignment": False  # 이미 False로 설정됨
                 }
             },
             
-            # 새로운 전략: 멀티타임프레임 RSI 전략 (완화)
+            # 새로운 전략: 멀티타임프레임 RSI 전략 (개선)
             "MultiTimeframeRSIStrategy": {
                 "type": "MultiTimeframeRSIStrategy",
                 "params": {
                     "rsi_period": 14,
-                    "daily_rsi_oversold_threshold": 40.0,  # 35에서 40으로 더 완화
-                    "daily_rsi_overbought_threshold": 60.0, # 65에서 60으로 완화
-                    "weekly_rsi_oversold_threshold": 45.0,  # 계속 45 유지
-                    "weekly_rsi_overbought_threshold": 60.0, # 65에서 60으로 완화
-                    "profit_target": 2.0,      # 3.0에서 2.0으로 하향
-                    "stop_loss_pct": 1.8,      # 2.0에서 1.8로 하향
+                    "daily_rsi_oversold_threshold": 45.0,  # 40에서 45로 더 완화
+                    "daily_rsi_overbought_threshold": 60.0, # 이미 60으로 설정됨
+                    "weekly_rsi_oversold_threshold": 50.0,  # 45에서 50으로 더 완화
+                    "weekly_rsi_overbought_threshold": 60.0, # 이미 60으로 설정됨
+                    "profit_target": 4.0,      # 2.0에서 4.0으로 상향
+                    "stop_loss_pct": 3.0,      # 1.8에서 3.0으로 확대
                     "bb_period": 20,
-                    "bb_std": 1.5,             # 1.8에서 1.5로 낮춤
+                    "bb_std": 2.0,             # 1.5에서 2.0으로 원복
                     "use_trailing_stop": True,
-                    "trailing_stop_pct": 1.5,  # 2.0에서 1.5로 하향
+                    "trailing_stop_pct": 2.5,  # 1.5에서 2.5로 확대
                     "dynamic_trailing": True,
-                    "min_profit_for_band_sell": 1.5,  # 2.0에서 1.5로 하향
+                    "min_profit_for_band_sell": 2.5,  # 1.5에서 2.5로 상향
                     
-                    # 추가: 최소 보유 기간
-                    "min_holding_days": 0,     # 1에서 0으로 감소
-                    
-                    # 추가: 거래량 필터
-                    "require_volume_increase": False,  # True에서 False로 변경
-                    
-                    # 추가: 밴드 폭 확인
-                    "check_band_width": False,  # True에서 False로 변경
-                    "min_band_width_ratio": 0.02  # 0.025에서 0.02로 완화
+                    # 추가: 타임프레임 간 OR 조건 허용
+                    "require_both_timeframes": False,  # 새로운 파라미터: 둘 다 필요하지 않음
+                    "daily_priority_weight": 0.7,      # 새로운 파라미터: 일봉에 70% 가중치
+                    "weekly_declining_only": True,     # 새로운 파라미터: 주봉은 하락 중일 때만 체크
+                    "min_holding_days": 0,     # 이미 0으로 설정됨
+                    "require_volume_increase": False,  # 이미 False로 설정됨
+                    "check_band_width": False  # 이미 False로 설정됨
                 }
             },
             
-            # 새로운 전략: 하이브리드 추세 전략 (완화)
+            # 새로운 전략: 하이브리드 추세 전략 (개선)
             "HybridTrendStrategy": {
                 "type": "HybridTrendStrategy",
                 "params": {
                     "adx_period": 14,
-                    "strong_trend_threshold": 15,  # 20에서 15로 더 하향
-                    "sideways_threshold": 10,     # 15에서 10으로 더 하향
-                    "macd_fast_period": 8,
-                    "macd_slow_period": 21,
-                    "macd_signal_period": 7,
+                    "strong_trend_threshold": 20,  # 15에서 20으로 상향 (더 확실한 추세만 포착)
+                    "sideways_threshold": 15,     # 10에서 15로 상향
+                    "macd_fast_period": 6,        # 8에서 6으로 단축
+                    "macd_slow_period": 19,       # 21에서 19로 단축
+                    "macd_signal_period": 5,      # 7에서 5로 단축
                     "rsi_period": 14,
-                    "rsi_oversold_threshold": 40.0,  # 35에서 40으로 더 완화
-                    "rsi_overbought_threshold": 60.0, # 65에서 60으로 완화
+                    "rsi_oversold_threshold": 45.0,  # 40에서 45로 더 완화
+                    "rsi_overbought_threshold": 60.0, # 이미 60으로 설정됨
                     "bb_period": 20,
-                    "bb_std": 1.5,              # 1.8에서 1.5로 낮춤
-                    "profit_target": 2.0,       # 3.0에서 2.0으로 하향
-                    "stop_loss_pct": 1.8,       # 2.0에서 1.8로 하향
+                    "bb_std": 2.0,              # 1.5에서 2.0으로 원복
+                    "profit_target": 4.0,       # 2.0에서 4.0으로 상향
+                    "stop_loss_pct": 3.0,       # 1.8에서 3.0으로 확대
                     "use_trailing_stop": True,
-                    "trailing_stop_pct": 1.5,   # 2.0에서 1.5로 하향
+                    "trailing_stop_pct": 2.5,   # 1.5에서 2.5로 확대
                     "dynamic_trailing": True,
-                    "min_profit_for_hist_sell": 2.0,  # 3.0에서 2.0으로 하향
+                    "min_profit_for_hist_sell": 3.0,  # 2.0에서 3.0으로 상향
                     
-                    # 추가: 최소 보유 기간
-                    "min_holding_days": 0,     # 1에서 0으로 감소
-                    
-                    # 추가: 거래량 필터
-                    "require_volume_increase": False,  # True에서 False로 변경
-                    
-                    # 추가: ADX 최소값 설정
-                    "min_adx_value": 10  # 15에서 10으로 더 하향
+                    # 추가: 상승/하락 추세 우선순위 설정
+                    "prioritize_uptrend": True,   # 새로운 파라미터: 상승 추세 우선
+                    "uptrend_strength_bias": 0.8, # 상승 추세 판단 시 20% 할인 적용
+                    "min_holding_days": 0,     # 이미 0으로 설정됨
+                    "require_volume_increase": False,  # 이미 False로 설정됨
+                    "min_adx_value": 15  # 10에서 15로 상향 (더 확실한 추세만)
                 }
             },
             
-            # 변동성 돌파 전략 (완화)
+            # 변동성 돌파 전략 (개선)
             "VolatilityBreakoutStrategy": {
                 "type": "VolatilityBreakoutStrategy",
                 "params": {
@@ -4956,90 +4963,96 @@ def create_config_file(config_path: str = "trend_trader_config.json") -> None:
                     "k_value": 0.4,            # 0.5에서 0.4로 하향 (더 빠른 진입)
                     "ma_short_period": 5,
                     "ma_long_period": 20,
-                    "profit_target": 2.0,      # 3.0에서 2.0으로 하향
-                    "stop_loss_pct": 1.5,      # 1.8에서 1.5로 하향
-                    "use_volatility_filter": False,  # True에서 False로 변경
-                    "use_volume_filter": False,     # True에서 False로 변경
-                    "use_trend_filter": False,      # 계속 False 유지
+                    "profit_target": 4.0,      # 2.0에서 4.0으로 상향
+                    "stop_loss_pct": 3.0,      # 1.5에서 3.0으로 확대
+                    "use_volatility_filter": False,  # 이미 False로 설정됨
+                    "use_volume_filter": False,     # 이미 False로 설정됨
+                    "use_trend_filter": False,      # 이미 False로 설정됨
                     "use_trailing_stop": True,
-                    "trailing_stop_pct": 1.5,    # 2.0에서 1.5로 하향
+                    "trailing_stop_pct": 2.5,    # 1.5에서 2.5로 확대
                     "dynamic_trailing": True,
                     "use_intraday_exit": False,
-                    "intraday_profit_target": 1.5,  # 2.0에서 1.5로 하향
-                    "end_of_day_stop_loss": -0.8,   # -1.0에서 -0.8로 상향
+                    "intraday_profit_target": 2.5,  # 1.5에서 2.5로 상향
+                    "end_of_day_stop_loss": -1.5,   # -0.8에서 -1.5로 완화
                     
                     # 추가: 최소 보유 기간
-                    "min_holding_days": 0      # 1에서 0으로 감소
+                    "min_holding_days": 0      # 이미 0으로 설정됨
                 }
             },
             
-            # 최적화된 프리미엄 복합 전략 (완화)
+            # 최적화된 프리미엄 복합 전략 (개선)
             "Composite_Premium": {
                 "type": "Composite",
                 "params": {
                     "strategies": ["EnhancedRSIStrategy", "BB_StochFilter"],
-                    "combine_method": "any",  # 계속 any 유지
-                    "profit_target": 2.0,     # 3.0에서 2.0으로 하향
-                    "stop_loss_pct": 1.8,     # 2.0에서 1.8로 하향
+                    "combine_method": "any",  # 이미 any로 설정됨
+                    "profit_target": 4.0,     # 2.0에서 4.0으로 상향
+                    "stop_loss_pct": 3.0,     # 1.8에서 3.0으로 확대
                     "use_trailing_stop": True,
-                    "trailing_stop_pct": 1.5, # 2.0에서 1.5로 하향
+                    "trailing_stop_pct": 2.5, # 1.5에서 2.5로 확대
                     "dynamic_trailing": True,
                     
+                    # 새로운 가중치 파라미터: 각 전략의 신호 강도에 가중치 부여
+                    "strategy_weights": {
+                        "EnhancedRSIStrategy": 1.5,
+                        "BB_StochFilter": 1.0
+                    },
+                    "weighted_threshold": 1.0,  # 가중 합이 이 값을 넘으면 매수 신호 발생
+                    
                     # 추가: 최소 보유 기간
-                    "min_holding_days": 0,    # 1에서 0으로 감소
+                    "min_holding_days": 0,    # 이미 0으로 설정됨
                     
                     # 추가: 최대 보유 기간
-                    "max_holding_days": 10,   # 12에서 10으로 감소
+                    "max_holding_days": 15,   # 10에서 15로 증가
                     
                     # 추가: 시장 상황 필터
-                    "use_market_filter": False,  # True에서 False로 변경
+                    "use_market_filter": False,  # 이미 False로 설정됨
                     
                     # 추가: 거래량 필터
-                    "require_volume_increase": False,  # True에서 False로 변경
+                    "require_volume_increase": False,  # 이미 False로 설정됨
                     
                     # 추가: 밴드 폭 확인
-                    "check_band_width": False,  # True에서 False로 변경
+                    "check_band_width": False,  # 이미 False로 설정됨
                     "min_band_width_ratio": 0.02  # 0.025에서 0.02로 완화
                 }
             }
         },
         
-        # 위험 관리 설정 (완화)
+        # 위험 관리 설정 (개선)
         "risk_management": {
             "use_dynamic_trailing_stop": True,
             "use_time_stop": True,
             "monitor_portfolio_risk": True,
-            "conservative_mode_threshold": 20.0,     # 15.0에서 20.0으로 상향 (덜 보수적)
-            "normal_mode_threshold": 15.0,           # 10.0에서 15.0으로 상향
-            "conservative_profit_target_ratio": 0.9, # 0.85에서 0.9로 상향 (덜 보수적)
-            "market_condition_check_interval": 20,
-            "position_size_limit_ratio": 0.3,        # 0.25에서 0.3으로 상향 (종목당 비중 증가)
-            "sector_exposure_limit": 0.4             # 0.35에서 0.4로 상향 (섹터 다양화 완화)
+            "conservative_mode_threshold": 25.0,     # 20.0에서 25.0으로 상향 (덜 보수적)
+            "normal_mode_threshold": 20.0,           # 15.0에서 20.0으로 상향
+            "conservative_profit_target_ratio": 0.8, # 0.9에서 0.8로 하향 (보수 모드에서도 더 큰 목표)
+            "market_condition_check_interval": 30,   # 20에서 30으로 증가 (덜 자주 체크)
+            "position_size_limit_ratio": 0.4,        # 0.3에서 0.4로 상향 (종목당 비중 증가)
+            "sector_exposure_limit": 0.5             # 0.4에서 0.5로 상향 (섹터 다양화 완화)
         },
         
         # 동적 트레일링 스탑 설정 (최적화)
         "dynamic_trailing_stop": {
-            "very_high_profit_pct": 6.0,
-            "very_high_profit_ratio": 0.5,    # 0.3에서 0.5로 상향 (덜 타이트하게)
-            "high_profit_pct": 4.0,
-            "high_profit_ratio": 0.6,         # 0.4에서 0.6으로 상향 (덜 타이트하게)
-            "medium_profit_pct": 2.5,
-            "medium_profit_ratio": 0.7,       # 0.5에서 0.7로 상향 (덜 타이트하게)
-            "low_profit_pct": 1.5,
-            "low_profit_ratio": 0.8,          # 0.7에서 0.8로 상향 (덜 타이트하게)
-            "minimal_profit_pct": 0.8,
+            "very_high_profit_pct": 8.0,      # 6.0에서 8.0으로 상향
+            "very_high_profit_ratio": 0.6,    # 0.5에서 0.6으로 상향 (덜 타이트하게)
+            "high_profit_pct": 6.0,           # 4.0에서 6.0으로 상향
+            "high_profit_ratio": 0.7,         # 0.6에서 0.7로 상향 (덜 타이트하게)
+            "medium_profit_pct": 4.0,         # 2.5에서 4.0으로 상향
+            "medium_profit_ratio": 0.8,       # 0.7에서 0.8로 상향 (덜 타이트하게)
+            "low_profit_pct": 2.5,            # 1.5에서 2.5로 상향
+            "low_profit_ratio": 0.9,          # 0.8에서 0.9로 상향 (덜 타이트하게)
+            "minimal_profit_pct": 1.5,        # 0.8에서 1.5로 상향
             "minimal_profit_ratio": 1.0,
-            "min_profit_to_apply": 0.8
+            "min_profit_to_apply": 1.5        # 0.8에서 1.5로 상향
         }
     }
-    
+                
     try:
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, ensure_ascii=False, indent=4)
-        logger.info(f"기본 설정 파일 생성 완료: {config_path}")
+        logger.info(f"개선된 설정 파일 생성 완료: {config_path}")
     except Exception as e:
-        logger.exception(f"설정 파일 생성 중 오류: {str(e)}")
-
+        logger.exception(f"설정 파일 생성 중 오류: {str(e)}")            
 
 # 메인 함수
 def main():
