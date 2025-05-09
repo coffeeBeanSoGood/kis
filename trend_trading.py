@@ -355,6 +355,17 @@ class TrendTraderBot:
         self.macd_fast_period = trading_strategies.get("macd_fast_period")
         self.macd_slow_period = trading_strategies.get("macd_slow_period")
         self.macd_signal_period = trading_strategies.get("macd_signal_period")
+
+        # 아래는 추가할 속성들 - run 메서드에서 필요한 설정
+        self.check_interval_seconds = trading_strategies.get("check_interval_seconds", 3600)
+        self.default_allocation_ratio = trading_strategies.get("default_allocation_ratio", 0.2)
+        self.use_split_purchase = trading_strategies.get("use_split_purchase", True)
+        self.initial_purchase_ratio = trading_strategies.get("initial_purchase_ratio", 0.5)
+        self.additional_purchase_drop_pct = trading_strategies.get("additional_purchase_drop_pct", [1.5])
+        self.score_weights = trading_strategies.get("score_weights", {})
+        self.use_dynamic_stop = trading_strategies.get("use_dynamic_stop", False)
+        self.use_trailing_stop = trading_strategies.get("use_trailing_stop", False)
+        self.trailing_stop_pct = trading_strategies.get("trailing_stop_pct", 1.8)
         
         self.holdings = {}  # 보유 종목 정보
         self.last_check_time = {}  # 마지막 검사 시간
@@ -885,8 +896,7 @@ class TrendTraderBot:
                 now = datetime.datetime.now()
                 
                 # 설정에서 확인 주기 값 가져오기
-                check_interval = self.config.get("trading_strategies", {}).get("check_interval_seconds", 3600)
-                if last_check and (now - last_check).seconds < check_interval:
+                if last_check and (now - last_check).seconds < self.check_interval_seconds:
                     continue
                 
                 # 종목 분석
@@ -902,9 +912,8 @@ class TrendTraderBot:
             # 매수 후보가 있으면 점수 기반으로 정렬
             if buy_candidates:
                 # 후보 종목들에 점수 부여 및 정렬
-                trading_strategies = self.config.get("trading_strategies", {})
-                score_weights = trading_strategies.get("score_weights", {})
-                
+                score_weights = self.score_weights
+
                 for candidate in buy_candidates:
                     score = 0
                     signals = candidate.get("signals", {})
@@ -950,16 +959,15 @@ class TrendTraderBot:
                     
                     # 종목별 예산 배분 계산
                     stock_info = self.watch_list_info.get(stock_code, {})
-                    allocation_ratio = stock_info.get("allocation_ratio", self.config.get("default_allocation_ratio", 0.2))
-                    
+                    # 수정 후:
+                    allocation_ratio = stock_info.get("allocation_ratio", self.default_allocation_ratio)                    
                     # 예산 내에서 매수 수량 결정
                     allocated_budget = min(self.total_budget * allocation_ratio, available_cash)
                     
                     # 분할 매수 전략 적용
-                    trading_strategies = self.config.get("trading_strategies", {})
-                    use_split = trading_strategies.get("use_split_purchase", True)
-                    initial_ratio = trading_strategies.get("initial_purchase_ratio", 0.5)
-                    
+                    use_split = self.use_split_purchase
+                    initial_ratio = self.initial_purchase_ratio
+
                     if use_split:
                         # 설정에서 초기 매수 비율 가져오기 (랜덤 변동 ±10%)
                         variation = 0.1  # 10% 변동
@@ -1019,17 +1027,16 @@ class TrendTraderBot:
                                 "used_budget": buy_amount,
                                 "remaining_budget": allocated_budget - buy_amount,
                                 # 동적 손절가 추가
-                                "use_dynamic_stop": trading_strategies.get("use_dynamic_stop", False),
+                                "use_dynamic_stop": self.use_dynamic_stop,
                                 "dynamic_stop_price": candidate.get("technical_data", {}).get("dynamic_stop_loss", 0),
                                 # 전략 관리 종목 표시
                                 "is_strategy_managed": True
                             }
                             
                             # 트레일링 스탑 가격 설정
-                            if trading_strategies.get("use_trailing_stop", False):
-                                trailing_pct = trading_strategies.get("trailing_stop_pct", 1.8)
-                                self.holdings[stock_code]["trailing_stop_price"] = current_price * (1 - trailing_pct/100)
-                                
+                            if self.use_trailing_stop:
+                                self.holdings[stock_code]["trailing_stop_price"] = current_price * (1 - self.trailing_stop_pct/100)
+
                             self._save_holdings()
                             
                             # 사용 가능한 슬롯 감소
@@ -1059,9 +1066,8 @@ class TrendTraderBot:
                 profit_percent = ((current_price / avg_price) - 1) * 100
                 
                 # 추가 매수 조건: 수익률이 설정된 하락률 이상 하락했을 때
-                trading_strategies = self.config.get("trading_strategies", {})
-                drop_thresholds = trading_strategies.get("additional_purchase_drop_pct", [1.5])
-                drop_pct = drop_thresholds[0] if drop_thresholds else 1.5
+                drop_thresholds = self.additional_purchase_drop_pct
+                drop_pct = drop_thresholds[0] if drop_thresholds else 1.5                
                 
                 if profit_percent <= -drop_pct:  # 설정된 하락률 이상 하락했을 때
                     remaining_budget = holding_info.get("remaining_budget", 0)
