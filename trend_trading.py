@@ -341,30 +341,24 @@ class TrendTraderBot:
         self.watch_list = [item.get("code") for item in self.config.get("watch_list", [])]
         self.watch_list_info = {item.get("code"): item for item in self.config.get("watch_list", [])}
         
-        self.total_budget = self.config.get("total_budget", 5000000)  # 기본 총 예산 500만원
-        self.profit_target = self.config.get("profit_target", 5.0)  # 목표 수익률 (%)
-        self.stop_loss = self.config.get("stop_loss", -3.0)  # 손절 비율 (%)
-        self.max_stocks = self.config.get("max_stocks", 5)  # 최대 동시 보유 종목 수
+        # 여기서 하드코딩된 기본값을 제거하고 항상 config에서 가져옴
+        self.total_budget = self.config.get("total_budget")
+        self.profit_target = self.config.get("profit_target")
+        self.stop_loss = self.config.get("stop_loss")
+        self.max_stocks = self.config.get("max_stocks")
+        self.min_trading_amount = self.config.get("min_trading_amount")
         
         # 매매 전략 설정
         trading_strategies = self.config.get("trading_strategies", {})
-        self.rsi_oversold = trading_strategies.get("rsi_oversold_threshold", 30.0)
-        self.rsi_overbought = trading_strategies.get("rsi_overbought_threshold", 70.0)
-        self.macd_fast_period = trading_strategies.get("macd_fast_period", 12)
-        self.macd_slow_period = trading_strategies.get("macd_slow_period", 26)
-        self.macd_signal_period = trading_strategies.get("macd_signal_period", 9)
+        self.rsi_oversold = trading_strategies.get("rsi_oversold_threshold")
+        self.rsi_overbought = trading_strategies.get("rsi_overbought_threshold")
+        self.macd_fast_period = trading_strategies.get("macd_fast_period")
+        self.macd_slow_period = trading_strategies.get("macd_slow_period")
+        self.macd_signal_period = trading_strategies.get("macd_signal_period")
         
         self.holdings = {}  # 보유 종목 정보
         self.last_check_time = {}  # 마지막 검사 시간
-        
-        # 로그 파일명 설정
-        today = datetime.datetime.now().strftime("%Y%m%d")
-        self.log_file = f"trend_trading_{today}.log"
-        
-        # 보유종목 정보 로드
-        self._load_holdings()
 
-    
     def _load_config(self, config_path: str) -> Dict[str, any]:
         """설정 파일 로드
         
@@ -374,27 +368,98 @@ class TrendTraderBot:
         Returns:
             Dict: 설정 정보
         """
+        # 기본 설정값 정의
+        default_config = {
+            "api_key": "",
+            "api_secret": "",
+            "account_number": "",
+            "account_code": "",
+            "watch_list": [],
+            "sector_list": [],
+            "total_budget": 5000000,
+            "profit_target": 5.0,
+            "stop_loss": -2.0,
+            "max_stocks": 4,
+            "min_trading_amount": 300000,
+            "trading_strategies": {
+                "rsi_oversold_threshold": 30.0,
+                "rsi_overbought_threshold": 68.0,
+                "macd_fast_period": 10,
+                "macd_slow_period": 24,
+                "macd_signal_period": 8,
+                "use_trailing_stop": True,
+                "trailing_stop_pct": 1.8,
+                "use_dynamic_stop": True,
+                "atr_period": 10,
+                "atr_multiplier": 1.5,
+                "use_split_purchase": True,
+                "initial_purchase_ratio": 0.50,
+                "additional_purchase_ratios": [0.30, 0.20],
+                "additional_purchase_drop_pct": [1.5, 3.0],
+                "bollinger_period": 18,
+                "bollinger_std": 2.0,
+                "short_ma_period": 5,
+                "mid_ma_period": 20,
+                "long_ma_period": 60,
+                "use_partial_profit": True,
+                "partial_profit_target": 4.0,
+                "partial_profit_ratio": 0.5,
+                "use_time_filter": True,
+                "avoid_trading_hours": ["09:00-10:00", "14:30-15:30"],
+                "use_consecutive_drop_filter": True,
+                "consecutive_drop_days": 2,
+                "use_daily_trend_filter": True,
+                "use_market_trend_filter": True,
+                "market_index_code": "069500",
+                "daily_trend_lookback": 3,
+                "score_weights": {
+                    "rsi_oversold": 3,
+                    "golden_cross": 2,
+                    "macd_cross_up": 3,
+                    "near_lower_band": 2,
+                    "momentum_turning_up": 1,
+                    "near_support": 3,
+                    "minute_rsi_oversold": 1,
+                    "minute_macd_cross_up": 1,
+                    "consecutive_drop": 2
+                }
+            }
+        }
+        
         try:
+            # 설정 파일 열기
             with open(config_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                loaded_config = json.load(f)
+            
+            # 재귀적으로 설정값 병합 함수 정의
+            def merge_config(default, loaded):
+                result = default.copy()
+                for key, value in loaded.items():
+                    # 딕셔너리인 경우 재귀적으로 병합
+                    if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+                        result[key] = merge_config(result[key], value)
+                    else:
+                        result[key] = value
+                return result
+            
+            # 기본 설정과 로드된 설정 병합
+            merged_config = merge_config(default_config, loaded_config)
+            
+            logger.info(f"설정 파일 로드 완료: {config_path}")
+            return merged_config
+        
         except FileNotFoundError:
             logger.warning(f"설정 파일 {config_path}을 찾을 수 없습니다. 기본값을 사용합니다.")
-            # 기본 설정 반환
-            return {
-                "api_key": "",
-                "api_secret": "",
-                "account_number": "",
-                "account_code": "",
-                "watch_list": [],
-                "sector_list": [],
-                "budget": 1000000,
-                "profit_target": 5.0,
-                "stop_loss": -3.0
-            }
+            return default_config
+        
+        except json.JSONDecodeError:
+            logger.error(f"설정 파일 {config_path}의 형식이 올바르지 않습니다. 기본값을 사용합니다.")
+            return default_config
+        
         except Exception as e:
             logger.exception(f"설정 파일 로드 중 오류: {str(e)}")
-            return {}
-    
+            return default_config
+
     def _save_config(self, config_path: str = "trend_trader_config.json") -> None:
         """설정 파일 저장
         
@@ -408,45 +473,45 @@ class TrendTraderBot:
         except Exception as e:
             logger.exception(f"설정 파일 저장 중 오류: {str(e)}")
 
-
     # 트레일링 스탑 구현을 위한 holdings 구조 확장
     def _load_holdings(self) -> None:
-        """보유 종목 정보 로드 (트레일링 스탑 지원)"""
+        """전략 관리 종목 정보 로드"""
         try:
-            # API로 계좌 잔고 가져오기
-            account_balance = KisKR.GetBalance()
-            
-            if not account_balance or isinstance(account_balance, str):
-                logger.warning("계좌 잔고 정보를 가져올 수 없습니다.")
-                return
-            
-            # 보유종목 정보 가져오기
-            stock_list = KisKR.GetMyStockList()
-            
-            # 보유중인 종목 추가
-            for stock in stock_list:
-                stock_code = stock.get("StockCode")
-                if stock_code:
-                    current_price = float(stock.get("StockNowPrice", 0))
+            if os.path.exists("trend_strategy_holdings.json"):
+                with open("trend_strategy_holdings.json", 'r', encoding='utf-8') as f:
+                    self.holdings = json.load(f)
                     
-                    self.holdings[stock_code] = {
-                        "quantity": int(stock.get("StockAmt", 0)),
-                        "avg_price": float(stock.get("StockAvgPrice", 0)),
-                        "current_price": current_price,
-                        "buy_date": datetime.datetime.now().strftime("%Y%m%d"),
-                        "highest_price": current_price,  # 트레일링 스탑을 위한 최고가 기록
-                        "trailing_stop_price": 0  # 트레일링 스탑 가격
-                    }
-                    
-                    # 트레일링 스탑 가격 설정
-                    if self.config.get("trading_strategies", {}).get("use_trailing_stop", False):
-                        trailing_pct = self.config.get("trading_strategies", {}).get("trailing_stop_pct", 2.0)
-                        self.holdings[stock_code]["trailing_stop_price"] = current_price * (1 - trailing_pct/100)
-            
-            logger.info(f"보유 종목 로드 완료: {len(self.holdings)}개")
+                logger.info(f"전략 관리 종목 로드 완료: {len(self.holdings)}개")
+                
+                # 현재가 업데이트
+                for stock_code in list(self.holdings.keys()):
+                    current_price = KisKR.GetCurrentPrice(stock_code)
+                    if current_price is not None and not isinstance(current_price, str):
+                        self.holdings[stock_code]["current_price"] = current_price
+                    else:
+                        # 종목 정보를 가져올 수 없으면 제거 (옵션)
+                        logger.warning(f"종목 {stock_code} 현재가를 조회할 수 없습니다. 홀딩에서 제거합니다.")
+                        del self.holdings[stock_code]
+            else:
+                logger.info("전략 관리 종목 파일이 없습니다.")
+                self.holdings = {}
         except Exception as e:
-            logger.exception(f"보유 종목 로드 중 오류: {str(e)}")
+            logger.exception(f"전략 관리 종목 로드 중 오류: {str(e)}")
+            self.holdings = {}
 
+    def _save_holdings(self) -> None:
+        """보유 종목 정보 저장"""
+        try:
+            # 전략 관리 종목만 필터링
+            strategy_holdings = {k: v for k, v in self.holdings.items() 
+                                if v.get("is_strategy_managed", False)}
+                                
+            with open("trend_strategy_holdings.json", 'w', encoding='utf-8') as f:
+                json.dump(strategy_holdings, f, ensure_ascii=False, indent=4)
+                
+            logger.info(f"전략 관리 종목 정보 저장 완료: {len(strategy_holdings)}개")
+        except Exception as e:
+            logger.exception(f"전략 관리 종목 정보 저장 중 오류: {str(e)}")
 
     def _save_holdings(self) -> None:
         """보유 종목 정보 저장"""
@@ -544,7 +609,7 @@ class TrendTraderBot:
             if not daily_data.empty:
                 current_atr = daily_data['ATR'].iloc[-1]
                 if not pd.isna(current_atr):
-                    atr_multiplier = self.config.get("trading_strategies", {}).get("atr_multiplier", 2.0)
+                    atr_multiplier = self.config.get("trading_strategies", {}).get("atr_multiplier")
                     dynamic_stop_loss = self.tech_indicators.calculate_dynamic_stop_loss(
                         current_price, current_atr, atr_multiplier
                     )
@@ -649,13 +714,16 @@ class TrendTraderBot:
             logger.exception(f"종목 {stock_code} 분석 중 오류: {str(e)}")
             return {"is_buy_signal": False, "reason": f"분석 오류: {str(e)}"}
 
-
     # 트레일링 스탑 로직을 포함한 check_sell_signals 메서드
     def check_sell_signals(self) -> None:
         """보유 종목 매도 시그널 확인 (트레일링 스탑 포함)"""
         try:
             for stock_code, holding_info in list(self.holdings.items()):
                 current_price = KisKR.GetCurrentPrice(stock_code)
+                # 전략 관리 종목만 처리
+                if not holding_info.get("is_strategy_managed", False):
+                    continue
+
                 if current_price is None or isinstance(current_price, str):
                     logger.warning(f"종목 {stock_code} 현재가를 조회할 수 없습니다.")
                     continue
@@ -816,7 +884,9 @@ class TrendTraderBot:
                 last_check = self.last_check_time.get(stock_code, None)
                 now = datetime.datetime.now()
                 
-                if last_check and (now - last_check).seconds < 3600:
+                # 설정에서 확인 주기 값 가져오기
+                check_interval = self.config.get("trading_strategies", {}).get("check_interval_seconds", 3600)
+                if last_check and (now - last_check).seconds < check_interval:
                     continue
                 
                 # 종목 분석
@@ -832,31 +902,39 @@ class TrendTraderBot:
             # 매수 후보가 있으면 점수 기반으로 정렬
             if buy_candidates:
                 # 후보 종목들에 점수 부여 및 정렬
+                trading_strategies = self.config.get("trading_strategies", {})
+                score_weights = trading_strategies.get("score_weights", {})
+                
                 for candidate in buy_candidates:
                     score = 0
                     signals = candidate.get("signals", {})
                     
                     # 일봉 시그널 점수
                     daily_signals = signals.get("daily", {})
-                    if daily_signals.get("rsi_oversold", False): score += 2
-                    if daily_signals.get("golden_cross", False): score += 2
-                    if daily_signals.get("macd_cross_up", False): score += 2
-                    if daily_signals.get("near_lower_band", False): score += 1
-                    if daily_signals.get("momentum_turning_up", False): score += 1
-                    if daily_signals.get("near_support", False): score += 2
+                    if daily_signals.get("rsi_oversold", False): 
+                        score += score_weights.get("rsi_oversold", 2)
+                    if daily_signals.get("golden_cross", False): 
+                        score += score_weights.get("golden_cross", 2)
+                    if daily_signals.get("macd_cross_up", False): 
+                        score += score_weights.get("macd_cross_up", 2)
+                    if daily_signals.get("near_lower_band", False): 
+                        score += score_weights.get("near_lower_band", 1)
+                    if daily_signals.get("momentum_turning_up", False): 
+                        score += score_weights.get("momentum_turning_up", 1)
+                    if daily_signals.get("near_support", False): 
+                        score += score_weights.get("near_support", 2)
                     
                     # 분봉 시그널 점수
                     minute_signals = signals.get("minute", {})
-                    if minute_signals.get("rsi_oversold", False): score += 1
-                    if minute_signals.get("macd_cross_up", False): score += 1
+                    if minute_signals.get("rsi_oversold", False): 
+                        score += score_weights.get("minute_rsi_oversold", 1)
+                    if minute_signals.get("macd_cross_up", False): 
+                        score += score_weights.get("minute_macd_cross_up", 1)
                     
                     candidate["score"] = score
                 
                 # 점수 기준 내림차순 정렬
                 buy_candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
-                
-                # 최소 거래 금액 설정 확인
-                min_trading_amount = self.config.get("min_trading_amount", 500000)  # 기본값 50만원
                 
                 # 상위 종목부터 매수 시도
                 for candidate in buy_candidates:
@@ -872,18 +950,30 @@ class TrendTraderBot:
                     
                     # 종목별 예산 배분 계산
                     stock_info = self.watch_list_info.get(stock_code, {})
-                    allocation_ratio = stock_info.get("allocation_ratio", 0.2)  # 기본값 20%
+                    allocation_ratio = stock_info.get("allocation_ratio", self.config.get("default_allocation_ratio", 0.2))
                     
                     # 예산 내에서 매수 수량 결정
                     allocated_budget = min(self.total_budget * allocation_ratio, available_cash)
                     
-                    # 분할 매수 전략 적용 - 첫 매수는 할당 예산의 40~60% 사용
-                    split_ratio = random.uniform(0.4, 0.6)  # 40~60% 랜덤 비율
+                    # 분할 매수 전략 적용
+                    trading_strategies = self.config.get("trading_strategies", {})
+                    use_split = trading_strategies.get("use_split_purchase", True)
+                    initial_ratio = trading_strategies.get("initial_purchase_ratio", 0.5)
+                    
+                    if use_split:
+                        # 설정에서 초기 매수 비율 가져오기 (랜덤 변동 ±10%)
+                        variation = 0.1  # 10% 변동
+                        min_ratio = max(0.1, initial_ratio * (1 - variation))
+                        max_ratio = min(0.9, initial_ratio * (1 + variation))
+                        split_ratio = random.uniform(min_ratio, max_ratio)
+                    else:
+                        split_ratio = 1.0  # 분할 매수 사용하지 않을 경우 전체 예산 사용
+                    
                     first_buy_budget = allocated_budget * split_ratio
                     
                     # 최소 거래 금액 확인
-                    if first_buy_budget < min_trading_amount:
-                        logger.info(f"종목 {stock_code} 매수 예산({first_buy_budget:,.0f}원)이 최소 거래 금액({min_trading_amount:,}원)보다 작습니다. 매수 건너뜀.")
+                    if first_buy_budget < self.min_trading_amount:
+                        logger.info(f"종목 {stock_code} 매수 예산({first_buy_budget:,.0f}원)이 최소 거래 금액({self.min_trading_amount:,}원)보다 작습니다. 매수 건너뜀.")
                         continue
                     
                     quantity = max(1, int(first_buy_budget / current_price))
@@ -900,8 +990,8 @@ class TrendTraderBot:
                         buy_amount = current_price * quantity
                         
                         # 매수 금액이 최소 거래 금액보다 작으면 건너뜀
-                        if buy_amount < min_trading_amount:
-                            logger.info(f"종목 {stock_code} 매수 금액({buy_amount:,.0f}원)이 최소 거래 금액({min_trading_amount:,}원)보다 작습니다. 매수 건너뜀.")
+                        if buy_amount < self.min_trading_amount:
+                            logger.info(f"종목 {stock_code} 매수 금액({buy_amount:,.0f}원)이 최소 거래 금액({self.min_trading_amount:,}원)보다 작습니다. 매수 건너뜀.")
                             continue
                         
                         # 시장가 매수
@@ -924,18 +1014,20 @@ class TrendTraderBot:
                                 "buy_date": now.strftime("%Y%m%d"),
                                 "highest_price": current_price,
                                 "trailing_stop_price": 0,
-                                "split_buy": True,
+                                "split_buy": use_split,
                                 "initial_budget": allocated_budget,
                                 "used_budget": buy_amount,
                                 "remaining_budget": allocated_budget - buy_amount,
                                 # 동적 손절가 추가
-                                "use_dynamic_stop": self.config.get("trading_strategies", {}).get("use_dynamic_stop", False),
-                                "dynamic_stop_price": candidate.get("technical_data", {}).get("dynamic_stop_loss", 0)
+                                "use_dynamic_stop": trading_strategies.get("use_dynamic_stop", False),
+                                "dynamic_stop_price": candidate.get("technical_data", {}).get("dynamic_stop_loss", 0),
+                                # 전략 관리 종목 표시
+                                "is_strategy_managed": True
                             }
                             
                             # 트레일링 스탑 가격 설정
-                            if self.config.get("trading_strategies", {}).get("use_trailing_stop", False):
-                                trailing_pct = self.config.get("trading_strategies", {}).get("trailing_stop_pct", 2.0)
+                            if trading_strategies.get("use_trailing_stop", False):
+                                trailing_pct = trading_strategies.get("trailing_stop_pct", 1.8)
                                 self.holdings[stock_code]["trailing_stop_price"] = current_price * (1 - trailing_pct/100)
                                 
                             self._save_holdings()
@@ -947,6 +1039,10 @@ class TrendTraderBot:
                 
             # 보유 종목 중 분할 매수가 가능한 종목 추가 매수 검토
             for stock_code, holding_info in list(self.holdings.items()):
+                # 전략 관리 종목만 처리
+                if not holding_info.get("is_strategy_managed", False):
+                    continue
+                    
                 # 분할 매수가 아니거나 남은 예산이 없으면 스킵
                 if not holding_info.get("split_buy", False) or holding_info.get("remaining_budget", 0) <= 0:
                     continue
@@ -962,13 +1058,16 @@ class TrendTraderBot:
                 # 현재 수익률 계산
                 profit_percent = ((current_price / avg_price) - 1) * 100
                 
-                # 추가 매수 조건: 현재 가격이 평균단가보다 낮을 때
-                if current_price < avg_price * 0.98:  # 2% 이상 하락했을 때
+                # 추가 매수 조건: 수익률이 설정된 하락률 이상 하락했을 때
+                trading_strategies = self.config.get("trading_strategies", {})
+                drop_thresholds = trading_strategies.get("additional_purchase_drop_pct", [1.5])
+                drop_pct = drop_thresholds[0] if drop_thresholds else 1.5
+                
+                if profit_percent <= -drop_pct:  # 설정된 하락률 이상 하락했을 때
                     remaining_budget = holding_info.get("remaining_budget", 0)
-                    min_trading_amount = self.config.get("min_trading_amount", 500000)
                     
                     # 최소 거래 금액 확인
-                    if remaining_budget < min_trading_amount:
+                    if remaining_budget < self.min_trading_amount:
                         continue
                         
                     # 추가 매수 수량 계산
@@ -985,11 +1084,11 @@ class TrendTraderBot:
                         add_buy_amount = current_price * add_quantity
                         
                         # 최소 거래 금액 확인
-                        if add_buy_amount < min_trading_amount:
+                        if add_buy_amount < self.min_trading_amount:
                             continue
                             
                         # 시장가 추가 매수
-                        logger.info(f"분할 매수 - 추가 매수 시도: {stock_code}, {add_quantity}주, 현재가: {current_price}원, 평단가: {avg_price}원")
+                        logger.info(f"분할 매수 - 추가 매수 시도: {stock_code}, {add_quantity}주, 현재가: {current_price}원, 평단가: {avg_price}원, 수익률: {profit_percent:.2f}%")
                         
                         order_result = KisKR.MakeBuyMarketOrder(
                             stockcode=stock_code,
@@ -1014,7 +1113,7 @@ class TrendTraderBot:
                             self.holdings[stock_code]["remaining_budget"] = holding_info.get("remaining_budget", 0) - add_buy_amount
                             
                             # 분할 매수 모두 사용했으면 플래그 해제
-                            if self.holdings[stock_code]["remaining_budget"] < min_trading_amount:
+                            if self.holdings[stock_code]["remaining_budget"] < self.min_trading_amount:
                                 self.holdings[stock_code]["split_buy"] = False
                                 
                             self._save_holdings()
@@ -1579,12 +1678,12 @@ def create_config_file(config_path: str = "trend_trader_config.json") -> None:
     config = {
         "watch_list": [
             # {"code": "005490", "name": "POSCO홀딩스", "allocation_ratio": 0.15, "stop_loss": -2.0, "trailing_stop_pct": 1.8},
-            {"code": "000660", "name": "SK하이닉스", "allocation_ratio": 0.20, "stop_loss": -2.0, "trailing_stop_pct": 1.5},
-            {"code": "000155", "name": "두산우", "allocation_ratio": 0.10, "stop_loss": -2.0, "trailing_stop_pct": 2.0},
-            {"code": "042660", "name": "한화오션", "allocation_ratio": 0.25, "stop_loss": -1.5, "trailing_stop_pct": 1.5},
-            {"code": "000100", "name": "유한양행", "allocation_ratio": 0.20, "stop_loss": -2.0, "trailing_stop_pct": 1.8},
-            # {"code": "028300", "name": "HLB", "allocation_ratio": 0.05, "stop_loss": -1.5, "trailing_stop_pct": 2.0},
-            {"code": "373220", "name": "LG에너지솔루션", "allocation_ratio": 0.05, "stop_loss": -1.8, "trailing_stop_pct": 1.8}
+            # {"code": "000660", "name": "SK하이닉스", "allocation_ratio": 0.20, "stop_loss": -2.0, "trailing_stop_pct": 1.5},
+            # {"code": "000155", "name": "두산우", "allocation_ratio": 0.10, "stop_loss": -2.0, "trailing_stop_pct": 2.0},
+            # {"code": "042660", "name": "한화오션", "allocation_ratio": 0.25, "stop_loss": -1.5, "trailing_stop_pct": 1.5},
+            # {"code": "000100", "name": "유한양행", "allocation_ratio": 0.20, "stop_loss": -2.0, "trailing_stop_pct": 1.8},
+            {"code": "028300", "name": "HLB", "allocation_ratio": 0.05, "stop_loss": -1.5, "trailing_stop_pct": 2.0}
+            # {"code": "373220", "name": "LG에너지솔루션", "allocation_ratio": 0.05, "stop_loss": -1.8, "trailing_stop_pct": 1.8}
         ],
         "total_budget": 5000000,  # 총 투자 예산
         "profit_target": 5.0,     # 목표 수익률 (%)
