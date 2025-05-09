@@ -367,8 +367,20 @@ class TrendTraderBot:
         self.use_trailing_stop = trading_strategies.get("use_trailing_stop", False)
         self.trailing_stop_pct = trading_strategies.get("trailing_stop_pct", 1.8)
         
+        # analyze_stock에서 필요한 추가 속성
+        self.use_daily_trend_filter = trading_strategies.get("use_daily_trend_filter", False)
+        self.use_market_trend_filter = trading_strategies.get("use_market_trend_filter", False)
+        self.market_index_code = trading_strategies.get("market_index_code", "069500")
+        self.daily_trend_lookback = trading_strategies.get("daily_trend_lookback", 3)
+        self.atr_multiplier = trading_strategies.get("atr_multiplier", 1.5)
+        self.bollinger_period = trading_strategies.get("bollinger_period", 20)
+        self.bollinger_std = trading_strategies.get("bollinger_std", 2.0)
+        
         self.holdings = {}  # 보유 종목 정보
         self.last_check_time = {}  # 마지막 검사 시간
+        
+        # 보유종목 로드
+        self._load_holdings()
 
     def _load_config(self, config_path: str) -> Dict[str, any]:
         """설정 파일 로드
@@ -524,16 +536,6 @@ class TrendTraderBot:
         except Exception as e:
             logger.exception(f"전략 관리 종목 정보 저장 중 오류: {str(e)}")
 
-    def _save_holdings(self) -> None:
-        """보유 종목 정보 저장"""
-        try:
-            with open("holdings.json", 'w', encoding='utf-8') as f:
-                json.dump(self.holdings, f, ensure_ascii=False, indent=4)
-            logger.info("보유 종목 정보 저장 완료")
-        except Exception as e:
-            logger.exception(f"보유 종목 정보 저장 중 오류: {str(e)}")
-
-
     def analyze_stock(self, stock_code: str) -> Dict[str, any]:
         """종목 분석
         
@@ -567,7 +569,11 @@ class TrendTraderBot:
                 slow_period=self.macd_slow_period, 
                 signal_period=self.macd_signal_period
             )
-            daily_data[['MiddleBand', 'UpperBand', 'LowerBand']] = self.tech_indicators.calculate_bollinger_bands(daily_data)
+            daily_data[['MiddleBand', 'UpperBand', 'LowerBand']] = self.tech_indicators.calculate_bollinger_bands(
+                daily_data,
+                period=self.bollinger_period,
+                num_std=self.bollinger_std
+            )
             daily_data[['K', 'D']] = self.tech_indicators.calculate_stochastic(daily_data)
             daily_data['Momentum'] = self.tech_indicators.calculate_momentum(daily_data)
 
@@ -620,9 +626,8 @@ class TrendTraderBot:
             if not daily_data.empty:
                 current_atr = daily_data['ATR'].iloc[-1]
                 if not pd.isna(current_atr):
-                    atr_multiplier = self.config.get("trading_strategies", {}).get("atr_multiplier")
                     dynamic_stop_loss = self.tech_indicators.calculate_dynamic_stop_loss(
-                        current_price, current_atr, atr_multiplier
+                        current_price, current_atr, self.atr_multiplier
                     )
                     analysis_result["technical_data"]["dynamic_stop_loss"] = dynamic_stop_loss
 
@@ -698,17 +703,16 @@ class TrendTraderBot:
             buy_signal = daily_buy_signal and minute_buy_signal
             
             # 추세 필터 적용 (설정에서 활성화된 경우)
-            if buy_signal and self.config.get("trading_strategies", {}).get("use_daily_trend_filter", False):
+            if buy_signal and self.use_daily_trend_filter:
                 # 일봉 추세 확인
-                daily_trend_ok = TrendFilter.check_daily_trend(daily_data)
+                daily_trend_ok = TrendFilter.check_daily_trend(daily_data, self.daily_trend_lookback)
                 if not daily_trend_ok:
                     buy_signal = False
                     analysis_result["reason"] = "일봉 추세 불량"
             
             # 시장 추세 필터 적용 (설정에서 활성화된 경우)
-            if buy_signal and self.config.get("trading_strategies", {}).get("use_market_trend_filter", False):
-                market_index_code = self.config.get("trading_strategies", {}).get("market_index_code", "069500")
-                market_trend_ok = TrendFilter.check_market_trend(market_index_code)
+            if buy_signal and self.use_market_trend_filter:
+                market_trend_ok = TrendFilter.check_market_trend(self.market_index_code, self.daily_trend_lookback)
                 if not market_trend_ok:
                     buy_signal = False
                     analysis_result["reason"] = "시장 추세 불량"
@@ -730,11 +734,11 @@ class TrendTraderBot:
         """보유 종목 매도 시그널 확인 (트레일링 스탑 포함)"""
         try:
             for stock_code, holding_info in list(self.holdings.items()):
-                current_price = KisKR.GetCurrentPrice(stock_code)
                 # 전략 관리 종목만 처리
                 if not holding_info.get("is_strategy_managed", False):
                     continue
-
+                    
+                current_price = KisKR.GetCurrentPrice(stock_code)
                 if current_price is None or isinstance(current_price, str):
                     logger.warning(f"종목 {stock_code} 현재가를 조회할 수 없습니다.")
                     continue
@@ -748,12 +752,10 @@ class TrendTraderBot:
                 profit_percent = ((current_price / avg_price) - 1) * 100
                 
                 # 트레일링 스탑 업데이트
-                use_trailing_stop = self.config.get("trading_strategies", {}).get("use_trailing_stop", False)
-                if use_trailing_stop:
+                if self.use_trailing_stop:
                     # 현재가가 기존 최고가보다 높으면 최고가 및 트레일링 스탑 가격 업데이트
                     if current_price > holding_info.get("highest_price", 0):
-                        trailing_pct = self.config.get("trading_strategies", {}).get("trailing_stop_pct", 2.0)
-                        new_stop_price = current_price * (1 - trailing_pct/100)
+                        new_stop_price = current_price * (1 - self.trailing_stop_pct/100)
                         
                         # 홀딩 정보 업데이트
                         self.holdings[stock_code]["highest_price"] = current_price
@@ -778,10 +780,9 @@ class TrendTraderBot:
                     sell_reason = f"손절 조건 발동: {profit_percent:.2f}%"
                 
                 # 3. 트레일링 스탑 조건
-                elif use_trailing_stop and current_price < holding_info.get("trailing_stop_price", 0):
+                elif self.use_trailing_stop and current_price < holding_info.get("trailing_stop_price", 0):
                     sell_signal = True
-                    sell_reason = f"트레일링 스탑 발동: 최고가 {holding_info.get('highest_price'):,}원의 " + \
-                                f"{self.config.get('trading_strategies', {}).get('trailing_stop_pct', 2.0)}% 하락"
+                    sell_reason = f"트레일링 스탑 발동: 최고가 {holding_info.get('highest_price'):,}원의 {self.trailing_stop_pct}% 하락"
 
                 # ===== 여기에 동적 손절 코드 추가 =====
                 # 동적 손절 적용
@@ -850,7 +851,6 @@ class TrendTraderBot:
         
         except Exception as e:
             logger.exception(f"매도 시그널 확인 중 오류: {str(e)}")
-
 
     # run 메서드 수정 - 최소 거래 금액 제한 및 분할 매수 적용
     def run(self) -> None:
@@ -1596,7 +1596,6 @@ class TrendTraderBot:
 # 추세 필터 클래스 추가
 class TrendFilter:
     """시장 및 일봉 추세 필터 클래스"""
-    
     @staticmethod
     def check_market_trend(market_index_code: str, lookback_days: int = 10) -> bool:
         """시장 추세 확인 (지수 또는 대표 ETF 기반)
@@ -1635,7 +1634,7 @@ class TrendFilter:
         except Exception as e:
             logger.exception(f"시장 추세 확인 중 오류: {str(e)}")
             return True  # 오류 발생 시 기본적으로 매수 허용
-    
+
     @staticmethod
     def check_daily_trend(data: pd.DataFrame, lookback_days: int = 5) -> bool:
         """종목의 일봉 추세 확인
