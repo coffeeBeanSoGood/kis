@@ -355,6 +355,8 @@ class TrendTraderBot:
         self.macd_fast_period = trading_strategies.get("macd_fast_period")
         self.macd_slow_period = trading_strategies.get("macd_slow_period")
         self.macd_signal_period = trading_strategies.get("macd_signal_period")
+        # 추가: 섹터 필터 설정
+        self.use_sector_filter = trading_strategies.get("use_sector_filter", False)
 
         # 아래는 추가할 속성들 - run 메서드에서 필요한 설정
         self.check_interval_seconds = trading_strategies.get("check_interval_seconds", 3600)
@@ -375,7 +377,7 @@ class TrendTraderBot:
         self.atr_multiplier = trading_strategies.get("atr_multiplier", 1.5)
         self.bollinger_period = trading_strategies.get("bollinger_period", 20)
         self.bollinger_std = trading_strategies.get("bollinger_std", 2.0)
-        
+
         self.holdings = {}  # 보유 종목 정보
         self.last_check_time = {}  # 마지막 검사 시간
         
@@ -415,6 +417,8 @@ class TrendTraderBot:
                 "use_dynamic_stop": True,
                 "atr_period": 10,
                 "atr_multiplier": 1.5,
+                # 추가: 섹터 필터 설정
+                "use_sector_filter": True,
                 "use_split_purchase": True,
                 "initial_purchase_ratio": 0.50,
                 "additional_purchase_ratios": [0.30, 0.20],
@@ -536,6 +540,222 @@ class TrendTraderBot:
         except Exception as e:
             logger.exception(f"전략 관리 종목 정보 저장 중 오류: {str(e)}")
 
+    def check_sector_strength(self, sector_code: str) -> bool:
+        """섹터 강도 확인
+        
+        Args:
+            sector_code: 섹터 코드
+            
+        Returns:
+            bool: 섹터 강세 여부
+        """
+        try:
+            # 섹터 ETF나 대표 종목 데이터 조회
+            sector_etfs = {
+                "반도체": "305720",  # KODEX 반도체
+                "2차전지": "305540",  # KODEX 2차전지
+                "바이오": "244580",  # KODEX 바이오
+                "인터넷": "241560",  # KODEX 인터넷
+                "금융": "298340",    # KODEX 금융
+                "자동차": "295000"   # KODEX 자동차
+            }
+            
+            etf_code = sector_etfs.get(sector_code)
+            if not etf_code:
+                return True  # 섹터 정보가 없으면 기본적으로 통과
+            
+            # 섹터 ETF 데이터 조회
+            sector_data = KisKR.GetOhlcvNew(etf_code, 'D', 20, adj_ok=1)
+            
+            if sector_data is None or sector_data.empty:
+                return True
+            
+            # 섹터 강도 분석: 최근 5일 상승/하락 추세, 시장 대비 상대 강도
+            recent_data = sector_data.iloc[-5:]
+            sector_change = (recent_data['close'].iloc[-1] / recent_data['close'].iloc[0] - 1) * 100
+            
+            # 시장 대비 상대 강도 (KOSPI 또는 KOSDAQ 대비)
+            market_data = KisKR.GetOhlcvNew(self.market_index_code, 'D', 5, adj_ok=1)
+            if market_data is not None and not market_data.empty:
+                market_change = (market_data['close'].iloc[-1] / market_data['close'].iloc[0] - 1) * 100
+                relative_strength = sector_change - market_change
+            else:
+                relative_strength = 0
+            
+            # 섹터가 강세인지 판단 (시장보다 1%p 이상 상승 또는 최근 5일 상승)
+            return sector_change > 0 or relative_strength > 1.0
+        
+        except Exception as e:
+            logger.exception(f"섹터 강도 확인 중 오류: {str(e)}")
+            return True  # 오류 발생 시 기본 통과
+
+    def detect_market_environment(self) -> str:
+        """현재 시장 환경 감지
+        
+        Returns:
+            str: 'uptrend', 'downtrend', 'sideways' 중 하나
+        """
+        # 코스피 또는 코스닥 지수 데이터 조회
+        market_data = KisKR.GetOhlcvNew(self.market_index_code, 'D', 60, adj_ok=1)
+        
+        if market_data is None or market_data.empty:
+            return "sideways"  # 기본값
+        
+        # 이동평균선 계산
+        market_data['MA5'] = market_data['close'].rolling(window=5).mean()
+        market_data['MA20'] = market_data['close'].rolling(window=20).mean()
+        market_data['MA60'] = market_data['close'].rolling(window=60).mean()
+        
+        # 이동평균선 방향성
+        ma5_slope = (market_data['MA5'].iloc[-1] / market_data['MA5'].iloc[-6] - 1) * 100
+        ma20_slope = (market_data['MA20'].iloc[-1] / market_data['MA20'].iloc[-21] - 1) * 100
+        
+        # MACD 계산
+        market_data[['MACD', 'Signal', 'Histogram']] = self.tech_indicators.calculate_macd(market_data)
+        
+        # 상승장 조건
+        if (ma5_slope > 1.0 and ma20_slope > 0.5 and 
+            market_data['MA5'].iloc[-1] > market_data['MA20'].iloc[-1] > market_data['MA60'].iloc[-1]):
+            return "uptrend"
+        
+        # 하락장 조건
+        elif (ma5_slope < -1.0 and ma20_slope < -0.5 and 
+              market_data['MA5'].iloc[-1] < market_data['MA20'].iloc[-1] < market_data['MA60'].iloc[-1]):
+            return "downtrend"
+        
+        # 그 외는 횡보장으로 판단
+        else:
+            return "sideways"
+
+    def is_safe_to_buy_in_downtrend(self, daily_data: pd.DataFrame) -> bool:
+        """하락장에서 안전한 매수 시점 확인
+        
+        Args:
+            daily_data: 일봉 데이터
+            
+        Returns:
+            bool: 안전한 매수 시점 여부
+        """
+        # 최근 과매도 강도 확인 - 보다 깊은 과매도에서만 매수
+        rsi_value = daily_data['RSI'].iloc[-1]
+        deep_oversold = rsi_value < 25.0  # 더 낮은 RSI 기준
+        
+        # 거래량 급증 확인 (반전 신호)
+        avg_volume = daily_data['volume'].rolling(window=10).mean().iloc[-1]
+        recent_volume = daily_data['volume'].iloc[-1]
+        volume_surge = recent_volume > avg_volume * 2.0  # 평균의 2배 이상
+        
+        # 하락 속도 둔화 확인
+        recent_drops = []
+        try:
+            recent_drops = [
+                (daily_data['close'].iloc[i-1] - daily_data['close'].iloc[i]) / daily_data['close'].iloc[i-1] * 100
+                for i in range(-5, 0)
+            ]
+            slowdown = all(recent_drops[i] < recent_drops[i-1] for i in range(1, len(recent_drops)))
+        except:
+            slowdown = False
+        
+        # 캔들 패턴 확인 (망치형, 역망치형 등 반전 패턴)
+        bullish_reversal_pattern = self.detect_reversal_patterns(daily_data)
+        
+        return deep_oversold and (volume_surge or slowdown or bullish_reversal_pattern)
+    
+    def detect_reversal_patterns(self, daily_data: pd.DataFrame) -> bool:
+        """반전 캔들 패턴 감지
+        
+        Args:
+            daily_data: 일봉 데이터
+            
+        Returns:
+            bool: 반전 패턴 존재 여부
+        """
+        try:
+            # 최근 캔들 정보
+            open_price = daily_data['open'].iloc[-1]
+            close_price = daily_data['close'].iloc[-1]
+            high_price = daily_data['high'].iloc[-1]
+            low_price = daily_data['low'].iloc[-1]
+            
+            # 망치형 캔들 (Hammer) 확인
+            if close_price > open_price:  # 양봉
+                body_size = close_price - open_price
+                lower_shadow = open_price - low_price
+                hammer = lower_shadow > body_size * 2 and (high_price - close_price) < body_size * 0.5
+            else:  # 음봉
+                body_size = open_price - close_price
+                lower_shadow = close_price - low_price
+                hammer = lower_shadow > body_size * 2 and (high_price - open_price) < body_size * 0.5
+            
+            # 역망치형 캔들 (Inverted Hammer) 확인
+            if close_price > open_price:  # 양봉
+                body_size = close_price - open_price
+                upper_shadow = high_price - close_price
+                inv_hammer = upper_shadow > body_size * 2 and (open_price - low_price) < body_size * 0.5
+            else:  # 음봉
+                body_size = open_price - close_price
+                upper_shadow = high_price - open_price
+                inv_hammer = upper_shadow > body_size * 2 and (close_price - low_price) < body_size * 0.5
+            
+            # 도지 캔들 (Doji) 확인
+            body_range = abs(close_price - open_price)
+            total_range = high_price - low_price
+            doji = body_range <= total_range * 0.1  # 몸통이 전체 범위의 10% 이하
+            
+            # 모닝스타 패턴 확인 (3일 패턴)
+            if len(daily_data) >= 3:
+                # 첫날: 큰 음봉
+                day1_open = daily_data['open'].iloc[-3]
+                day1_close = daily_data['close'].iloc[-3]
+                day1_bearish = day1_close < day1_open and (day1_open - day1_close) > (daily_data['high'].iloc[-3] - daily_data['low'].iloc[-3]) * 0.6
+                
+                # 둘째날: 작은 몸통 (양봉/음봉 모두 가능)
+                day2_open = daily_data['open'].iloc[-2]
+                day2_close = daily_data['close'].iloc[-2]
+                day2_small_body = abs(day2_close - day2_open) < abs(day1_close - day1_open) * 0.5
+                
+                # 셋째날: 큰 양봉
+                day3_open = open_price
+                day3_close = close_price
+                day3_bullish = day3_close > day3_open and (day3_close - day3_open) > (high_price - low_price) * 0.6
+                
+                morning_star = day1_bearish and day2_small_body and day3_bullish
+            else:
+                morning_star = False
+            
+            return hammer or inv_hammer or doji or morning_star
+            
+        except Exception as e:
+            logger.exception(f"반전 패턴 감지 중 오류: {str(e)}")
+            return False
+
+    def detect_uptrend(self, daily_data: pd.DataFrame) -> bool:
+        """상승 추세 확인
+        
+        Args:
+            daily_data: 일봉 데이터
+            
+        Returns:
+            bool: 상승 추세 여부
+        """
+        try:
+            # 이동평균선 정배열 확인 (단기>중기>장기)
+            ma_uptrend = daily_data['MA5'].iloc[-1] > daily_data['MA20'].iloc[-1] > daily_data['MA60'].iloc[-1]
+            
+            # 상승 추세 확인 (최근 20일 중 15일 이상 상승)
+            recent_data = daily_data.iloc[-20:]
+            up_days = sum(1 for i in range(1, len(recent_data)) if recent_data['close'].iloc[i] > recent_data['close'].iloc[i-1])
+            price_uptrend = up_days >= 15
+            
+            # 상승 모멘텀 확인
+            momentum = daily_data['Momentum'].iloc[-1]
+            momentum_uptrend = momentum > 5.0  # 최근 10일 대비 5% 이상 상승
+            
+            return ma_uptrend and (price_uptrend or momentum_uptrend)
+        except Exception as e:
+            logger.exception(f"상승 추세 확인 중 오류: {str(e)}")
+            return False
+
     def analyze_stock(self, stock_code: str) -> Dict[str, any]:
         """종목 분석
         
@@ -598,6 +818,13 @@ class TrendTraderBot:
                     fast_period=self.macd_fast_period, 
                     slow_period=self.macd_slow_period, 
                     signal_period=self.macd_signal_period
+                )
+                
+                # 분봉 볼린저 밴드 계산
+                minute_data[['MiddleBand', 'UpperBand', 'LowerBand']] = self.tech_indicators.calculate_bollinger_bands(
+                    minute_data,
+                    period=self.bollinger_period,
+                    num_std=self.bollinger_std
                 )
             
             # 분석 결과
@@ -673,6 +900,58 @@ class TrendTraderBot:
                 analysis_result["signals"]["daily"]["near_support"] = near_support
                 analysis_result["technical_data"]["support"] = sr_levels["support"]
                 analysis_result["technical_data"]["resistance"] = sr_levels["resistance"]
+                
+                # 7. 거래량 증가 확인 추가
+                volume_increase = False
+                try:
+                    # 최근 10일 평균 거래량 대비 현재 거래량 150% 이상
+                    avg_volume = daily_data['volume'].rolling(window=10).mean().iloc[-1]
+                    recent_volume = daily_data['volume'].iloc[-1]
+                    volume_increase = recent_volume > avg_volume * 1.5
+                    analysis_result["signals"]["daily"]["volume_increase"] = volume_increase
+                except:
+                    analysis_result["signals"]["daily"]["volume_increase"] = False
+                
+                # 8. 캔들 패턴 확인 추가
+                bullish_candle = False
+                try:
+                    # 양봉 확인 (종가가 시가보다 높은 경우)
+                    if daily_data['close'].iloc[-1] > daily_data['open'].iloc[-1]:
+                        # 몸통 크기가 전체 봉의 50% 이상인 강한 양봉
+                        body_size = abs(daily_data['close'].iloc[-1] - daily_data['open'].iloc[-1])
+                        candle_range = daily_data['high'].iloc[-1] - daily_data['low'].iloc[-1]
+                        
+                        if body_size > candle_range * 0.5:
+                            bullish_candle = True
+                    
+                    # 망치형 캔들 확인 (하단 꼬리가 몸통의 2배 이상)
+                    if not bullish_candle:
+                        if daily_data['close'].iloc[-1] > daily_data['open'].iloc[-1]:  # 양봉
+                            body_size = daily_data['close'].iloc[-1] - daily_data['open'].iloc[-1]
+                            lower_shadow = daily_data['open'].iloc[-1] - daily_data['low'].iloc[-1]
+                            
+                            if lower_shadow > body_size * 2 and body_size > 0:
+                                bullish_candle = True
+                        else:  # 음봉
+                            body_size = daily_data['open'].iloc[-1] - daily_data['close'].iloc[-1]
+                            lower_shadow = daily_data['close'].iloc[-1] - daily_data['low'].iloc[-1]
+                            
+                            if lower_shadow > body_size * 2 and body_size > 0:
+                                bullish_candle = True
+                    
+                    analysis_result["signals"]["daily"]["bullish_candle"] = bullish_candle
+                except:
+                    analysis_result["signals"]["daily"]["bullish_candle"] = False
+                
+                # 9. 연속 하락 확인 추가
+                consecutive_drop = False
+                try:
+                    # 최근 3일간 연속 하락 여부 확인
+                    drops = [daily_data['close'].iloc[i] < daily_data['close'].iloc[i-1] for i in range(-3, 0)]
+                    consecutive_drop = all(drops)
+                    analysis_result["signals"]["daily"]["consecutive_drop"] = consecutive_drop
+                except:
+                    analysis_result["signals"]["daily"]["consecutive_drop"] = False
             
             # 분봉 기반 매수 시그널 확인
             if minute_data is not None and not minute_data.empty:
@@ -691,18 +970,133 @@ class TrendTraderBot:
                     pass
                     
                 analysis_result["signals"]["minute"]["macd_cross_up"] = minute_macd_cross_up
+                
+                # 3. 분봉 볼린저 밴드 하단 접촉
+                minute_near_lower_band = False
+                try:
+                    minute_near_lower_band = minute_data['close'].iloc[-1] <= minute_data['LowerBand'].iloc[-1] * 1.01
+                    analysis_result["signals"]["minute"]["near_lower_band"] = minute_near_lower_band
+                except:
+                    analysis_result["signals"]["minute"]["near_lower_band"] = False
+                
+                # 4. 분봉 캔들 패턴 확인
+                minute_bullish_candle = False
+                try:
+                    # 최근 3개 분봉에서 양봉이 2개 이상인지 확인
+                    recent_candles = minute_data.iloc[-3:]
+                    bullish_count = sum(1 for i in range(len(recent_candles)) if recent_candles['close'].iloc[i] > recent_candles['open'].iloc[i])
+                    minute_bullish_candle = bullish_count >= 2
+                    analysis_result["signals"]["minute"]["bullish_candle"] = minute_bullish_candle
+                except:
+                    analysis_result["signals"]["minute"]["bullish_candle"] = False
+                
+                # 5. 분봉 거래량 증가 확인
+                minute_volume_increase = False
+                try:
+                    # 최근 10개 분봉 평균 대비 현재 거래량 증가
+                    avg_volume = minute_data['volume'].rolling(window=10).mean().iloc[-1]
+                    recent_volume = minute_data['volume'].iloc[-1]
+                    minute_volume_increase = recent_volume > avg_volume * 1.5
+                    analysis_result["signals"]["minute"]["volume_increase"] = minute_volume_increase
+                except:
+                    analysis_result["signals"]["minute"]["volume_increase"] = False
 
-            # 종합 매수 시그널 결정
-            daily_buy_signal = is_oversold and (near_support or momentum_turning_up or is_golden_cross)
+            # ===== 시장 환경 감지 코드 삽입 =====
+            # 시장 환경 감지
+            market_env = self.detect_market_environment()
+            analysis_result["market_environment"] = market_env
+            
+            # 시장 환경별 매수 전략 조정
+            profit_target_adjusted = self.profit_target
+            stop_loss_adjusted = self.stop_loss
+            rsi_threshold_adjusted = self.rsi_oversold
+            
+            if market_env == "uptrend":
+                # 상승장 전략 (목표 수익률 증가, 손절폭 감소)
+                profit_target_adjusted = self.profit_target * 1.5  # 목표 수익률 50% 증가
+                stop_loss_adjusted = self.stop_loss * 0.8  # 손절폭 20% 감소
+                rsi_threshold_adjusted = min(self.rsi_oversold + 5, 35)  # RSI 임계값 완화
+                
+                # 추세 확인으로 매수 신호 보강
+                if not daily_data.empty:
+                    is_in_uptrend = self.detect_uptrend(daily_data)
+                    analysis_result["signals"]["daily"]["in_uptrend"] = is_in_uptrend
+                    # 상승 추세에 있는 종목 우선 고려
+                    if is_in_uptrend:
+                        # 매수 점수에 가산점 부여 (구현에 따라 조정)
+                        pass
+                
+            elif market_env == "downtrend":
+                # 하락장 전략 (매수 기준 강화, 손절폭 감소)
+                profit_target_adjusted = self.profit_target * 0.8  # 목표 수익률 20% 감소
+                stop_loss_adjusted = self.stop_loss * 0.6  # 손절폭 40% 감소 (더 타이트하게)
+                rsi_threshold_adjusted = max(self.rsi_oversold - 5, 20)  # RSI 임계값 강화
+                
+                # 안전한 매수 시점인지 확인
+                if not daily_data.empty:
+                    is_safe_entry = self.is_safe_to_buy_in_downtrend(daily_data)
+                    analysis_result["signals"]["daily"]["safe_entry"] = is_safe_entry
+            
+            # 기존 RSI 값 조정 (시장 환경에 따른 임계값 사용)
+            if not daily_data.empty:
+                # RSI 과매도 재확인 (조정된 임계값 사용)
+                is_oversold = self.tech_indicators.is_oversold_rsi(rsi_value, rsi_threshold_adjusted)
+                analysis_result["signals"]["daily"]["rsi_oversold_adjusted"] = is_oversold
+            
+            # 조정된 파라미터 저장
+            analysis_result["adjusted_parameters"] = {
+                "profit_target": profit_target_adjusted,
+                "stop_loss": stop_loss_adjusted,
+                "rsi_threshold": rsi_threshold_adjusted
+            }
+            # ===== 시장 환경 감지 코드 삽입 끝 =====
+
+            # ===== 강화된 매수 시그널 결정 =====
+            # 일봉 시그널 강화: 2개 이상의 조건 동시 충족 요구
+            daily_signals_count = sum([
+                is_oversold,              # RSI 과매도
+                price_near_lower_band,    # 볼린저 밴드 하단
+                near_support,             # 지지선 근처
+                is_golden_cross,          # 골든 크로스
+                macd_cross_up,            # MACD 상향돌파
+                momentum_turning_up,      # 모멘텀 상승전환
+                volume_increase,          # 거래량 증가
+                bullish_candle,           # 강세 캔들 패턴
+                consecutive_drop          # 연속 하락 후 반등 가능성
+            ])
+            
+            # 일봉에서 최소 2개 이상의 매수 시그널이 동시에 발생해야 함
+            # RSI 과매도는 필수 조건으로 유지
+            daily_buy_signal = is_oversold and daily_signals_count >= 2
+            
+            # 분봉 시그널 강화
             minute_buy_signal = False
-            
             if minute_data is not None and not minute_data.empty:
-                minute_buy_signal = minute_is_oversold or minute_macd_cross_up
+                minute_signals_count = sum([
+                    minute_is_oversold,       # 분봉 RSI 과매도
+                    minute_macd_cross_up,     # 분봉 MACD 상향돌파
+                    minute_near_lower_band,   # 분봉 볼린저 밴드 하단
+                    minute_bullish_candle,    # 분봉 강세 캔들
+                    minute_volume_increase    # 분봉 거래량 증가
+                ])
+                # 분봉에서도 최소 2개 이상의 조건 충족 필요
+                minute_buy_signal = minute_signals_count >= 2
             
-            # 기본 매수 시그널
-            buy_signal = daily_buy_signal and minute_buy_signal
+            # 최종 매수 시그널 - 일봉과 분봉 모두 강화된 조건 충족해야 함
+            buy_signal = daily_buy_signal
             
-            # 추세 필터 적용 (설정에서 활성화된 경우)
+            # 분봉 데이터가 있는 경우에만 분봉 필터 적용
+            if buy_signal and minute_data is not None and not minute_data.empty:
+                buy_signal = buy_signal and minute_buy_signal
+            
+            # 하락장에서는 추가 안전 조건 확인
+            if buy_signal and market_env == "downtrend":
+                if not daily_data.empty and "safe_entry" in analysis_result["signals"]["daily"]:
+                    if not analysis_result["signals"]["daily"]["safe_entry"]:
+                        buy_signal = False
+                        analysis_result["reason"] = "하락장 안전 매수 조건 미충족"
+            
+            # 기존 추세 필터 코드 유지
             if buy_signal and self.use_daily_trend_filter:
                 # 일봉 추세 확인
                 daily_trend_ok = TrendFilter.check_daily_trend(daily_data, self.daily_trend_lookback)
@@ -710,24 +1104,58 @@ class TrendTraderBot:
                     buy_signal = False
                     analysis_result["reason"] = "일봉 추세 불량"
             
-            # 시장 추세 필터 적용 (설정에서 활성화된 경우)
             if buy_signal and self.use_market_trend_filter:
                 market_trend_ok = TrendFilter.check_market_trend(self.market_index_code, self.daily_trend_lookback)
                 if not market_trend_ok:
                     buy_signal = False
                     analysis_result["reason"] = "시장 추세 불량"
             
+            # 추가: 섹터 강도 필터 적용
+            if buy_signal and hasattr(self, 'use_sector_filter') and self.use_sector_filter:
+                sector_code = self.watch_list_info.get(stock_code, {}).get("sector_code")
+                if sector_code:
+                    sector_strength_ok = self.check_sector_strength(sector_code)
+                    if not sector_strength_ok:
+                        buy_signal = False
+                        analysis_result["reason"] = "섹터 약세"
+            
             # 최종 매수 시그널 설정
             analysis_result["is_buy_signal"] = buy_signal
             
-            # 매수 이유 추가
+            # 매수 이유 상세화
             if buy_signal:
-                analysis_result["reason"] = "저점 매수 시그널 발생"
+                reasons = []
+                if is_oversold: reasons.append("RSI 과매도")
+                if price_near_lower_band: reasons.append("볼린저 밴드 하단")
+                if near_support: reasons.append("지지선 근처")
+                if is_golden_cross: reasons.append("골든 크로스")
+                if macd_cross_up: reasons.append("MACD 상향돌파")
+                if momentum_turning_up: reasons.append("모멘텀 상승전환")
+                if volume_increase: reasons.append("거래량 증가")
+                if bullish_candle: reasons.append("강세 캔들 패턴")
+                if consecutive_drop: reasons.append("연속 하락 후 반등 기대")
+                
+                analysis_result["reason"] = "매수 시그널: " + ", ".join(reasons)
+            
+            # 최종 분석 결과의 일봉/분봉 시그널 점수 추가
+            analysis_result["signal_scores"] = {
+                "daily_score": daily_signals_count,
+                "minute_score": minute_signals_count if minute_data is not None and not minute_data.empty else 0
+            }
+            
+            # 시장 환경에 따른 조정된 매매 파라미터 추가
+            if buy_signal:
+                analysis_result["use_parameters"] = {
+                    "profit_target": profit_target_adjusted,
+                    "stop_loss": stop_loss_adjusted
+                }
             
             return analysis_result
+
         except Exception as e:
             logger.exception(f"종목 {stock_code} 분석 중 오류: {str(e)}")
             return {"is_buy_signal": False, "reason": f"분석 오류: {str(e)}"}
+
 
     # 트레일링 스탑 로직을 포함한 check_sell_signals 메서드
     def check_sell_signals(self) -> None:
@@ -1682,22 +2110,31 @@ def create_config_file(config_path: str = "trend_trader_config.json") -> None:
     """
     config = {
         "watch_list": [
-            # {"code": "005490", "name": "POSCO홀딩스", "allocation_ratio": 0.15, "stop_loss": -2.0, "trailing_stop_pct": 1.8},
-            # {"code": "000660", "name": "SK하이닉스", "allocation_ratio": 0.20, "stop_loss": -2.0, "trailing_stop_pct": 1.5},
-            # {"code": "000155", "name": "두산우", "allocation_ratio": 0.10, "stop_loss": -2.0, "trailing_stop_pct": 2.0},
-            # {"code": "042660", "name": "한화오션", "allocation_ratio": 0.25, "stop_loss": -1.5, "trailing_stop_pct": 1.5},
-            # {"code": "000100", "name": "유한양행", "allocation_ratio": 0.20, "stop_loss": -2.0, "trailing_stop_pct": 1.8},
-            {"code": "028300", "name": "HLB", "allocation_ratio": 0.05, "stop_loss": -1.5, "trailing_stop_pct": 2.0}
-            # {"code": "373220", "name": "LG에너지솔루션", "allocation_ratio": 0.05, "stop_loss": -1.8, "trailing_stop_pct": 1.8}
+            {"code": "005490", "name": "POSCO홀딩스", "sector_code": "철강", "allocation_ratio": 0.15, "stop_loss": -2.0, "trailing_stop_pct": 1.8},
+            {"code": "000660", "name": "SK하이닉스", "sector_code": "반도체", "allocation_ratio": 0.20, "stop_loss": -2.0, "trailing_stop_pct": 1.5},
+            {"code": "000155", "name": "두산우", "sector_code": "기계", "allocation_ratio": 0.10, "stop_loss": -2.0, "trailing_stop_pct": 2.0},
+            {"code": "042660", "name": "한화오션", "sector_code": "조선", "allocation_ratio": 0.25, "stop_loss": -1.5, "trailing_stop_pct": 1.5},
+            {"code": "000100", "name": "유한양행", "sector_code": "제약", "allocation_ratio": 0.20, "stop_loss": -2.0, "trailing_stop_pct": 1.8},
+            {"code": "028300", "name": "HLB", "sector_code": "바이오", "allocation_ratio": 0.05, "stop_loss": -1.5, "trailing_stop_pct": 2.0},
+            {"code": "373220", "name": "LG에너지솔루션", "sector_code": "2차전지", "allocation_ratio": 0.05, "stop_loss": -1.8, "trailing_stop_pct": 1.8}
+        ],
+        "sector_list": [
+            {"code": "반도체", "etf_code": "305720", "allocation_ratio": 0.20},
+            {"code": "2차전지", "etf_code": "305540", "allocation_ratio": 0.20},
+            {"code": "바이오", "etf_code": "244580", "allocation_ratio": 0.15},
+            {"code": "인터넷", "etf_code": "241560", "allocation_ratio": 0.15},
+            {"code": "철강", "etf_code": "117680", "allocation_ratio": 0.10},
+            {"code": "조선", "etf_code": "091180", "allocation_ratio": 0.10},
+            {"code": "제약", "etf_code": "091160", "allocation_ratio": 0.10}
         ],
         "total_budget": 5000000,  # 총 투자 예산
         "profit_target": 5.0,     # 목표 수익률 (%)
-        "stop_loss": -2.0,        # 기본 손절 비율 (%)
-        "max_stocks": 4,          # 최대 동시 보유 종목 수 (5에서 4로 감소)
+        "stop_loss": -1.5,        # 기본 손절 비율 (%) - 2.0에서 1.5로 감소
+        "max_stocks": 4,          # 최대 동시 보유 종목 수
         "min_trading_amount": 300000,  # 최소 거래 금액
         "trading_strategies": {
             # RSI 관련 설정
-            "rsi_oversold_threshold": 30.0,   # RSI 과매도 기준
+            "rsi_oversold_threshold": 28.0,   # RSI 과매도 기준 (30.0에서 28.0으로 하향)
             "rsi_overbought_threshold": 68.0, # RSI 과매수 기준
             
             # MACD 관련 설정
@@ -1707,13 +2144,17 @@ def create_config_file(config_path: str = "trend_trader_config.json") -> None:
             
             # 트레일링 스탑 관련 설정
             "use_trailing_stop": True,
-            "trailing_stop_pct": 1.8,  # 기본 트레일링 스탑 비율(%)
+            "trailing_stop_pct": 1.5,  # 기본 트레일링 스탑 비율(%) (1.8에서 1.5로 감소)
             
             # 추세 필터 관련 설정
             "use_daily_trend_filter": True,
             "use_market_trend_filter": True,
             "market_index_code": "069500",  # KODEX 200 ETF
             "daily_trend_lookback": 3,      # 일일 추세 확인 기간
+            
+            # 추가: 섹터 필터 설정
+            "use_sector_filter": True,
+            "sector_relative_strength_threshold": 1.0,  # 시장 대비 상대 강도 기준 (%)
             
             # ATR 관련 설정
             "use_dynamic_stop": True,
@@ -1722,9 +2163,9 @@ def create_config_file(config_path: str = "trend_trader_config.json") -> None:
             
             # 분할 매수 관련 설정
             "use_split_purchase": True,
-            "initial_purchase_ratio": 0.50,  # 초기 매수 비율 (60%에서 50%로 감소)
-            "additional_purchase_ratios": [0.30, 0.20],  # 2단계 추가 매수 비율
-            "additional_purchase_drop_pct": [1.5, 3.0],  # 추가 매수 하락 기준(%)
+            "initial_purchase_ratio": 0.30,  # 초기 매수 비율 (50%에서 30%로 감소)
+            "additional_purchase_ratios": [0.30, 0.30, 0.10],  # 3단계 추가 매수 비율
+            "additional_purchase_drop_pct": [1.5, 3.0, 5.0],  # 추가 매수 하락 기준(%)
             
             # 볼린저 밴드 관련 설정
             "bollinger_period": 18,   # 볼린저 밴드 기간
@@ -1737,7 +2178,7 @@ def create_config_file(config_path: str = "trend_trader_config.json") -> None:
             
             # 부분 익절 전략
             "use_partial_profit": True,    # 부분 익절 사용
-            "partial_profit_target": 4.0,  # 4% 도달 시 부분 익절
+            "partial_profit_target": 3.0,  # 3% 도달 시 부분 익절
             "partial_profit_ratio": 0.5,   # 50% 물량 부분 익절
             
             # 시간 필터
@@ -1748,18 +2189,31 @@ def create_config_file(config_path: str = "trend_trader_config.json") -> None:
             "use_consecutive_drop_filter": True,
             "consecutive_drop_days": 2,    # 2일 연속 하락 후 매수 고려
             
+            # 확인 주기 설정
+            "check_interval_seconds": 1800,  # 30분마다 확인 (3600에서 1800으로 감소)
+            
             # 매수 점수 가중치 (점수 기반 종목 선정에 사용)
             "score_weights": {
-                "rsi_oversold": 3,         # RSI 과매도 가중치
+                "rsi_oversold": 4,         # RSI 과매도 가중치 (3에서 4로 증가)
                 "golden_cross": 2,         # 골든 크로스 가중치
-                "macd_cross_up": 3,        # MACD 상향돌파 가중치
-                "near_lower_band": 2,      # 볼링저 밴드 하단 접촉
-                "momentum_turning_up": 1,  # 모멘텀 상승 전환
-                "near_support": 3,         # 지지선 근처 (2에서 3으로 증가)
-                "minute_rsi_oversold": 1,  # 분봉 RSI 과매도
-                "minute_macd_cross_up": 1, # 분봉 MACD 상향돌파
-                "consecutive_drop": 2      # 연속 하락일 가중치
-            }
+                "macd_cross_up": 4,        # MACD 상향돌파 가중치 (3에서 4로 증가)
+                "near_lower_band": 3,      # 볼링저 밴드 하단 접촉 (2에서 3으로 증가)
+                "momentum_turning_up": 2,  # 모멘텀 상승 전환 (1에서 2로 증가)
+                "near_support": 3,         # 지지선 근처
+                "minute_rsi_oversold": 2,  # 분봉 RSI 과매도 (1에서 2로 증가)
+                "minute_macd_cross_up": 2, # 분봉 MACD 상향돌파 (1에서 2로 증가)
+                "consecutive_drop": 2,     # 연속 하락일 가중치
+                "volume_increase": 3,      # 거래량 증가 가중치 (추가)
+                "bullish_candle": 2,       # 강세 캔들 패턴 (추가)
+                "sector_strength": 3       # 섹터 강도 가중치 (추가)
+            },
+            
+            # 매수 필터 강화 설정
+            "required_daily_signals": 2,   # 일봉에서 필요한 최소 시그널 수 (추가)
+            "required_minute_signals": 2,  # 분봉에서 필요한 최소 시그널 수 (추가)
+            
+            # 뉴스 및 공시 필터 (추가 - 실제 구현시 필요)
+            "use_news_filter": False       # 뉴스 필터 사용 여부
         }
     }
     
@@ -1769,7 +2223,6 @@ def create_config_file(config_path: str = "trend_trader_config.json") -> None:
         logger.info(f"기본 설정 파일 생성 완료: {config_path}")
     except Exception as e:
         logger.exception(f"설정 파일 생성 중 오류: {str(e)}")
-
 
 # 메인 함수
 def main():
