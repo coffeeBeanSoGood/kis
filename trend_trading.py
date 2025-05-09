@@ -18,6 +18,7 @@ import logging
 import datetime
 import numpy as np
 import pandas as pd
+import random  # 여기에 random 모듈 추가
 from typing import List, Dict, Tuple, Optional, Union
 
 # KIS API 함수 임포트
@@ -40,7 +41,48 @@ KisKR.set_logger(logger)
 
 class TechnicalIndicators:
     """기술적 지표 계산 클래스"""
-    
+
+    def calculate_atr(data: pd.DataFrame, period: int = 14) -> pd.Series:
+        """ATR(Average True Range) 계산
+        
+        Args:
+            data: 가격 데이터가 포함된 DataFrame, 'close', 'high', 'low' 컬럼이 필요
+            period: ATR 계산 기간
+            
+        Returns:
+            Series: ATR 값
+        """
+        high = data['high']
+        low = data['low']
+        close = data['close']
+        
+        # True Range 계산
+        tr1 = abs(high - low)
+        tr2 = abs(high - close.shift())
+        tr3 = abs(low - close.shift())
+        
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        
+        # ATR 계산 (단순 이동평균)
+        atr = tr.rolling(window=period).mean()
+        
+        return atr
+
+    # 동적 ATR 기반 손절 계산 함수
+    def calculate_dynamic_stop_loss(price: float, atr: float, multiplier: float = 2.0) -> float:
+        """ATR 기반 동적 손절가 계산
+        
+        Args:
+            price: 현재 가격
+            atr: ATR 값
+            multiplier: ATR 승수 (기본값 2)
+            
+        Returns:
+            float: 손절가
+        """
+        stop_loss = price - (atr * multiplier)
+        return stop_loss
+
     @staticmethod
     def calculate_rsi(data: pd.DataFrame, period: int = 14) -> pd.Series:
         """RSI(Relative Strength Index) 계산
@@ -282,7 +324,7 @@ class TechnicalIndicators:
 
 class TrendTraderBot:
     """한국주식 추세매매봇 클래스"""
-    
+
     def __init__(self, config_path: str = "trend_trader_config.json"):
         """매매봇 초기화
         
@@ -294,11 +336,24 @@ class TrendTraderBot:
         self.config_path = config_path
         
         self.tech_indicators = TechnicalIndicators()
-        self.watch_list = self.config.get("watch_list", [])
-        self.sector_list = self.config.get("sector_list", [])
-        self.budget = self.config.get("budget", 1000000)  # 기본 예산 100만원
+        
+        # 업데이트된 구성 파일에서 정보 가져오기
+        self.watch_list = [item.get("code") for item in self.config.get("watch_list", [])]
+        self.watch_list_info = {item.get("code"): item for item in self.config.get("watch_list", [])}
+        
+        self.total_budget = self.config.get("total_budget", 5000000)  # 기본 총 예산 500만원
         self.profit_target = self.config.get("profit_target", 5.0)  # 목표 수익률 (%)
         self.stop_loss = self.config.get("stop_loss", -3.0)  # 손절 비율 (%)
+        self.max_stocks = self.config.get("max_stocks", 5)  # 최대 동시 보유 종목 수
+        
+        # 매매 전략 설정
+        trading_strategies = self.config.get("trading_strategies", {})
+        self.rsi_oversold = trading_strategies.get("rsi_oversold_threshold", 30.0)
+        self.rsi_overbought = trading_strategies.get("rsi_overbought_threshold", 70.0)
+        self.macd_fast_period = trading_strategies.get("macd_fast_period", 12)
+        self.macd_slow_period = trading_strategies.get("macd_slow_period", 26)
+        self.macd_signal_period = trading_strategies.get("macd_signal_period", 9)
+        
         self.holdings = {}  # 보유 종목 정보
         self.last_check_time = {}  # 마지막 검사 시간
         
@@ -308,6 +363,7 @@ class TrendTraderBot:
         
         # 보유종목 정보 로드
         self._load_holdings()
+
     
     def _load_config(self, config_path: str) -> Dict[str, any]:
         """설정 파일 로드
@@ -351,9 +407,11 @@ class TrendTraderBot:
             logger.info(f"설정 파일 저장 완료: {config_path}")
         except Exception as e:
             logger.exception(f"설정 파일 저장 중 오류: {str(e)}")
-    
+
+
+    # 트레일링 스탑 구현을 위한 holdings 구조 확장
     def _load_holdings(self) -> None:
-        """보유 종목 정보 로드"""
+        """보유 종목 정보 로드 (트레일링 스탑 지원)"""
         try:
             # API로 계좌 잔고 가져오기
             account_balance = KisKR.GetBalance()
@@ -369,17 +427,27 @@ class TrendTraderBot:
             for stock in stock_list:
                 stock_code = stock.get("StockCode")
                 if stock_code:
+                    current_price = float(stock.get("StockNowPrice", 0))
+                    
                     self.holdings[stock_code] = {
                         "quantity": int(stock.get("StockAmt", 0)),
                         "avg_price": float(stock.get("StockAvgPrice", 0)),
-                        "current_price": float(stock.get("StockNowPrice", 0)),
-                        "buy_date": datetime.datetime.now().strftime("%Y%m%d")  # 매수일 정보가 없으면 현재 날짜로
+                        "current_price": current_price,
+                        "buy_date": datetime.datetime.now().strftime("%Y%m%d"),
+                        "highest_price": current_price,  # 트레일링 스탑을 위한 최고가 기록
+                        "trailing_stop_price": 0  # 트레일링 스탑 가격
                     }
+                    
+                    # 트레일링 스탑 가격 설정
+                    if self.config.get("trading_strategies", {}).get("use_trailing_stop", False):
+                        trailing_pct = self.config.get("trading_strategies", {}).get("trailing_stop_pct", 2.0)
+                        self.holdings[stock_code]["trailing_stop_price"] = current_price * (1 - trailing_pct/100)
             
             logger.info(f"보유 종목 로드 완료: {len(self.holdings)}개")
         except Exception as e:
             logger.exception(f"보유 종목 로드 중 오류: {str(e)}")
-    
+
+
     def _save_holdings(self) -> None:
         """보유 종목 정보 저장"""
         try:
@@ -388,7 +456,8 @@ class TrendTraderBot:
             logger.info("보유 종목 정보 저장 완료")
         except Exception as e:
             logger.exception(f"보유 종목 정보 저장 중 오류: {str(e)}")
-    
+
+
     def analyze_stock(self, stock_code: str) -> Dict[str, any]:
         """종목 분석
         
@@ -416,10 +485,18 @@ class TrendTraderBot:
             
             # 기술적 지표 계산
             daily_data['RSI'] = self.tech_indicators.calculate_rsi(daily_data)
-            daily_data[['MACD', 'Signal', 'Histogram']] = self.tech_indicators.calculate_macd(daily_data)
+            daily_data[['MACD', 'Signal', 'Histogram']] = self.tech_indicators.calculate_macd(
+                daily_data, 
+                fast_period=self.macd_fast_period, 
+                slow_period=self.macd_slow_period, 
+                signal_period=self.macd_signal_period
+            )
             daily_data[['MiddleBand', 'UpperBand', 'LowerBand']] = self.tech_indicators.calculate_bollinger_bands(daily_data)
             daily_data[['K', 'D']] = self.tech_indicators.calculate_stochastic(daily_data)
             daily_data['Momentum'] = self.tech_indicators.calculate_momentum(daily_data)
+
+            # ATR 계산 추가
+            daily_data['ATR'] = self.tech_indicators.calculate_atr(daily_data)
             
             # 이동평균선 계산 (5, 20, 60일)
             daily_data['MA5'] = daily_data['close'].rolling(window=5).mean()
@@ -434,7 +511,12 @@ class TrendTraderBot:
                 minute_data['RSI'] = self.tech_indicators.calculate_rsi(minute_data)
                 
                 # MACD 계산
-                minute_data[['MACD', 'Signal', 'Histogram']] = self.tech_indicators.calculate_macd(minute_data)
+                minute_data[['MACD', 'Signal', 'Histogram']] = self.tech_indicators.calculate_macd(
+                    minute_data, 
+                    fast_period=self.macd_fast_period, 
+                    slow_period=self.macd_slow_period, 
+                    signal_period=self.macd_signal_period
+                )
             
             # 분석 결과
             analysis_result = {
@@ -453,14 +535,26 @@ class TrendTraderBot:
                     "ma5": daily_data['MA5'].iloc[-1] if not daily_data.empty else None,
                     "ma20": daily_data['MA20'].iloc[-1] if not daily_data.empty else None,
                     "ma60": daily_data['MA60'].iloc[-1] if not daily_data.empty else None,
+                    # ATR 값 추가
+                    "atr": daily_data['ATR'].iloc[-1] if not daily_data.empty else None
                 }
             }
-            
+
+            # 여기에 동적 손절가 계산 코드 추가
+            if not daily_data.empty:
+                current_atr = daily_data['ATR'].iloc[-1]
+                if not pd.isna(current_atr):
+                    atr_multiplier = self.config.get("trading_strategies", {}).get("atr_multiplier", 2.0)
+                    dynamic_stop_loss = self.tech_indicators.calculate_dynamic_stop_loss(
+                        current_price, current_atr, atr_multiplier
+                    )
+                    analysis_result["technical_data"]["dynamic_stop_loss"] = dynamic_stop_loss
+
             # 일봉 기반 매수 시그널 확인
             if not daily_data.empty:
-                # 1. RSI 과매도 확인
+                # 1. RSI 과매도 확인 (커스텀 임계값 사용)
                 rsi_value = daily_data['RSI'].iloc[-1]
-                is_oversold = self.tech_indicators.is_oversold_rsi(rsi_value)
+                is_oversold = self.tech_indicators.is_oversold_rsi(rsi_value, self.rsi_oversold)
                 analysis_result["signals"]["daily"]["rsi_oversold"] = is_oversold
                 
                 # 2. 골든 크로스 확인 (5일선이 20일선을 상향돌파)
@@ -471,7 +565,7 @@ class TrendTraderBot:
                 macd_cross_up = False
                 try:
                     if daily_data['MACD'].iloc[-2] < daily_data['Signal'].iloc[-2] and \
-                       daily_data['MACD'].iloc[-1] > daily_data['Signal'].iloc[-1]:
+                    daily_data['MACD'].iloc[-1] > daily_data['Signal'].iloc[-1]:
                         macd_cross_up = True
                 except:
                     pass
@@ -501,46 +595,64 @@ class TrendTraderBot:
             
             # 분봉 기반 매수 시그널 확인
             if minute_data is not None and not minute_data.empty:
-                # 1. 분봉 RSI 과매도 확인
+                # 1. 분봉 RSI 과매도 확인 (커스텀 임계값 사용)
                 minute_rsi_value = minute_data['RSI'].iloc[-1]
-                minute_is_oversold = self.tech_indicators.is_oversold_rsi(minute_rsi_value)
+                minute_is_oversold = self.tech_indicators.is_oversold_rsi(minute_rsi_value, self.rsi_oversold)
                 analysis_result["signals"]["minute"]["rsi_oversold"] = minute_is_oversold
                 
                 # 2. 분봉 MACD 상향돌파 확인
                 minute_macd_cross_up = False
                 try:
                     if minute_data['MACD'].iloc[-2] < minute_data['Signal'].iloc[-2] and \
-                       minute_data['MACD'].iloc[-1] > minute_data['Signal'].iloc[-1]:
+                    minute_data['MACD'].iloc[-1] > minute_data['Signal'].iloc[-1]:
                         minute_macd_cross_up = True
                 except:
                     pass
                     
                 analysis_result["signals"]["minute"]["macd_cross_up"] = minute_macd_cross_up
-            
+
             # 종합 매수 시그널 결정
-            # 일봉 기준: RSI 과매도 상태이고 (지지선 근처 또는 모멘텀 상승 전환 또는 골든 크로스)
             daily_buy_signal = is_oversold and (near_support or momentum_turning_up or is_golden_cross)
             minute_buy_signal = False
             
             if minute_data is not None and not minute_data.empty:
                 minute_buy_signal = minute_is_oversold or minute_macd_cross_up
             
-            # 일봉과 분봉 모두 매수 시그널이면 매수
-            analysis_result["is_buy_signal"] = daily_buy_signal and minute_buy_signal
+            # 기본 매수 시그널
+            buy_signal = daily_buy_signal and minute_buy_signal
             
-            if analysis_result["is_buy_signal"]:
+            # 추세 필터 적용 (설정에서 활성화된 경우)
+            if buy_signal and self.config.get("trading_strategies", {}).get("use_daily_trend_filter", False):
+                # 일봉 추세 확인
+                daily_trend_ok = TrendFilter.check_daily_trend(daily_data)
+                if not daily_trend_ok:
+                    buy_signal = False
+                    analysis_result["reason"] = "일봉 추세 불량"
+            
+            # 시장 추세 필터 적용 (설정에서 활성화된 경우)
+            if buy_signal and self.config.get("trading_strategies", {}).get("use_market_trend_filter", False):
+                market_index_code = self.config.get("trading_strategies", {}).get("market_index_code", "069500")
+                market_trend_ok = TrendFilter.check_market_trend(market_index_code)
+                if not market_trend_ok:
+                    buy_signal = False
+                    analysis_result["reason"] = "시장 추세 불량"
+            
+            # 최종 매수 시그널 설정
+            analysis_result["is_buy_signal"] = buy_signal
+            
+            # 매수 이유 추가
+            if buy_signal:
                 analysis_result["reason"] = "저점 매수 시그널 발생"
-            else:
-                analysis_result["reason"] = "매수 조건 불충족"
             
             return analysis_result
-            
         except Exception as e:
             logger.exception(f"종목 {stock_code} 분석 중 오류: {str(e)}")
             return {"is_buy_signal": False, "reason": f"분석 오류: {str(e)}"}
-    
+
+
+    # 트레일링 스탑 로직을 포함한 check_sell_signals 메서드
     def check_sell_signals(self) -> None:
-        """보유 종목 매도 시그널 확인"""
+        """보유 종목 매도 시그널 확인 (트레일링 스탑 포함)"""
         try:
             for stock_code, holding_info in list(self.holdings.items()):
                 current_price = KisKR.GetCurrentPrice(stock_code)
@@ -555,6 +667,20 @@ class TrendTraderBot:
                 
                 # 수익률 계산
                 profit_percent = ((current_price / avg_price) - 1) * 100
+                
+                # 트레일링 스탑 업데이트
+                use_trailing_stop = self.config.get("trading_strategies", {}).get("use_trailing_stop", False)
+                if use_trailing_stop:
+                    # 현재가가 기존 최고가보다 높으면 최고가 및 트레일링 스탑 가격 업데이트
+                    if current_price > holding_info.get("highest_price", 0):
+                        trailing_pct = self.config.get("trading_strategies", {}).get("trailing_stop_pct", 2.0)
+                        new_stop_price = current_price * (1 - trailing_pct/100)
+                        
+                        # 홀딩 정보 업데이트
+                        self.holdings[stock_code]["highest_price"] = current_price
+                        self.holdings[stock_code]["trailing_stop_price"] = new_stop_price
+                        logger.info(f"트레일링 스탑 업데이트: {stock_code}, 최고가: {current_price:,}원, " +
+                                f"스탑 가격: {new_stop_price:,}원")
                 
                 # 기술적 지표 기반 매도 조건 확인
                 daily_data = KisKR.GetOhlcvNew(stock_code, 'D', 30, adj_ok=1)
@@ -572,22 +698,56 @@ class TrendTraderBot:
                     sell_signal = True
                     sell_reason = f"손절 조건 발동: {profit_percent:.2f}%"
                 
-                # 3. RSI 과매수 영역
+                # 3. 트레일링 스탑 조건
+                elif use_trailing_stop and current_price < holding_info.get("trailing_stop_price", 0):
+                    sell_signal = True
+                    sell_reason = f"트레일링 스탑 발동: 최고가 {holding_info.get('highest_price'):,}원의 " + \
+                                f"{self.config.get('trading_strategies', {}).get('trailing_stop_pct', 2.0)}% 하락"
+
+                # ===== 여기에 동적 손절 코드 추가 =====
+                # 동적 손절 적용
+                use_dynamic_stop = holding_info.get("use_dynamic_stop", False)
+                if use_dynamic_stop and holding_info.get("dynamic_stop_price", 0) > 0:
+                    dynamic_stop_price = holding_info.get("dynamic_stop_price", 0)
+                    
+                    # 동적 손절 발동
+                    if current_price <= dynamic_stop_price:
+                        sell_signal = True
+                        sell_reason = f"ATR 기반 동적 손절: {dynamic_stop_price:,}원"
+
+                # 4. RSI 과매수 영역 (커스텀 임계값 사용)
                 elif daily_data is not None and not daily_data.empty:
                     daily_data['RSI'] = self.tech_indicators.calculate_rsi(daily_data)
                     rsi_value = daily_data['RSI'].iloc[-1]
                     
-                    if self.tech_indicators.is_overbought_rsi(rsi_value):
+                    if self.tech_indicators.is_overbought_rsi(rsi_value, self.rsi_overbought):
                         sell_signal = True
                         sell_reason = f"RSI 과매수 영역: {rsi_value:.2f}"
                     
-                    # 4. 데드 크로스
+                    # 5. 데드 크로스
                     daily_data['MA5'] = daily_data['close'].rolling(window=5).mean()
                     daily_data['MA20'] = daily_data['close'].rolling(window=20).mean()
                     
                     if self.tech_indicators.is_death_cross(daily_data):
                         sell_signal = True
                         sell_reason = "5일선이 20일선을 하향돌파(데드 크로스)"
+                    
+                    # 6. MACD 하향 돌파
+                    if not sell_signal:
+                        daily_data[['MACD', 'Signal', 'Histogram']] = self.tech_indicators.calculate_macd(
+                            daily_data, 
+                            fast_period=self.macd_fast_period, 
+                            slow_period=self.macd_slow_period, 
+                            signal_period=self.macd_signal_period
+                        )
+                        
+                        try:
+                            if daily_data['MACD'].iloc[-2] > daily_data['Signal'].iloc[-2] and \
+                            daily_data['MACD'].iloc[-1] < daily_data['Signal'].iloc[-1]:
+                                sell_signal = True
+                                sell_reason = "MACD 하향돌파"
+                        except:
+                            pass
                 
                 # 매도 시그널이 있으면 매도 주문
                 if sell_signal:
@@ -611,7 +771,9 @@ class TrendTraderBot:
         
         except Exception as e:
             logger.exception(f"매도 시그널 확인 중 오류: {str(e)}")
-    
+
+
+    # run 메서드 수정 - 최소 거래 금액 제한 및 분할 매수 적용
     def run(self) -> None:
         """매매봇 실행"""
         logger.info("한국주식 추세매매봇 시작")
@@ -623,17 +785,32 @@ class TrendTraderBot:
             if not account_balance or isinstance(account_balance, str):
                 logger.error(f"계좌 잔고 조회 오류: {account_balance}")
                 return
-                
+                    
             available_cash = account_balance.get("RemainMoney", 0)
             
             logger.info(f"계좌 잔고: {available_cash:,}원")
             logger.info(f"보유 종목: {len(self.holdings)}개")
+            logger.info(f"최대 보유 종목 수: {self.max_stocks}개")
+            
+            # 현재 보유 종목 수 확인
+            current_holdings_count = len(self.holdings)
+            
+            # 매수 가능한 종목 수 확인
+            available_slots = max(0, self.max_stocks - current_holdings_count)
+            logger.info(f"추가 매수 가능 종목 수: {available_slots}개")
             
             # 관심종목 분석 및 매수 시그널 확인
+            buy_candidates = []  # 매수 후보 종목 리스트
+            
             for stock_code in self.watch_list:
                 # 이미 보유 중인 종목 스킵
                 if stock_code in self.holdings:
                     continue
+                
+                # 매수 가능 종목 수가 0이면 분석 중단
+                if available_slots <= 0:
+                    logger.info("최대 보유 종목 수에 도달하여 추가 매수 분석을 중단합니다.")
+                    break
                 
                 # 최근 확인 시간 체크 (1시간에 한 번만 확인)
                 last_check = self.last_check_time.get(stock_code, None)
@@ -647,15 +824,69 @@ class TrendTraderBot:
                 self.last_check_time[stock_code] = now
                 
                 if analysis_result.get("is_buy_signal", False):
-                    stock_name = analysis_result.get("stock_name", stock_code)
-                    current_price = analysis_result.get("current_price", 0)
+                    # 매수 후보 목록에 추가
+                    analysis_result["stock_code"] = stock_code
+                    analysis_result["current_price"] = KisKR.GetCurrentPrice(stock_code)
+                    buy_candidates.append(analysis_result)
+            
+            # 매수 후보가 있으면 점수 기반으로 정렬
+            if buy_candidates:
+                # 후보 종목들에 점수 부여 및 정렬
+                for candidate in buy_candidates:
+                    score = 0
+                    signals = candidate.get("signals", {})
                     
-                    logger.info(f"매수 시그널 발생: {stock_code} ({stock_name}), 가격: {current_price:,}원")
-                    logger.info(f"매수 이유: {analysis_result.get('reason', '')}")
+                    # 일봉 시그널 점수
+                    daily_signals = signals.get("daily", {})
+                    if daily_signals.get("rsi_oversold", False): score += 2
+                    if daily_signals.get("golden_cross", False): score += 2
+                    if daily_signals.get("macd_cross_up", False): score += 2
+                    if daily_signals.get("near_lower_band", False): score += 1
+                    if daily_signals.get("momentum_turning_up", False): score += 1
+                    if daily_signals.get("near_support", False): score += 2
+                    
+                    # 분봉 시그널 점수
+                    minute_signals = signals.get("minute", {})
+                    if minute_signals.get("rsi_oversold", False): score += 1
+                    if minute_signals.get("macd_cross_up", False): score += 1
+                    
+                    candidate["score"] = score
+                
+                # 점수 기준 내림차순 정렬
+                buy_candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
+                
+                # 최소 거래 금액 설정 확인
+                min_trading_amount = self.config.get("min_trading_amount", 500000)  # 기본값 50만원
+                
+                # 상위 종목부터 매수 시도
+                for candidate in buy_candidates:
+                    if available_slots <= 0:
+                        break
+                        
+                    stock_code = candidate.get("stock_code")
+                    stock_name = candidate.get("stock_name", stock_code)
+                    current_price = candidate.get("current_price", 0)
+                    
+                    logger.info(f"매수 후보: {stock_code} ({stock_name}), 점수: {candidate.get('score', 0)}, 가격: {current_price:,}원")
+                    logger.info(f"매수 이유: {candidate.get('reason', '')}")
+                    
+                    # 종목별 예산 배분 계산
+                    stock_info = self.watch_list_info.get(stock_code, {})
+                    allocation_ratio = stock_info.get("allocation_ratio", 0.2)  # 기본값 20%
                     
                     # 예산 내에서 매수 수량 결정
-                    max_budget = min(self.budget, available_cash)
-                    quantity = max(1, int(max_budget / current_price))
+                    allocated_budget = min(self.total_budget * allocation_ratio, available_cash)
+                    
+                    # 분할 매수 전략 적용 - 첫 매수는 할당 예산의 40~60% 사용
+                    split_ratio = random.uniform(0.4, 0.6)  # 40~60% 랜덤 비율
+                    first_buy_budget = allocated_budget * split_ratio
+                    
+                    # 최소 거래 금액 확인
+                    if first_buy_budget < min_trading_amount:
+                        logger.info(f"종목 {stock_code} 매수 예산({first_buy_budget:,.0f}원)이 최소 거래 금액({min_trading_amount:,}원)보다 작습니다. 매수 건너뜀.")
+                        continue
+                    
+                    quantity = max(1, int(first_buy_budget / current_price))
                     
                     if quantity > 0 and current_price > 0:
                         # 주문 가능한 수량으로 보정
@@ -664,6 +895,14 @@ class TrendTraderBot:
                             logger.info(f"주문 가능 수량 보정: {quantity}주")
                         except Exception as e:
                             logger.warning(f"주문 가능 수량 보정 실패, 원래 수량으로 진행: {e}")
+                        
+                        # 매수 금액 재계산
+                        buy_amount = current_price * quantity
+                        
+                        # 매수 금액이 최소 거래 금액보다 작으면 건너뜀
+                        if buy_amount < min_trading_amount:
+                            logger.info(f"종목 {stock_code} 매수 금액({buy_amount:,.0f}원)이 최소 거래 금액({min_trading_amount:,}원)보다 작습니다. 매수 건너뜀.")
+                            continue
                         
                         # 시장가 매수
                         order_result = KisKR.MakeBuyMarketOrder(
@@ -677,19 +916,110 @@ class TrendTraderBot:
                             # 매수 평균가는 시장가 주문이므로 GetMarketOrderPrice 함수로 가져옴
                             avg_price = KisKR.GetMarketOrderPrice(stock_code, order_result)
                             
-                            # 보유 종목에 추가
+                            # 보유 종목에 추가 (트레일링 스탑 설정 포함)
                             self.holdings[stock_code] = {
                                 "quantity": quantity,
                                 "avg_price": avg_price,
                                 "current_price": current_price,
-                                "buy_date": now.strftime("%Y%m%d")
+                                "buy_date": now.strftime("%Y%m%d"),
+                                "highest_price": current_price,
+                                "trailing_stop_price": 0,
+                                "split_buy": True,
+                                "initial_budget": allocated_budget,
+                                "used_budget": buy_amount,
+                                "remaining_budget": allocated_budget - buy_amount,
+                                # 동적 손절가 추가
+                                "use_dynamic_stop": self.config.get("trading_strategies", {}).get("use_dynamic_stop", False),
+                                "dynamic_stop_price": candidate.get("technical_data", {}).get("dynamic_stop_loss", 0)
                             }
+                            
+                            # 트레일링 스탑 가격 설정
+                            if self.config.get("trading_strategies", {}).get("use_trailing_stop", False):
+                                trailing_pct = self.config.get("trading_strategies", {}).get("trailing_stop_pct", 2.0)
+                                self.holdings[stock_code]["trailing_stop_price"] = current_price * (1 - trailing_pct/100)
+                                
                             self._save_holdings()
+                            
+                            # 사용 가능한 슬롯 감소
+                            available_slots -= 1
                         else:
                             logger.error(f"매수 주문 실패: {stock_code}, {order_result}")
                 
-                # 처리 간격 두기
-                time.sleep(1)
+            # 보유 종목 중 분할 매수가 가능한 종목 추가 매수 검토
+            for stock_code, holding_info in list(self.holdings.items()):
+                # 분할 매수가 아니거나 남은 예산이 없으면 스킵
+                if not holding_info.get("split_buy", False) or holding_info.get("remaining_budget", 0) <= 0:
+                    continue
+                    
+                current_price = KisKR.GetCurrentPrice(stock_code)
+                if current_price is None or isinstance(current_price, str):
+                    continue
+                    
+                avg_price = holding_info.get("avg_price", 0)
+                if avg_price <= 0:
+                    continue
+                    
+                # 현재 수익률 계산
+                profit_percent = ((current_price / avg_price) - 1) * 100
+                
+                # 추가 매수 조건: 현재 가격이 평균단가보다 낮을 때
+                if current_price < avg_price * 0.98:  # 2% 이상 하락했을 때
+                    remaining_budget = holding_info.get("remaining_budget", 0)
+                    min_trading_amount = self.config.get("min_trading_amount", 500000)
+                    
+                    # 최소 거래 금액 확인
+                    if remaining_budget < min_trading_amount:
+                        continue
+                        
+                    # 추가 매수 수량 계산
+                    add_quantity = max(1, int(remaining_budget / current_price))
+                    
+                    if add_quantity > 0:
+                        # 주문 가능한 수량으로 보정
+                        try:
+                            add_quantity = KisKR.AdjustPossibleAmt(stock_code, add_quantity, "MARKET")
+                        except:
+                            pass
+                            
+                        # 매수 금액 재계산
+                        add_buy_amount = current_price * add_quantity
+                        
+                        # 최소 거래 금액 확인
+                        if add_buy_amount < min_trading_amount:
+                            continue
+                            
+                        # 시장가 추가 매수
+                        logger.info(f"분할 매수 - 추가 매수 시도: {stock_code}, {add_quantity}주, 현재가: {current_price}원, 평단가: {avg_price}원")
+                        
+                        order_result = KisKR.MakeBuyMarketOrder(
+                            stockcode=stock_code,
+                            amt=add_quantity
+                        )
+                        
+                        if not isinstance(order_result, str):
+                            logger.info(f"추가 매수 주문 성공: {stock_code} {add_quantity}주")
+                            
+                            # 기존 수량
+                            existing_quantity = holding_info.get("quantity", 0)
+                            existing_amount = existing_quantity * avg_price
+                            
+                            # 새로운 평균단가 계산
+                            new_quantity = existing_quantity + add_quantity
+                            new_avg_price = (existing_amount + add_buy_amount) / new_quantity
+                            
+                            # 홀딩 정보 업데이트
+                            self.holdings[stock_code]["quantity"] = new_quantity
+                            self.holdings[stock_code]["avg_price"] = new_avg_price
+                            self.holdings[stock_code]["used_budget"] = holding_info.get("used_budget", 0) + add_buy_amount
+                            self.holdings[stock_code]["remaining_budget"] = holding_info.get("remaining_budget", 0) - add_buy_amount
+                            
+                            # 분할 매수 모두 사용했으면 플래그 해제
+                            if self.holdings[stock_code]["remaining_budget"] < min_trading_amount:
+                                self.holdings[stock_code]["split_buy"] = False
+                                
+                            self._save_holdings()
+                        else:
+                            logger.error(f"추가 매수 주문 실패: {stock_code}, {order_result}")
             
             # 매도 시그널 확인
             self.check_sell_signals()
@@ -699,7 +1029,6 @@ class TrendTraderBot:
         except Exception as e:
             logger.exception(f"매매봇 실행 중 오류: {str(e)}")
 
-    
     def run_backtest(self, start_date: str, end_date: str = None) -> Dict[str, any]:
         """백테스트 실행
         
@@ -716,8 +1045,8 @@ class TrendTraderBot:
             end_date = datetime.datetime.now().strftime("%Y%m%d")
         
         backtest_results = {
-            "initial_capital": self.budget,
-            "final_capital": self.budget,
+            "initial_capital": self.total_budget,
+            "final_capital": self.total_budget,
             "profit_loss": 0,
             "profit_loss_percent": 0,
             "trades": [],
@@ -727,13 +1056,52 @@ class TrendTraderBot:
             "max_drawdown": 0
         }
         
-        total_capital = self.budget
+        total_capital = self.total_budget
         virtual_holdings = {}
         trades = []
+        
+        # 나머지 백테스트 코드는 원래 코드를 유지하되, 일부 부분만 수정
+
+
+    def run_backtest(self, start_date: str, end_date: str = None) -> Dict[str, any]:
+        """백테스트 실행
+        
+        Args:
+            start_date: 시작일자 (YYYYMMDD)
+            end_date: 종료일자 (YYYYMMDD), 없으면 현재 날짜
+            
+        Returns:
+            Dict: 백테스트 결과
+        """
+        logger.info(f"백테스트 시작: {start_date} ~ {end_date or '현재'}")
+        
+        if not end_date:
+            end_date = datetime.datetime.now().strftime("%Y%m%d")
+        
+        backtest_results = {
+            "initial_capital": self.total_budget,
+            "final_capital": self.total_budget,
+            "profit_loss": 0,
+            "profit_loss_percent": 0,
+            "trades": [],
+            "win_rate": 0,
+            "avg_profit": 0,
+            "avg_loss": 0,
+            "max_drawdown": 0
+        }
+        
+        total_capital = self.total_budget
+        virtual_holdings = {}
+        trades = []
+        max_holdings_count = self.max_stocks  # 최대 동시 보유 종목 수 제한
         
         try:
             # 관심종목 반복
             for stock_code in self.watch_list:
+                # 종목별 할당 비율 가져오기
+                stock_info = self.watch_list_info.get(stock_code, {})
+                allocation_ratio = stock_info.get("allocation_ratio", 0.2)  # 기본값 20%
+                
                 # 일봉 데이터 조회
                 daily_data = KisKR.GetOhlcvNew(stock_code, 'D', 200, adj_ok=1)
                 
@@ -810,11 +1178,16 @@ class TrendTraderBot:
                     filtered_data = daily_data.copy()
                     logger.warning(f"필터링 실패로 전체 데이터 사용: {len(filtered_data)}개")
 
-                logger.info(f"종목 {stock_code} 백테스트 데이터 기간: {start_date_dt} ~ {end_date_dt}")
+                logger.info(f"종목 {stock_code} 백테스트 데이터 기간: {filtered_data.index[0]} ~ {filtered_data.index[-1]}")
 
-                # 기술적 지표 계산
+                # 기술적 지표 계산 - 커스텀 파라미터 사용
                 filtered_data['RSI'] = self.tech_indicators.calculate_rsi(filtered_data)
-                filtered_data[['MACD', 'Signal', 'Histogram']] = self.tech_indicators.calculate_macd(filtered_data)
+                filtered_data[['MACD', 'Signal', 'Histogram']] = self.tech_indicators.calculate_macd(
+                    filtered_data,
+                    fast_period=self.macd_fast_period,
+                    slow_period=self.macd_slow_period,
+                    signal_period=self.macd_signal_period
+                )
                 filtered_data[['MiddleBand', 'UpperBand', 'LowerBand']] = self.tech_indicators.calculate_bollinger_bands(filtered_data)
                 filtered_data['MA5'] = filtered_data['close'].rolling(window=5).mean()
                 filtered_data['MA20'] = filtered_data['close'].rolling(window=20).mean()
@@ -843,6 +1216,7 @@ class TrendTraderBot:
                             # 거래 기록
                             trades.append({
                                 "stock_code": stock_code,
+                                "stock_name": self.watch_list_info.get(stock_code, {}).get("name", stock_code),
                                 "action": "SELL",
                                 "reason": f"목표 수익률 달성: {profit_percent:.2f}%",
                                 "date": date,
@@ -868,6 +1242,7 @@ class TrendTraderBot:
                             # 거래 기록
                             trades.append({
                                 "stock_code": stock_code,
+                                "stock_name": self.watch_list_info.get(stock_code, {}).get("name", stock_code),
                                 "action": "SELL",
                                 "reason": f"손절: {profit_percent:.2f}%",
                                 "date": date,
@@ -880,8 +1255,8 @@ class TrendTraderBot:
                             # 보유 종목에서 제거
                             del virtual_holdings[stock_code]
                             
-                        # 3. RSI 과매수
-                        elif self.tech_indicators.is_overbought_rsi(filtered_data.iloc[i]['RSI']):
+                        # 3. RSI 과매수 - 커스텀 임계값 사용
+                        elif self.tech_indicators.is_overbought_rsi(filtered_data.iloc[i]['RSI'], self.rsi_overbought):
                             # 매도 실행
                             quantity = virtual_holdings[stock_code]["quantity"]
                             sell_amount = current_price * quantity
@@ -893,6 +1268,7 @@ class TrendTraderBot:
                             # 거래 기록
                             trades.append({
                                 "stock_code": stock_code,
+                                "stock_name": self.watch_list_info.get(stock_code, {}).get("name", stock_code),
                                 "action": "SELL",
                                 "reason": f"RSI 과매수: {filtered_data.iloc[i]['RSI']:.2f}",
                                 "date": date,
@@ -904,18 +1280,48 @@ class TrendTraderBot:
                             
                             # 보유 종목에서 제거
                             del virtual_holdings[stock_code]
-                    
-                    else:
-                        # 매수 조건 확인
+                            
+                        # 4. MACD 하향돌파 확인
+                        elif i > 0 and filtered_data.iloc[i-1]['MACD'] > filtered_data.iloc[i-1]['Signal'] and \
+                            filtered_data.iloc[i]['MACD'] < filtered_data.iloc[i]['Signal']:
+                            # 매도 실행
+                            quantity = virtual_holdings[stock_code]["quantity"]
+                            sell_amount = current_price * quantity
+                            profit = sell_amount - (avg_price * quantity)
+                            
+                            # 자본 업데이트
+                            total_capital += sell_amount
+                            
+                            # 거래 기록
+                            trades.append({
+                                "stock_code": stock_code,
+                                "stock_name": self.watch_list_info.get(stock_code, {}).get("name", stock_code),
+                                "action": "SELL",
+                                "reason": "MACD 하향돌파",
+                                "date": date,
+                                "price": current_price,
+                                "quantity": quantity,
+                                "profit_loss": profit,
+                                "profit_loss_percent": profit_percent
+                            })
+                            
+                            # 보유 종목에서 제거
+                            del virtual_holdings[stock_code]
                         
-                        # 1. RSI 과매도 확인
+                    else:
+                        # 최대 보유 종목 수 확인
+                        if len(virtual_holdings) >= max_holdings_count:
+                            continue
+                            
+                        # 매수 조건 확인
+                        # 1. RSI 과매도 확인 - 커스텀 임계값 사용
                         rsi_value = filtered_data.iloc[i]['RSI']
-                        is_oversold = self.tech_indicators.is_oversold_rsi(rsi_value)
+                        is_oversold = self.tech_indicators.is_oversold_rsi(rsi_value, self.rsi_oversold)
                         
                         # 2. 골든 크로스 확인
                         golden_cross = False
                         if i > 0 and filtered_data.iloc[i-1]['MA5'] < filtered_data.iloc[i-1]['MA20'] and \
-                           filtered_data.iloc[i]['MA5'] >= filtered_data.iloc[i]['MA20']:
+                        filtered_data.iloc[i]['MA5'] >= filtered_data.iloc[i]['MA20']:
                             golden_cross = True
                         
                         # 3. 볼린저 밴드 하단 접촉
@@ -924,16 +1330,19 @@ class TrendTraderBot:
                         # 4. MACD 상향돌파
                         macd_cross_up = False
                         if i > 0 and filtered_data.iloc[i-1]['MACD'] < filtered_data.iloc[i-1]['Signal'] and \
-                           filtered_data.iloc[i]['MACD'] >= filtered_data.iloc[i]['Signal']:
+                        filtered_data.iloc[i]['MACD'] >= filtered_data.iloc[i]['Signal']:
                             macd_cross_up = True
                         
                         # 종합 매수 시그널
                         buy_signal = is_oversold and (near_lower_band or golden_cross or macd_cross_up)
                         
                         if buy_signal and total_capital > current_price:
+                            # 종목별 할당 예산 계산
+                            allocated_budget = self.total_budget * allocation_ratio
+                            
                             # 예산 내에서 매수 수량 결정
-                            max_budget = min(self.budget, total_capital)
-                            quantity = max(1, int(max_budget / current_price))
+                            max_available = min(allocated_budget, total_capital)
+                            quantity = max(1, int(max_available / current_price))
                             
                             # 매수 실행
                             buy_amount = current_price * quantity
@@ -962,6 +1371,7 @@ class TrendTraderBot:
                                 
                                 trades.append({
                                     "stock_code": stock_code,
+                                    "stock_name": self.watch_list_info.get(stock_code, {}).get("name", stock_code),
                                     "action": "BUY",
                                     "reason": buy_reason.rstrip(", "),
                                     "date": date,
@@ -969,7 +1379,7 @@ class TrendTraderBot:
                                     "quantity": quantity,
                                     "amount": buy_amount
                                 })
-            
+                
             # 백테스트 종료 시점에 보유중인 종목 청산
             for stock_code, holding in virtual_holdings.items():
                 # 마지막 가격으로 청산
@@ -990,9 +1400,10 @@ class TrendTraderBot:
                     # 거래 기록
                     trades.append({
                         "stock_code": stock_code,
+                        "stock_name": self.watch_list_info.get(stock_code, {}).get("name", stock_code),
                         "action": "SELL",
                         "reason": "백테스트 종료",
-                        "date": end_date,
+                        "date": end_date_dt if isinstance(end_date_dt, datetime.datetime) else pd.to_datetime(end_date),
                         "price": last_price,
                         "quantity": quantity,
                         "profit_loss": profit,
@@ -1001,8 +1412,8 @@ class TrendTraderBot:
             
             # 백테스트 결과 계산
             backtest_results["final_capital"] = total_capital
-            backtest_results["profit_loss"] = total_capital - self.budget
-            backtest_results["profit_loss_percent"] = (backtest_results["profit_loss"] / self.budget) * 100
+            backtest_results["profit_loss"] = total_capital - self.total_budget
+            backtest_results["profit_loss_percent"] = (backtest_results["profit_loss"] / self.total_budget) * 100
             backtest_results["trades"] = trades
             
             # 승률 계산
@@ -1020,14 +1431,14 @@ class TrendTraderBot:
                 backtest_results["avg_loss"] = sum(t.get("profit_loss", 0) for t in loss_trades) / len(loss_trades)
             
             # 최대 낙폭 계산
-            capital_history = [self.budget]
+            capital_history = [self.total_budget]
             for trade in trades:
                 if trade.get("action") == "BUY":
                     capital_history.append(capital_history[-1] - trade.get("amount", 0))
                 elif trade.get("action") == "SELL":
                     capital_history.append(capital_history[-1] + trade.get("price", 0) * trade.get("quantity", 0))
             
-            max_capital = self.budget
+            max_capital = self.total_budget
             max_drawdown = 0
             
             for capital in capital_history:
@@ -1037,9 +1448,38 @@ class TrendTraderBot:
             
             backtest_results["max_drawdown"] = max_drawdown
             
+            # 추가: 종목별 성과 분석
+            stock_performance = {}
+            for trade in trades:
+                code = trade.get("stock_code")
+                if code not in stock_performance:
+                    stock_performance[code] = {
+                        "name": trade.get("stock_name", code),
+                        "total_profit": 0,
+                        "trades_count": 0,
+                        "win_count": 0
+                    }
+                
+                if trade.get("action") == "SELL":
+                    profit = trade.get("profit_loss", 0)
+                    stock_performance[code]["total_profit"] += profit
+                    stock_performance[code]["trades_count"] += 1
+                    if profit > 0:
+                        stock_performance[code]["win_count"] += 1
+            
+            # 종목별 승률 계산
+            for code in stock_performance:
+                trades_count = stock_performance[code]["trades_count"]
+                if trades_count > 0:
+                    stock_performance[code]["win_rate"] = (stock_performance[code]["win_count"] / trades_count) * 100
+                else:
+                    stock_performance[code]["win_rate"] = 0
+            
+            backtest_results["stock_performance"] = stock_performance
+            
             logger.info(f"백테스트 완료: 최종 자본금 {backtest_results['final_capital']:,.0f}원, " + 
-                      f"수익률 {backtest_results['profit_loss_percent']:.2f}%, " +
-                      f"승률 {backtest_results['win_rate']:.2f}%")
+                    f"수익률 {backtest_results['profit_loss_percent']:.2f}%, " +
+                    f"승률 {backtest_results['win_rate']:.2f}%")
             
             return backtest_results
         
@@ -1047,6 +1487,87 @@ class TrendTraderBot:
             logger.exception(f"백테스트 실행 중 오류: {str(e)}")
             return backtest_results
 
+
+# 추세 필터 클래스 추가
+class TrendFilter:
+    """시장 및 일봉 추세 필터 클래스"""
+    
+    @staticmethod
+    def check_market_trend(market_index_code: str, lookback_days: int = 10) -> bool:
+        """시장 추세 확인 (지수 또는 대표 ETF 기반)
+        
+        Args:
+            market_index_code: 시장 지수 또는 ETF 코드 (예: KODEX 200 - 069500)
+            lookback_days: 확인할 기간(일)
+            
+        Returns:
+            bool: 상승 추세 여부
+        """
+        try:
+            # 지수 또는 ETF 데이터 가져오기
+            market_data = KisKR.GetOhlcvNew(market_index_code, 'D', lookback_days+5, adj_ok=1)
+            
+            if market_data is None or market_data.empty:
+                logger.warning(f"시장 지수 데이터({market_index_code})를 가져올 수 없습니다.")
+                return True  # 데이터 없으면 기본적으로 매수 허용
+            
+            # 이동평균선 계산 (5일)
+            market_data['MA5'] = market_data['close'].rolling(window=5).mean()
+            
+            # 추세 확인 - 최근 종가가 5일 이평선 위에 있고, 5일 이평선이 상승 추세인지
+            if len(market_data) < 5:
+                return True
+                
+            recent_ma5 = market_data['MA5'].iloc[-1]
+            prev_ma5 = market_data['MA5'].iloc[-2]
+            recent_close = market_data['close'].iloc[-1]
+            
+            # 종가가 5일선 위에 있고, 5일선이 상승 중이면 상승 추세로 판단
+            is_uptrend = (recent_close > recent_ma5) and (recent_ma5 > prev_ma5)
+            
+            return is_uptrend
+        
+        except Exception as e:
+            logger.exception(f"시장 추세 확인 중 오류: {str(e)}")
+            return True  # 오류 발생 시 기본적으로 매수 허용
+    
+    @staticmethod
+    def check_daily_trend(data: pd.DataFrame, lookback_days: int = 5) -> bool:
+        """종목의 일봉 추세 확인
+        
+        Args:
+            data: 일봉 데이터
+            lookback_days: 확인할 기간(일)
+            
+        Returns:
+            bool: 상승 추세 여부
+        """
+        try:
+            if data is None or data.empty or len(data) < lookback_days:
+                return True  # 데이터 부족시 기본적으로 매수 허용
+            
+            # 최근 n일 데이터 추출
+            recent_data = data.iloc[-lookback_days:]
+            
+            # 종가 기준 방향성 확인
+            first_close = recent_data['close'].iloc[0]
+            last_close = recent_data['close'].iloc[-1]
+            
+            # 히스토그램 방향성 확인 (MACD 히스토그램이 최근 상승 중인지)
+            has_macd = 'Histogram' in recent_data.columns
+            
+            # MACD 히스토그램이 있고 상승중인지 확인
+            if has_macd:
+                histogram_direction = recent_data['Histogram'].diff().iloc[-1] > 0
+            else:
+                histogram_direction = True  # 데이터 없으면 기본적으로 통과
+            
+            # 가격 상승 + 히스토그램 상승이면 상승 추세로 판단
+            return (last_close > first_close) and histogram_direction
+            
+        except Exception as e:
+            logger.exception(f"일봉 추세 확인 중 오류: {str(e)}")
+            return True  # 오류 발생 시 기본적으로 매수 허용
 
 # 설정파일 생성 함수
 def create_config_file(config_path: str = "trend_trader_config.json") -> None:
@@ -1057,14 +1578,85 @@ def create_config_file(config_path: str = "trend_trader_config.json") -> None:
     """
     config = {
         "watch_list": [
-            "005490"  # POSCO홀딩스
+            # {"code": "005490", "name": "POSCO홀딩스", "allocation_ratio": 0.15, "stop_loss": -2.0, "trailing_stop_pct": 1.8},
+            {"code": "000660", "name": "SK하이닉스", "allocation_ratio": 0.20, "stop_loss": -2.0, "trailing_stop_pct": 1.5},
+            {"code": "000155", "name": "두산우", "allocation_ratio": 0.10, "stop_loss": -2.0, "trailing_stop_pct": 2.0},
+            {"code": "042660", "name": "한화오션", "allocation_ratio": 0.25, "stop_loss": -1.5, "trailing_stop_pct": 1.5},
+            {"code": "000100", "name": "유한양행", "allocation_ratio": 0.20, "stop_loss": -2.0, "trailing_stop_pct": 1.8},
+            # {"code": "028300", "name": "HLB", "allocation_ratio": 0.05, "stop_loss": -1.5, "trailing_stop_pct": 2.0},
+            {"code": "373220", "name": "LG에너지솔루션", "allocation_ratio": 0.05, "stop_loss": -1.8, "trailing_stop_pct": 1.8}
         ],
-        "sector_list": [
-            "2차전지"
-        ],
-        "budget": 1000000,  # 종목당 최대 투자금액
-        "profit_target": 5.0,  # 목표 수익률 (%)
-        "stop_loss": -3.0  # 손절 비율 (%)
+        "total_budget": 5000000,  # 총 투자 예산
+        "profit_target": 5.0,     # 목표 수익률 (%)
+        "stop_loss": -2.0,        # 기본 손절 비율 (%)
+        "max_stocks": 4,          # 최대 동시 보유 종목 수 (5에서 4로 감소)
+        "min_trading_amount": 300000,  # 최소 거래 금액
+        "trading_strategies": {
+            # RSI 관련 설정
+            "rsi_oversold_threshold": 30.0,   # RSI 과매도 기준
+            "rsi_overbought_threshold": 68.0, # RSI 과매수 기준
+            
+            # MACD 관련 설정
+            "macd_fast_period": 10,   # MACD 빠른 이동평균
+            "macd_slow_period": 24,   # MACD 느린 이동평균
+            "macd_signal_period": 8,  # MACD 시그널 라인
+            
+            # 트레일링 스탑 관련 설정
+            "use_trailing_stop": True,
+            "trailing_stop_pct": 1.8,  # 기본 트레일링 스탑 비율(%)
+            
+            # 추세 필터 관련 설정
+            "use_daily_trend_filter": True,
+            "use_market_trend_filter": True,
+            "market_index_code": "069500",  # KODEX 200 ETF
+            "daily_trend_lookback": 3,      # 일일 추세 확인 기간
+            
+            # ATR 관련 설정
+            "use_dynamic_stop": True,
+            "atr_period": 10,         # ATR 계산 기간
+            "atr_multiplier": 1.5,    # ATR 승수
+            
+            # 분할 매수 관련 설정
+            "use_split_purchase": True,
+            "initial_purchase_ratio": 0.50,  # 초기 매수 비율 (60%에서 50%로 감소)
+            "additional_purchase_ratios": [0.30, 0.20],  # 2단계 추가 매수 비율
+            "additional_purchase_drop_pct": [1.5, 3.0],  # 추가 매수 하락 기준(%)
+            
+            # 볼린저 밴드 관련 설정
+            "bollinger_period": 18,   # 볼린저 밴드 기간
+            "bollinger_std": 2.0,     # 볼린저 밴드 표준편차 배수
+            
+            # 이동평균선 관련 설정
+            "short_ma_period": 5,     # 단기 이동평균선 기간
+            "mid_ma_period": 20,      # 중기 이동평균선 기간
+            "long_ma_period": 60,     # 장기 이동평균선 기간
+            
+            # 부분 익절 전략
+            "use_partial_profit": True,    # 부분 익절 사용
+            "partial_profit_target": 4.0,  # 4% 도달 시 부분 익절
+            "partial_profit_ratio": 0.5,   # 50% 물량 부분 익절
+            
+            # 시간 필터
+            "use_time_filter": True,
+            "avoid_trading_hours": ["09:00-10:00", "14:30-15:30"],  # 장 초반과 후반 거래 회피
+            
+            # 연속 하락일 필터
+            "use_consecutive_drop_filter": True,
+            "consecutive_drop_days": 2,    # 2일 연속 하락 후 매수 고려
+            
+            # 매수 점수 가중치 (점수 기반 종목 선정에 사용)
+            "score_weights": {
+                "rsi_oversold": 3,         # RSI 과매도 가중치
+                "golden_cross": 2,         # 골든 크로스 가중치
+                "macd_cross_up": 3,        # MACD 상향돌파 가중치
+                "near_lower_band": 2,      # 볼링저 밴드 하단 접촉
+                "momentum_turning_up": 1,  # 모멘텀 상승 전환
+                "near_support": 3,         # 지지선 근처 (2에서 3으로 증가)
+                "minute_rsi_oversold": 1,  # 분봉 RSI 과매도
+                "minute_macd_cross_up": 1, # 분봉 MACD 상향돌파
+                "consecutive_drop": 2      # 연속 하락일 가중치
+            }
+        }
     }
     
     try:
