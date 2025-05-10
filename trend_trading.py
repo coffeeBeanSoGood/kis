@@ -549,7 +549,7 @@ class TrendTraderBot:
             logger.exception(f"전략 관리 종목 정보 저장 중 오류: {str(e)}")
 
     def check_sector_strength(self, sector_code: str) -> bool:
-        """섹터 강도 확인
+        """섹터 강도 확인 - 실시간 업종 동향 분석 활용
         
         Args:
             sector_code: 섹터 코드
@@ -558,44 +558,63 @@ class TrendTraderBot:
             bool: 섹터 강세 여부
         """
         try:
-            # 섹터 ETF나 대표 종목 데이터 조회
-            sector_etfs = {
-                "반도체": "305720",  # KODEX 반도체
-                "2차전지": "305540",  # KODEX 2차전지
-                "바이오": "244580",  # KODEX 바이오
-                "인터넷": "241560",  # KODEX 인터넷
-                "금융": "298340",    # KODEX 금융
-                "자동차": "295000"   # KODEX 자동차
-            }
+            # 섹터 코드가 유효하지 않은 경우
+            if not sector_code or sector_code == "Unknown":
+                return True  # 기본적으로 통과
             
-            etf_code = sector_etfs.get(sector_code)
-            if not etf_code:
-                return True  # 섹터 정보가 없으면 기본적으로 통과
+            # 캐싱을 위한 키 생성 (1시간 단위)
+            cache_key = f"sector_strength_{sector_code}_{datetime.datetime.now().strftime('%Y%m%d_%H')}"
             
-            # 섹터 ETF 데이터 조회
-            sector_data = KisKR.GetOhlcvNew(etf_code, 'D', 20, adj_ok=1)
+            # 캐시된 결과가 있는지 확인
+            if cache_key in self.sector_cache:
+                return self.sector_cache[cache_key]
             
-            if sector_data is None or sector_data.empty:
+            # 섹터 대표 종목 찾기
+            representative_stock = self._find_sector_representative(sector_code)
+            
+            if not representative_stock:
+                logger.info(f"섹터 '{sector_code}'에 대한 대표 종목을 찾을 수 없습니다. 기본 통과로 설정합니다.")
                 return True
             
-            # 섹터 강도 분석: 최근 5일 상승/하락 추세, 시장 대비 상대 강도
-            recent_data = sector_data.iloc[-5:]
-            sector_change = (recent_data['close'].iloc[-1] / recent_data['close'].iloc[0] - 1) * 100
+            # 업종 동향 분석
+            is_strong, details = analyze_sector_trend(representative_stock)
             
-            # 시장 대비 상대 강도 (KOSPI 또는 KOSDAQ 대비)
-            market_data = KisKR.GetOhlcvNew(self.market_index_code, 'D', 5, adj_ok=1)
-            if market_data is not None and not market_data.empty:
-                market_change = (market_data['close'].iloc[-1] / market_data['close'].iloc[0] - 1) * 100
-                relative_strength = sector_change - market_change
+            # 분석 결과 로깅
+            if isinstance(details, dict):
+                logger.info(f"섹터 '{sector_code}' 분석: 상승 비율 {details.get('rising_ratio', 0):.2f}, " +
+                        f"평균 변동률 {details.get('avg_change', 0):.2f}%, 강세 여부: {is_strong}")
             else:
-                relative_strength = 0
+                logger.info(f"섹터 '{sector_code}' 분석: {details}, 강세 여부: {is_strong}")
             
-            # 섹터가 강세인지 판단 (시장보다 1%p 이상 상승 또는 최근 5일 상승)
-            return sector_change > 0 or relative_strength > 1.0
+            # 결과 캐싱
+            self.sector_cache[cache_key] = is_strong
+            
+            return is_strong
         
         except Exception as e:
             logger.exception(f"섹터 강도 확인 중 오류: {str(e)}")
-            return True  # 오류 발생 시 기본 통과
+            return True  # 오류 발생 시 기본적으로 통과
+
+    def _find_sector_representative(self, sector_code: str) -> str:
+        """섹터의 대표 종목 찾기"""
+        try:
+            # 같은 섹터 내 모든 종목 수집
+            same_sector_stocks = []
+            
+            for code, info in self.watch_list_info.items():
+                if info.get("sector_code") == sector_code:
+                    same_sector_stocks.append(code)
+            
+            if not same_sector_stocks:
+                return None
+            
+            # 시가총액 정보로 정렬하려면 추가 작업 필요
+            # 여기서는 단순히 첫 번째 종목 반환
+            return same_sector_stocks[0]
+            
+        except Exception as e:
+            logger.exception(f"섹터 대표 종목 찾기 중 오류: {str(e)}")
+            return None
 
     def _update_sector_info(self):
         """종목별 섹터 정보 자동 업데이트"""
@@ -3364,12 +3383,8 @@ def create_config_file(config_path: str = "trend_trader_config.json") -> None:
         
         # 대표 지수/종목 코드
         sample_codes = [
-            "005930",  # 삼성전자
             "000660",  # SK하이닉스
-            "035420",  # NAVER
-            "035720",  # 카카오
             "207940",  # 삼성바이오로직스
-            "068270",  # 셀트리온
             "006400",  # 삼성SDI
             "051910",  # LG화학
             "035900",  # JYP Ent.
