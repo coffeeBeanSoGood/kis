@@ -69,6 +69,7 @@ class TechnicalIndicators:
         return atr
 
     # 동적 ATR 기반 손절 계산 함수
+    @staticmethod
     def calculate_dynamic_stop_loss(price: float, atr: float, multiplier: float = 2.0) -> float:
         """ATR 기반 동적 손절가 계산
         
@@ -1373,284 +1374,313 @@ class TrendTraderBot:
             available_slots = max(0, self.max_stocks - current_holdings_count)
             logger.info(f"추가 매수 가능 종목 수: {available_slots}개")
             
-            # 관심종목 분석 및 매수 시그널 확인
-            buy_candidates = []  # 매수 후보 종목 리스트
+            # 1. 매도 시그널 확인 - 보유종목 먼저 확인
+            self.check_sell_signals()
             
-            for stock_code in self.watch_list:
-                # 이미 보유 중인 종목 스킵
-                if stock_code in self.holdings:
-                    continue
-                
-                # 매수 가능 종목 수가 0이면 분석 중단
-                if available_slots <= 0:
-                    logger.info("최대 보유 종목 수에 도달하여 추가 매수 분석을 중단합니다.")
-                    break
-                
-                # 최근 확인 시간 체크 (설정된 주기에 한번만 확인)
-                last_check = self.last_check_time.get(stock_code, None)
-                now = datetime.datetime.now()
-                
-                # 설정에서 확인 주기 값 가져오기
-                if last_check and (now - last_check).seconds < self.check_interval_seconds:
-                    continue
-                
-                # 종목 분석
-                analysis_result = self.analyze_stock(stock_code)
-                self.last_check_time[stock_code] = now
-                
-                if analysis_result.get("is_buy_signal", False):
-                    # 매수 후보 목록에 추가
-                    analysis_result["stock_code"] = stock_code
-                    analysis_result["current_price"] = KisKR.GetCurrentPrice(stock_code)
-                    buy_candidates.append(analysis_result)
+            # 매도 후 다시 보유 종목 수 확인
+            current_holdings_count = len(self.holdings)
+            available_slots = max(0, self.max_stocks - current_holdings_count)
             
-            # 매수 후보가 있으면 점수 기반으로 정렬
-            if buy_candidates:
-                # 후보 종목들에 점수 부여 및 정렬
-                score_weights = self.score_weights
-
-                for candidate in buy_candidates:
-                    score = 0
-                    signals = candidate.get("signals", {})
-                    
-                    # 일봉 시그널 점수
-                    daily_signals = signals.get("daily", {})
-                    if daily_signals.get("rsi_oversold", False): 
-                        score += score_weights.get("rsi_oversold", 2)
-                    if daily_signals.get("golden_cross", False): 
-                        score += score_weights.get("golden_cross", 2)
-                    if daily_signals.get("macd_cross_up", False): 
-                        score += score_weights.get("macd_cross_up", 2)
-                    if daily_signals.get("near_lower_band", False): 
-                        score += score_weights.get("near_lower_band", 1)
-                    if daily_signals.get("momentum_turning_up", False): 
-                        score += score_weights.get("momentum_turning_up", 1)
-                    if daily_signals.get("near_support", False): 
-                        score += score_weights.get("near_support", 2)
-                    if daily_signals.get("volume_increase", False):
-                        score += score_weights.get("volume_increase", 3)
-                    if daily_signals.get("bullish_candle", False):
-                        score += score_weights.get("bullish_candle", 2)
-                    
-                    # 분봉 시그널 점수
-                    minute_signals = signals.get("minute", {})
-                    if minute_signals.get("rsi_oversold", False): 
-                        score += score_weights.get("minute_rsi_oversold", 1)
-                    if minute_signals.get("macd_cross_up", False): 
-                        score += score_weights.get("minute_macd_cross_up", 1)
-                    
-                    # 시장 환경 추가 점수 (상승장에서는 상승추세 종목에 가산점)
-                    market_env = candidate.get("market_environment", "sideways")
-                    if market_env == "uptrend" and daily_signals.get("in_uptrend", False):
-                        score += 2  # 상승장에서 상승추세 종목에 가산점
-                    
-                    # 섹터 강도 점수
-                    sector_code = self.watch_list_info.get(stock_code, {}).get("sector_code")
-                    if sector_code and self.use_sector_filter:
-                        sector_strength_ok = self.check_sector_strength(sector_code)
-                        if sector_strength_ok:
-                            score += score_weights.get("sector_strength", 3)
-                    
-                    candidate["score"] = score
+            # 계좌 잔고 갱신
+            account_balance = KisKR.GetBalance()
+            if not account_balance or isinstance(account_balance, str):
+                logger.error(f"계좌 잔고 조회 오류: {account_balance}")
+                available_cash = 0
+            else:
+                available_cash = account_balance.get("RemainMoney", 0)
+            
+            # 2. 매수 시그널 확인 - 모든 관심종목 동시 분석 후 점수 기반 매수
+            if available_slots > 0 and available_cash > self.min_trading_amount:
+                # 관심종목 분석 및 매수 시그널 확인
+                buy_candidates = []  # 매수 후보 종목 리스트
                 
-                # 점수 기준 내림차순 정렬
-                buy_candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
-                
-                # 상위 종목부터 매수 시도
-                for candidate in buy_candidates:
-                    if available_slots <= 0:
-                        break
-                        
-                    stock_code = candidate.get("stock_code")
-                    stock_name = candidate.get("stock_name", stock_code)
-                    current_price = candidate.get("current_price", 0)
-                    market_env = candidate.get("market_environment", "sideways")
-                    
-                    logger.info(f"매수 후보: {stock_code} ({stock_name}), 점수: {candidate.get('score', 0)}, 가격: {current_price:,}원")
-                    logger.info(f"매수 이유: {candidate.get('reason', '')}")
-                    logger.info(f"시장 환경: {market_env}")
-                    
-                    # 조정된 파라미터 가져오기
-                    adjusted_params = candidate.get("use_parameters", {})
-                    custom_profit_target = adjusted_params.get("profit_target", self.profit_target)
-                    custom_stop_loss = adjusted_params.get("stop_loss", self.stop_loss)
-                    
-                    logger.info(f"조정된 매매 파라미터 - 목표 수익률: {custom_profit_target:.2f}%, 손절률: {custom_stop_loss:.2f}%")
-                    
-                    # 종목별 예산 배분 계산
-                    stock_info = self.watch_list_info.get(stock_code, {})
-                    allocation_ratio = stock_info.get("allocation_ratio", self.default_allocation_ratio)                    
-                    # 예산 내에서 매수 수량 결정
-                    allocated_budget = min(self.total_budget * allocation_ratio, available_cash)
-                    
-                    # 분할 매수 전략 적용
-                    use_split = self.use_split_purchase
-                    initial_ratio = self.initial_purchase_ratio
-
-                    if use_split:
-                        # 설정에서 초기 매수 비율 가져오기 (랜덤 변동 ±10%)
-                        variation = 0.1  # 10% 변동
-                        min_ratio = max(0.1, initial_ratio * (1 - variation))
-                        max_ratio = min(0.9, initial_ratio * (1 + variation))
-                        split_ratio = random.uniform(min_ratio, max_ratio)
-                    else:
-                        split_ratio = 1.0  # 분할 매수 사용하지 않을 경우 전체 예산 사용
-                    
-                    first_buy_budget = allocated_budget * split_ratio
-                    
-                    # 최소 거래 금액 확인
-                    if first_buy_budget < self.min_trading_amount:
-                        logger.info(f"종목 {stock_code} 매수 예산({first_buy_budget:,.0f}원)이 최소 거래 금액({self.min_trading_amount:,}원)보다 작습니다. 매수 건너뜀.")
+                for stock_code in self.watch_list:
+                    # 이미 보유 중인 종목 스킵
+                    if stock_code in self.holdings:
                         continue
                     
-                    quantity = max(1, int(first_buy_budget / current_price))
+                    # 최근 확인 시간 체크 (설정된 주기에 한번만 확인)
+                    last_check = self.last_check_time.get(stock_code, None)
+                    now = datetime.datetime.now()
                     
-                    if quantity > 0 and current_price > 0:
-                        # 주문 가능한 수량으로 보정
-                        try:
-                            quantity = KisKR.AdjustPossibleAmt(stock_code, quantity, "MARKET")
-                            logger.info(f"주문 가능 수량 보정: {quantity}주")
-                        except Exception as e:
-                            logger.warning(f"주문 가능 수량 보정 실패, 원래 수량으로 진행: {e}")
-                        
-                        # 매수 금액 재계산
-                        buy_amount = current_price * quantity
-                        
-                        # 매수 금액이 최소 거래 금액보다 작으면 건너뜀
-                        if buy_amount < self.min_trading_amount:
-                            logger.info(f"종목 {stock_code} 매수 금액({buy_amount:,.0f}원)이 최소 거래 금액({self.min_trading_amount:,}원)보다 작습니다. 매수 건너뜀.")
-                            continue
-                        
-                        # 시장가 매수
-                        order_result = KisKR.MakeBuyMarketOrder(
-                            stockcode=stock_code,
-                            amt=quantity
-                        )
-                        
-                        if not isinstance(order_result, str):
-                            logger.info(f"매수 주문 성공: {stock_code} {quantity}주")
-                            
-                            # 매수 평균가는 시장가 주문이므로 GetMarketOrderPrice 함수로 가져옴
-                            avg_price = KisKR.GetMarketOrderPrice(stock_code, order_result)
-                            
-                            # 보유 종목에 추가 (트레일링 스탑 설정 포함)
-                            self.holdings[stock_code] = {
-                                "quantity": quantity,
-                                "avg_price": avg_price,
-                                "current_price": current_price,
-                                "buy_date": now.strftime("%Y%m%d"),
-                                "highest_price": current_price,
-                                "trailing_stop_price": 0,
-                                "split_buy": use_split,
-                                "initial_budget": allocated_budget,
-                                "used_budget": buy_amount,
-                                "remaining_budget": allocated_budget - buy_amount,
-                                # 동적 손절가 추가
-                                "use_dynamic_stop": self.use_dynamic_stop,
-                                "dynamic_stop_price": candidate.get("technical_data", {}).get("dynamic_stop_loss", 0),
-                                # 시장 환경 조정 파라미터
-                                "profit_target": custom_profit_target,
-                                "stop_loss": custom_stop_loss,
-                                "market_environment": market_env,
-                                # 전략 관리 종목 표시
-                                "is_strategy_managed": True
-                            }
-                            
-                            # 트레일링 스탑 가격 설정
-                            if self.use_trailing_stop:
-                                self.holdings[stock_code]["trailing_stop_price"] = current_price * (1 - self.trailing_stop_pct/100)
+                    # 설정에서 확인 주기 값 가져오기
+                    if last_check and (now - last_check).seconds < self.check_interval_seconds:
+                        continue
+                    
+                    # 종목 분석
+                    analysis_result = self.analyze_stock(stock_code)
+                    self.last_check_time[stock_code] = now
+                    
+                    if analysis_result.get("is_buy_signal", False):
+                        # 매수 후보 목록에 추가
+                        analysis_result["stock_code"] = stock_code
+                        analysis_result["current_price"] = KisKR.GetCurrentPrice(stock_code)
+                        buy_candidates.append(analysis_result)
+                
+                # 매수 후보가 있으면 점수 기반으로 정렬
+                if buy_candidates:
+                    # 후보 종목들에 점수 부여 및 정렬
+                    score_weights = self.score_weights
 
-                            self._save_holdings()
-                            
-                            # 사용 가능한 슬롯 감소
-                            available_slots -= 1
+                    for candidate in buy_candidates:
+                        score = 0
+                        signals = candidate.get("signals", {})
+                        
+                        # 일봉 시그널 점수
+                        daily_signals = signals.get("daily", {})
+                        if daily_signals.get("rsi_oversold", False): 
+                            score += score_weights.get("rsi_oversold", 2)
+                        if daily_signals.get("golden_cross", False): 
+                            score += score_weights.get("golden_cross", 2)
+                        if daily_signals.get("macd_cross_up", False): 
+                            score += score_weights.get("macd_cross_up", 2)
+                        if daily_signals.get("near_lower_band", False): 
+                            score += score_weights.get("near_lower_band", 1)
+                        if daily_signals.get("momentum_turning_up", False): 
+                            score += score_weights.get("momentum_turning_up", 1)
+                        if daily_signals.get("near_support", False): 
+                            score += score_weights.get("near_support", 2)
+                        if daily_signals.get("volume_increase", False):
+                            score += score_weights.get("volume_increase", 3)
+                        if daily_signals.get("bullish_candle", False):
+                            score += score_weights.get("bullish_candle", 2)
+                        
+                        # 분봉 시그널 점수
+                        minute_signals = signals.get("minute", {})
+                        if minute_signals.get("rsi_oversold", False): 
+                            score += score_weights.get("minute_rsi_oversold", 1)
+                        if minute_signals.get("macd_cross_up", False): 
+                            score += score_weights.get("minute_macd_cross_up", 1)
+                        
+                        # 시장 환경 추가 점수 (상승장에서는 상승추세 종목에 가산점)
+                        market_env = candidate.get("market_environment", "sideways")
+                        if market_env == "uptrend" and daily_signals.get("in_uptrend", False):
+                            score += 2  # 상승장에서 상승추세 종목에 가산점
+                        
+                        # 섹터 강도 점수
+                        stock_code = candidate.get("stock_code", "")
+                        sector_code = self.watch_list_info.get(stock_code, {}).get("sector_code")
+                        if sector_code and self.use_sector_filter:
+                            sector_strength_ok = self.check_sector_strength(sector_code)
+                            if sector_strength_ok:
+                                score += score_weights.get("sector_strength", 3)
+                        
+                        candidate["score"] = score
+                        
+                        # 로그에 점수 정보 추가
+                        stock_name = candidate.get("stock_name", stock_code)
+                        logger.info(f"매수 후보: {stock_code} ({stock_name}), 점수: {score}, "
+                                    f"가격: {candidate.get('current_price', 0):,}원, "
+                                    f"이유: {candidate.get('reason', '')}")
+                    
+                    # 점수 기준 내림차순 정렬
+                    buy_candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
+                    
+                    # 매수 가능한 종목 수만큼만 선택 (최대 available_slots개)
+                    top_candidates = buy_candidates[:available_slots]
+                    
+                    # 상위 종목부터 매수 시도
+                    logger.info(f"총 {len(buy_candidates)}개 매수 후보 중 상위 {len(top_candidates)}개 종목 매수 시도")
+                    
+                    for candidate in top_candidates:
+                        stock_code = candidate.get("stock_code")
+                        stock_name = candidate.get("stock_name", stock_code)
+                        current_price = candidate.get("current_price", 0)
+                        market_env = candidate.get("market_environment", "sideways")
+                        
+                        logger.info(f"매수 시도: {stock_code} ({stock_name}), 점수: {candidate.get('score', 0)}, 가격: {current_price:,}원")
+                        logger.info(f"매수 이유: {candidate.get('reason', '')}")
+                        logger.info(f"시장 환경: {market_env}")
+                        
+                        # 조정된 파라미터 가져오기
+                        adjusted_params = candidate.get("use_parameters", {})
+                        custom_profit_target = adjusted_params.get("profit_target", self.profit_target)
+                        custom_stop_loss = adjusted_params.get("stop_loss", self.stop_loss)
+                        
+                        logger.info(f"조정된 매매 파라미터 - 목표 수익률: {custom_profit_target:.2f}%, 손절률: {custom_stop_loss:.2f}%")
+                        
+                        # 종목별 예산 배분 계산
+                        stock_info = self.watch_list_info.get(stock_code, {})
+                        allocation_ratio = stock_info.get("allocation_ratio", self.default_allocation_ratio)                    
+                        # 예산 내에서 매수 수량 결정
+                        allocated_budget = min(self.total_budget * allocation_ratio, available_cash)
+                        
+                        # 분할 매수 전략 적용
+                        use_split = self.use_split_purchase
+                        initial_ratio = self.initial_purchase_ratio
+
+                        if use_split:
+                            # 설정에서 초기 매수 비율 가져오기 (랜덤 변동 ±10%)
+                            variation = 0.1  # 10% 변동
+                            min_ratio = max(0.1, initial_ratio * (1 - variation))
+                            max_ratio = min(0.9, initial_ratio * (1 + variation))
+                            split_ratio = random.uniform(min_ratio, max_ratio)
                         else:
-                            logger.error(f"매수 주문 실패: {stock_code}, {order_result}")
-                
-            # 보유 종목 중 분할 매수가 가능한 종목 추가 매수 검토
-            for stock_code, holding_info in list(self.holdings.items()):
-                # 전략 관리 종목만 처리
-                if not holding_info.get("is_strategy_managed", False):
-                    continue
-                    
-                # 분할 매수가 아니거나 남은 예산이 없으면 스킵
-                if not holding_info.get("split_buy", False) or holding_info.get("remaining_budget", 0) <= 0:
-                    continue
-                    
-                current_price = KisKR.GetCurrentPrice(stock_code)
-                if current_price is None or isinstance(current_price, str):
-                    continue
-                    
-                avg_price = holding_info.get("avg_price", 0)
-                if avg_price <= 0:
-                    continue
-                    
-                # 현재 수익률 계산
-                profit_percent = ((current_price / avg_price) - 1) * 100
-                
-                # 추가 매수 조건: 수익률이 설정된 하락률 이상 하락했을 때
-                drop_thresholds = self.additional_purchase_drop_pct
-                drop_pct = drop_thresholds[0] if drop_thresholds else 1.5                
-                
-                if profit_percent <= -drop_pct:  # 설정된 하락률 이상 하락했을 때
-                    remaining_budget = holding_info.get("remaining_budget", 0)
-                    
-                    # 최소 거래 금액 확인
-                    if remaining_budget < self.min_trading_amount:
-                        continue
+                            split_ratio = 1.0  # 분할 매수 사용하지 않을 경우 전체 예산 사용
                         
-                    # 추가 매수 수량 계산
-                    add_quantity = max(1, int(remaining_budget / current_price))
-                    
-                    if add_quantity > 0:
-                        # 주문 가능한 수량으로 보정
-                        try:
-                            add_quantity = KisKR.AdjustPossibleAmt(stock_code, add_quantity, "MARKET")
-                        except:
-                            pass
-                            
-                        # 매수 금액 재계산
-                        add_buy_amount = current_price * add_quantity
+                        first_buy_budget = allocated_budget * split_ratio
                         
                         # 최소 거래 금액 확인
-                        if add_buy_amount < self.min_trading_amount:
+                        if first_buy_budget < self.min_trading_amount:
+                            logger.info(f"종목 {stock_code} 매수 예산({first_buy_budget:,.0f}원)이 최소 거래 금액({self.min_trading_amount:,}원)보다 작습니다. 매수 건너뜀.")
+                            continue
+                        
+                        quantity = max(1, int(first_buy_budget / current_price))
+                        
+                        if quantity > 0 and current_price > 0:
+                            # 주문 가능한 수량으로 보정
+                            try:
+                                quantity = KisKR.AdjustPossibleAmt(stock_code, quantity, "MARKET")
+                                logger.info(f"주문 가능 수량 보정: {quantity}주")
+                            except Exception as e:
+                                logger.warning(f"주문 가능 수량 보정 실패, 원래 수량으로 진행: {e}")
+                            
+                            # 매수 금액 재계산
+                            buy_amount = current_price * quantity
+                            
+                            # 매수 금액이 최소 거래 금액보다 작으면 건너뜀
+                            if buy_amount < self.min_trading_amount:
+                                logger.info(f"종목 {stock_code} 매수 금액({buy_amount:,.0f}원)이 최소 거래 금액({self.min_trading_amount:,}원)보다 작습니다. 매수 건너뜀.")
+                                continue
+                            
+                            # 시장가 매수
+                            order_result = KisKR.MakeBuyMarketOrder(
+                                stockcode=stock_code,
+                                amt=quantity
+                            )
+                            
+                            if not isinstance(order_result, str):
+                                logger.info(f"매수 주문 성공: {stock_code} {quantity}주")
+                                
+                                # 매수 평균가는 시장가 주문이므로 GetMarketOrderPrice 함수로 가져옴
+                                avg_price = KisKR.GetMarketOrderPrice(stock_code, order_result)
+                                
+                                # 보유 종목에 추가 (트레일링 스탑 설정 포함)
+                                self.holdings[stock_code] = {
+                                    "quantity": quantity,
+                                    "avg_price": avg_price,
+                                    "current_price": current_price,
+                                    "buy_date": now.strftime("%Y%m%d"),
+                                    "highest_price": current_price,
+                                    "trailing_stop_price": 0,
+                                    "split_buy": use_split,
+                                    "initial_budget": allocated_budget,
+                                    "used_budget": buy_amount,
+                                    "remaining_budget": allocated_budget - buy_amount,
+                                    # 동적 손절가 추가
+                                    "use_dynamic_stop": self.use_dynamic_stop,
+                                    "dynamic_stop_price": candidate.get("technical_data", {}).get("dynamic_stop_loss", 0),
+                                    # 시장 환경 조정 파라미터
+                                    "profit_target": custom_profit_target,
+                                    "stop_loss": custom_stop_loss,
+                                    "market_environment": market_env,
+                                    # 전략 관리 종목 표시
+                                    "is_strategy_managed": True
+                                }
+                                
+                                # 트레일링 스탑 가격 설정
+                                if self.use_trailing_stop:
+                                    self.holdings[stock_code]["trailing_stop_price"] = current_price * (1 - self.trailing_stop_pct/100)
+
+                                self._save_holdings()
+                                
+                                # 사용 가능한 현금 업데이트
+                                available_cash -= buy_amount
+                                
+                                # 추가 매수할 수 있는 슬롯이 없으면 루프 종료
+                                available_slots -= 1
+                                if available_slots <= 0:
+                                    logger.info("최대 보유 종목 수에 도달하여 추가 매수를 중단합니다.")
+                                    break
+                                    
+                                # 최소 거래 금액 이하로 남으면 루프 종료
+                                if available_cash < self.min_trading_amount:
+                                    logger.info(f"사용 가능한 현금({available_cash:,}원)이 최소 거래 금액({self.min_trading_amount:,}원) 이하로 매수를 중단합니다.")
+                                    break
+                            else:
+                                logger.error(f"매수 주문 실패: {stock_code}, {order_result}")
+                
+                # 보유 종목 중 분할 매수가 가능한 종목 추가 매수 검토
+                for stock_code, holding_info in list(self.holdings.items()):
+                    # 전략 관리 종목만 처리
+                    if not holding_info.get("is_strategy_managed", False):
+                        continue
+                        
+                    # 분할 매수가 아니거나 남은 예산이 없으면 스킵
+                    if not holding_info.get("split_buy", False) or holding_info.get("remaining_budget", 0) <= 0:
+                        continue
+                        
+                    current_price = KisKR.GetCurrentPrice(stock_code)
+                    if current_price is None or isinstance(current_price, str):
+                        continue
+                        
+                    avg_price = holding_info.get("avg_price", 0)
+                    if avg_price <= 0:
+                        continue
+                        
+                    # 현재 수익률 계산
+                    profit_percent = ((current_price / avg_price) - 1) * 100
+                    
+                    # 추가 매수 조건: 수익률이 설정된 하락률 이상 하락했을 때
+                    drop_thresholds = self.additional_purchase_drop_pct
+                    drop_pct = drop_thresholds[0] if drop_thresholds else 1.5                
+                    
+                    if profit_percent <= -drop_pct:  # 설정된 하락률 이상 하락했을 때
+                        remaining_budget = holding_info.get("remaining_budget", 0)
+                        
+                        # 최소 거래 금액 확인
+                        if remaining_budget < self.min_trading_amount:
                             continue
                             
-                        # 시장가 추가 매수
-                        logger.info(f"분할 매수 - 추가 매수 시도: {stock_code}, {add_quantity}주, 현재가: {current_price}원, 평단가: {avg_price}원, 수익률: {profit_percent:.2f}%")
+                        # 추가 매수 수량 계산
+                        add_quantity = max(1, int(remaining_budget / current_price))
                         
-                        order_result = KisKR.MakeBuyMarketOrder(
-                            stockcode=stock_code,
-                            amt=add_quantity
-                        )
-                        
-                        if not isinstance(order_result, str):
-                            logger.info(f"추가 매수 주문 성공: {stock_code} {add_quantity}주")
-                            
-                            # 기존 수량
-                            existing_quantity = holding_info.get("quantity", 0)
-                            existing_amount = existing_quantity * avg_price
-                            
-                            # 새로운 평균단가 계산
-                            new_quantity = existing_quantity + add_quantity
-                            new_avg_price = (existing_amount + add_buy_amount) / new_quantity
-                            
-                            # 홀딩 정보 업데이트
-                            self.holdings[stock_code]["quantity"] = new_quantity
-                            self.holdings[stock_code]["avg_price"] = new_avg_price
-                            self.holdings[stock_code]["used_budget"] = holding_info.get("used_budget", 0) + add_buy_amount
-                            self.holdings[stock_code]["remaining_budget"] = holding_info.get("remaining_budget", 0) - add_buy_amount
-                            
-                            # 분할 매수 모두 사용했으면 플래그 해제
-                            if self.holdings[stock_code]["remaining_budget"] < self.min_trading_amount:
-                                self.holdings[stock_code]["split_buy"] = False
+                        if add_quantity > 0:
+                            # 주문 가능한 수량으로 보정
+                            try:
+                                add_quantity = KisKR.AdjustPossibleAmt(stock_code, add_quantity, "MARKET")
+                            except:
+                                pass
                                 
-                            self._save_holdings()
-                        else:
-                            logger.error(f"추가 매수 주문 실패: {stock_code}, {order_result}")
-            
-            # 매도 시그널 확인
-            self.check_sell_signals()
+                            # 매수 금액 재계산
+                            add_buy_amount = current_price * add_quantity
+                            
+                            # 최소 거래 금액 확인
+                            if add_buy_amount < self.min_trading_amount:
+                                continue
+                                
+                            # 시장가 추가 매수
+                            logger.info(f"분할 매수 - 추가 매수 시도: {stock_code}, {add_quantity}주, 현재가: {current_price}원, 평단가: {avg_price}원, 수익률: {profit_percent:.2f}%")
+                            
+                            order_result = KisKR.MakeBuyMarketOrder(
+                                stockcode=stock_code,
+                                amt=add_quantity
+                            )
+                            
+                            if not isinstance(order_result, str):
+                                logger.info(f"추가 매수 주문 성공: {stock_code} {add_quantity}주")
+                                
+                                # 기존 수량
+                                existing_quantity = holding_info.get("quantity", 0)
+                                existing_amount = existing_quantity * avg_price
+                                
+                                # 새로운 평균단가 계산
+                                new_quantity = existing_quantity + add_quantity
+                                new_avg_price = (existing_amount + add_buy_amount) / new_quantity
+                                
+                                # 홀딩 정보 업데이트
+                                self.holdings[stock_code]["quantity"] = new_quantity
+                                self.holdings[stock_code]["avg_price"] = new_avg_price
+                                self.holdings[stock_code]["used_budget"] = holding_info.get("used_budget", 0) + add_buy_amount
+                                self.holdings[stock_code]["remaining_budget"] = holding_info.get("remaining_budget", 0) - add_buy_amount
+                                
+                                # 분할 매수 모두 사용했으면 플래그 해제
+                                if self.holdings[stock_code]["remaining_budget"] < self.min_trading_amount:
+                                    self.holdings[stock_code]["split_buy"] = False
+                                    
+                                self._save_holdings()
+                            else:
+                                logger.error(f"추가 매수 주문 실패: {stock_code}, {order_result}")
             
             logger.info("매매봇 실행 완료")
         
