@@ -19,6 +19,9 @@ import datetime
 import numpy as np
 import pandas as pd
 import random  # 여기에 random 모듈 추가
+import requests  # 네이버 금융 조회를 위해 추가
+from bs4 import BeautifulSoup  # 네이버 금융 조회를 위해 추가
+from pykrx import stock
 from typing import List, Dict, Tuple, Optional, Union
 
 # KIS API 함수 임포트
@@ -341,7 +344,11 @@ class TrendTraderBot:
         # 업데이트된 구성 파일에서 정보 가져오기
         self.watch_list = [item.get("code") for item in self.config.get("watch_list", [])]
         self.watch_list_info = {item.get("code"): item for item in self.config.get("watch_list", [])}
-        
+
+        # 섹터 정보 자동 업데이트 기능 추가
+        if self.config.get("trading_strategies", {}).get("use_auto_sector_lookup", True):
+            self._update_sector_info()
+
         # 여기서 하드코딩된 기본값을 제거하고 항상 config에서 가져옴
         self.total_budget = self.config.get("total_budget")
         self.profit_target = self.config.get("profit_target")
@@ -589,6 +596,53 @@ class TrendTraderBot:
         except Exception as e:
             logger.exception(f"섹터 강도 확인 중 오류: {str(e)}")
             return True  # 오류 발생 시 기본 통과
+
+    def _update_sector_info(self):
+        """종목별 섹터 정보 자동 업데이트"""
+        try:
+            updated_count = 0
+            
+            # 각 관심종목에 대해 섹터 정보 업데이트
+            for stock_code in self.watch_list:
+                # 이미 섹터 정보가 있는지 확인
+                existing_info = self.watch_list_info.get(stock_code, {})
+                if existing_info.get("sector_code") == "Unknown" or not existing_info.get("sector_code"):
+                    # 네이버 금융을 통한 섹터 정보 조회
+                    sector_info = get_sector_info(stock_code)
+                    
+                    # 정보 업데이트
+                    if sector_info['sector'] != 'Unknown':
+                        if stock_code in self.watch_list_info:
+                            self.watch_list_info[stock_code]["sector_code"] = sector_info['sector']
+                        else:
+                            self.watch_list_info[stock_code] = {
+                                "code": stock_code,
+                                "sector_code": sector_info['sector'],
+                                "allocation_ratio": self.default_allocation_ratio
+                            }
+                        updated_count += 1
+                        
+                        # 섹터 리스트 업데이트
+                        new_sector = sector_info['sector']
+                        if new_sector not in [s.get("code") for s in self.config.get("sector_list", [])]:
+                            new_sector_item = {
+                                "code": new_sector,
+                                "allocation_ratio": 0.10  # 기본 할당 비율
+                            }
+                            self.config.get("sector_list", []).append(new_sector_item)
+                        
+                        # 연속 요청 방지를 위한 딜레이
+                        time.sleep(0.5)
+            
+            if updated_count > 0:
+                logger.info(f"{updated_count}개 종목의 섹터 정보를 업데이트했습니다.")
+                
+                # 마지막 업데이트 시간 기록 (설정 파일에는 저장하지 않음)
+                self.config["last_sector_update"] = datetime.datetime.now().strftime("%Y%m%d")
+            
+        except Exception as e:
+            logger.exception(f"섹터 정보 업데이트 중 오류: {str(e)}")
+
 
     def detect_market_environment(self) -> str:
         """현재 시장 환경 감지 - 상승장 감지 확장"""
@@ -3190,128 +3244,310 @@ class TrendFilter:
             logger.exception(f"일봉 추세 확인 중 오류: {str(e)}")
             return True  # 오류 발생 시 기본적으로 매수 허용
 
+def get_sector_info(stock_code):
+    """네이버 금융을 통한 섹터 정보 조회"""
+    try:
+        logger.info(f"\n네이버 금융 조회 시작 (종목코드: {stock_code})...")
+        
+        # 네이버 금융 종목 페이지
+        url = f"https://finance.naver.com/item/main.naver?code={stock_code}"
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            # 한글 깨짐 방지
+            response.encoding = 'euc-kr'
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # 업종 정보 찾기
+            industry_element = soup.select_one('#content > div.section.trade_compare > h4 > em > a')
+            if industry_element:
+                sector = industry_element.get_text(strip=True)
+                logger.info(f"네이버 금융에서 업종 정보를 찾았습니다: {sector}")
+                
+                # 시장 구분 찾기
+                market = "Unknown"
+                for mkt in ["KOSPI", "KOSDAQ"]:
+                    try:
+                        if stock_code in stock.get_market_ticker_list(market=mkt):
+                            market = mkt
+                            break
+                    except Exception:
+                        continue
+                
+                return {
+                    'sector': sector,
+                    'industry': sector,
+                    'market': market
+                }
+            else:
+                logger.info("업종 정보를 찾을 수 없습니다.")
+        else:
+            logger.info(f"네이버 금융 접속 실패. 상태 코드: {response.status_code}")
+            
+        return {
+            'sector': 'Unknown',
+            'industry': 'Unknown',
+            'market': 'Unknown'
+        }
+        
+    except Exception as e:
+        logger.info(f"섹터 정보 조회 중 에러: {str(e)}")
+        return {
+            'sector': 'Unknown',
+            'industry': 'Unknown',
+            'market': 'Unknown'
+        }
+
+# 업종 동향 분석 함수 - 모듈 레벨에 위치
+def analyze_sector_trend(stock_code, min_sector_stocks=2):
+    """
+    업종 동향 상세 분석 - 캐시 적용
+    """
+    try:
+        # 기존 섹터 정보 활용
+        sector_info = get_sector_info(stock_code)
+        if not sector_info or sector_info['sector'] == 'Unknown':
+            return False, "섹터 정보 없음"
+            
+        # 동일 업종 종목들의 현재가 조회
+        sector_stocks = stock.get_market_ticker_list(market="ALL")
+        sector_prices = {}
+        
+        for ticker in sector_stocks[:50]:  # 시가총액 상위 50개만
+            try:
+                current_price = KisKR.GetCurrentPrice(ticker)
+                prev_close = KisKR.GetStockPrevClose(ticker)
+                if current_price and prev_close:
+                    sector_prices[ticker] = {
+                        'change_rate': (current_price - prev_close) / prev_close * 100
+                    }
+            except:
+                continue
+                
+        if len(sector_prices) < min_sector_stocks:
+            return False, "업종 데이터 부족"
+            
+        # 업종 강도 분석
+        rising_count = sum(1 for data in sector_prices.values() 
+                         if data['change_rate'] > 0)
+        avg_change = sum(data['change_rate'] for data in sector_prices.values()) / len(sector_prices)
+        
+        # 업종 동향 판단
+        is_sector_strong = (
+            rising_count / len(sector_prices) > 0.3 or  # 30% 이상 상승
+            avg_change > 0 or                           # 평균 상승
+            rising_count >= min_sector_stocks            # 최소 종목 수 만족
+        )
+        
+        return is_sector_strong, {
+            'rising_ratio': rising_count / len(sector_prices),
+            'avg_change': avg_change
+        }
+        
+    except Exception as e:
+        logger.error(f"업종 분석 중 에러: {str(e)}")
+        return False, str(e)
+
 # 설정파일 생성 함수
 def create_config_file(config_path: str = "trend_trader_config.json") -> None:
-    """기본 설정 파일 생성
+    """기본 설정 파일 생성 - 하드코딩 없이 구현
     
     Args:
         config_path: 설정 파일 경로
     """
-    config = {
-        "watch_list": [
-            {"code": "005490", "name": "POSCO홀딩스", "sector_code": "철강", "allocation_ratio": 0.15, "stop_loss": -2.0, "trailing_stop_pct": 1.8},
-            {"code": "000660", "name": "SK하이닉스", "sector_code": "반도체", "allocation_ratio": 0.20, "stop_loss": -2.0, "trailing_stop_pct": 1.5},
-            {"code": "000155", "name": "두산우", "sector_code": "기계", "allocation_ratio": 0.10, "stop_loss": -2.0, "trailing_stop_pct": 2.0},
-            {"code": "042660", "name": "한화오션", "sector_code": "조선", "allocation_ratio": 0.25, "stop_loss": -1.5, "trailing_stop_pct": 1.5},
-            {"code": "000100", "name": "유한양행", "sector_code": "제약", "allocation_ratio": 0.20, "stop_loss": -2.0, "trailing_stop_pct": 1.8},
-            {"code": "028300", "name": "HLB", "sector_code": "바이오", "allocation_ratio": 0.05, "stop_loss": -1.5, "trailing_stop_pct": 2.0},
-            {"code": "373220", "name": "LG에너지솔루션", "sector_code": "2차전지", "allocation_ratio": 0.05, "stop_loss": -1.8, "trailing_stop_pct": 1.8}
-        ],
-        "sector_list": [
-            {"code": "반도체", "etf_code": "305720", "allocation_ratio": 0.20},
-            {"code": "2차전지", "etf_code": "305540", "allocation_ratio": 0.20},
-            {"code": "바이오", "etf_code": "244580", "allocation_ratio": 0.15},
-            {"code": "인터넷", "etf_code": "241560", "allocation_ratio": 0.15},
-            {"code": "철강", "etf_code": "117680", "allocation_ratio": 0.10},
-            {"code": "조선", "etf_code": "091180", "allocation_ratio": 0.10},
-            {"code": "제약", "etf_code": "091160", "allocation_ratio": 0.10}
-        ],
-        "total_budget": 5000000,  # 총 투자 예산
-        "profit_target": 5.0,     # 목표 수익률 (%)
-        "stop_loss": -1.5,        # 기본 손절 비율 (%) - 2.0에서 1.5로 감소
-        "max_stocks": 4,          # 최대 동시 보유 종목 수
-        "min_trading_amount": 300000,  # 최소 거래 금액
-        "trading_strategies": {
-            # RSI 관련 설정
-            "rsi_oversold_threshold": 28.0,   # RSI 과매도 기준 (30.0에서 28.0으로 하향)
-            "rsi_overbought_threshold": 68.0, # RSI 과매수 기준
-            
-            # MACD 관련 설정
-            "macd_fast_period": 10,   # MACD 빠른 이동평균
-            "macd_slow_period": 24,   # MACD 느린 이동평균
-            "macd_signal_period": 8,  # MACD 시그널 라인
-            
-            # 트레일링 스탑 관련 설정
-            "use_trailing_stop": True,
-            "trailing_stop_pct": 1.5,  # 기본 트레일링 스탑 비율(%) (1.8에서 1.5로 감소)
-            
-            # 추세 필터 관련 설정
-            "use_daily_trend_filter": True,
-            "use_market_trend_filter": True,
-            "market_index_code": "069500",  # KODEX 200 ETF
-            "daily_trend_lookback": 3,      # 일일 추세 확인 기간
-            
-            # 추가: 섹터 필터 설정
-            "use_sector_filter": True,
-            "sector_relative_strength_threshold": 1.0,  # 시장 대비 상대 강도 기준 (%)
-            
-            # ATR 관련 설정
-            "use_dynamic_stop": True,
-            "atr_period": 10,         # ATR 계산 기간
-            "atr_multiplier": 1.5,    # ATR 승수
-            
-            # 분할 매수 관련 설정
-            "use_split_purchase": True,
-            "initial_purchase_ratio": 0.30,  # 초기 매수 비율 (50%에서 30%로 감소)
-            "additional_purchase_ratios": [0.30, 0.30, 0.10],  # 3단계 추가 매수 비율
-            "additional_purchase_drop_pct": [1.5, 3.0, 5.0],  # 추가 매수 하락 기준(%)
-            
-            # 볼린저 밴드 관련 설정
-            "bollinger_period": 18,   # 볼린저 밴드 기간
-            "bollinger_std": 2.0,     # 볼린저 밴드 표준편차 배수
-            
-            # 이동평균선 관련 설정
-            "short_ma_period": 5,     # 단기 이동평균선 기간
-            "mid_ma_period": 20,      # 중기 이동평균선 기간
-            "long_ma_period": 60,     # 장기 이동평균선 기간
-            
-            # 부분 익절 전략
-            "use_partial_profit": True,    # 부분 익절 사용
-            "partial_profit_target": 3.0,  # 3% 도달 시 부분 익절
-            "partial_profit_ratio": 0.5,   # 50% 물량 부분 익절
-            
-            # 시간 필터
-            "use_time_filter": True,
-            "avoid_trading_hours": ["09:00-10:00", "14:30-15:30"],  # 장 초반과 후반 거래 회피
-            
-            # 연속 하락일 필터
-            "use_consecutive_drop_filter": True,
-            "consecutive_drop_days": 2,    # 2일 연속 하락 후 매수 고려
-            
-            # 확인 주기 설정
-            "check_interval_seconds": 1800,  # 30분마다 확인 (3600에서 1800으로 감소)
-            
-            # 매수 점수 가중치 (점수 기반 종목 선정에 사용)
-            "score_weights": {
-                "rsi_oversold": 4,         # RSI 과매도 가중치 (3에서 4로 증가)
-                "golden_cross": 2,         # 골든 크로스 가중치
-                "macd_cross_up": 4,        # MACD 상향돌파 가중치 (3에서 4로 증가)
-                "near_lower_band": 3,      # 볼링저 밴드 하단 접촉 (2에서 3으로 증가)
-                "momentum_turning_up": 2,  # 모멘텀 상승 전환 (1에서 2로 증가)
-                "near_support": 3,         # 지지선 근처
-                "minute_rsi_oversold": 2,  # 분봉 RSI 과매도 (1에서 2로 증가)
-                "minute_macd_cross_up": 2, # 분봉 MACD 상향돌파 (1에서 2로 증가)
-                "consecutive_drop": 2,     # 연속 하락일 가중치
-                "volume_increase": 3,      # 거래량 증가 가중치 (추가)
-                "bullish_candle": 2,       # 강세 캔들 패턴 (추가)
-                "sector_strength": 3       # 섹터 강도 가중치 (추가)
-            },
-            
-            # 매수 필터 강화 설정
-            "required_daily_signals": 2,   # 일봉에서 필요한 최소 시그널 수 (추가)
-            "required_minute_signals": 2,  # 분봉에서 필요한 최소 시그널 수 (추가)
-            
-            # 뉴스 및 공시 필터 (추가 - 실제 구현시 필요)
-            "use_news_filter": False       # 뉴스 필터 사용 여부
-        }
-    }
-    
     try:
+        logger.info("기본 설정 파일 생성 시작...")
+        
+        # 대표 지수/종목 코드
+        sample_codes = [
+            "005930",  # 삼성전자
+            "000660",  # SK하이닉스
+            "035420",  # NAVER
+            "035720",  # 카카오
+            "207940",  # 삼성바이오로직스
+            "068270",  # 셀트리온
+            "006400",  # 삼성SDI
+            "051910",  # LG화학
+            "035900",  # JYP Ent.
+            "293490"   # 카카오게임즈
+        ]
+        
+        # 이미 정의된 섹터 정보 함수 활용
+        watch_list = []
+        unique_sectors = set()
+        
+        logger.info("종목 및 섹터 정보 수집 중...")
+        
+        for stock_code in sample_codes:
+            try:
+                # 기존 get_sector_info 함수 활용
+                sector_info = get_sector_info(stock_code)
+                
+                # 종목명 가져오기 (KIS API 활용)
+                stock_name = "Unknown"
+                try:
+                    stock_status = KisKR.GetCurrentStatus(stock_code)
+                    if stock_status and isinstance(stock_status, dict):
+                        stock_name = stock_status.get("StockName", "Unknown")
+                except:
+                    pass
+                
+                if stock_name == "Unknown":
+                    # KIS API로 이름을 가져오지 못한 경우 기본값 사용
+                    stock_name = f"{stock_code} 종목"
+                
+                # 종목 정보 추가
+                allocation_ratio = round(1.0 / len(sample_codes), 2)  # 균등 배분
+                watch_list.append({
+                    "code": stock_code,
+                    "name": stock_name,
+                    "sector_code": sector_info.get('sector', 'Unknown'),
+                    "allocation_ratio": allocation_ratio,
+                    "stop_loss": -2.0,
+                    "trailing_stop_pct": 1.8
+                })
+                
+                # 섹터 추적
+                if sector_info.get('sector') != 'Unknown':
+                    unique_sectors.add(sector_info.get('sector'))
+                
+                logger.info(f"종목 정보 추가: {stock_code} ({stock_name}) - 업종: {sector_info.get('sector', 'Unknown')}")
+                
+                # 연속 요청 방지
+                time.sleep(0.5)
+                
+            except Exception as e:
+                logger.warning(f"종목 {stock_code} 정보 수집 중 오류: {str(e)}")
+        
+        # 섹터 리스트 구성 (ETF 매핑 없이)
+        sector_list = []
+        for sector in unique_sectors:
+            sector_list.append({
+                "code": sector,
+                "allocation_ratio": round(1.0 / len(unique_sectors), 2)  # 균등 배분
+            })
+        
+        # 기본 설정 구성
+        config = {
+            "watch_list": watch_list,
+            "sector_list": sector_list,
+            "total_budget": 5000000,
+            "profit_target": 5.0,
+            "stop_loss": -1.5,
+            "max_stocks": 4,
+            "min_trading_amount": 300000,
+            "trading_strategies": {
+                # RSI 관련 설정
+                "rsi_oversold_threshold": 28.0,
+                "rsi_overbought_threshold": 68.0,
+                
+                # MACD 관련 설정
+                "macd_fast_period": 10,
+                "macd_slow_period": 24,
+                "macd_signal_period": 8,
+                
+                # 트레일링 스탑 관련 설정
+                "use_trailing_stop": True,
+                "trailing_stop_pct": 1.5,
+                
+                # 추세 필터 관련 설정
+                "use_daily_trend_filter": True,
+                "use_market_trend_filter": True,
+                "market_index_code": "069500",  # KODEX 200 ETF
+                "daily_trend_lookback": 3,
+                
+                # 섹터 필터 설정
+                "use_sector_filter": True,
+                
+                # 섹터 자동 조회 설정
+                "use_auto_sector_lookup": True,
+                "auto_sector_lookup_interval": 7,
+                
+                # ATR 관련 설정
+                "use_dynamic_stop": True,
+                "atr_period": 10,
+                "atr_multiplier": 1.5,
+                
+                # 분할 매수 관련 설정
+                "use_split_purchase": True,
+                "initial_purchase_ratio": 0.30,
+                "additional_purchase_ratios": [0.30, 0.30, 0.10],
+                "additional_purchase_drop_pct": [1.5, 3.0, 5.0],
+                
+                # 볼린저 밴드 관련 설정
+                "bollinger_period": 18,
+                "bollinger_std": 2.0,
+                
+                # 이동평균선 관련 설정
+                "short_ma_period": 5,
+                "mid_ma_period": 20,
+                "long_ma_period": 60,
+                
+                # 부분 익절 전략
+                "use_partial_profit": True,
+                "partial_profit_target": 3.0,
+                "partial_profit_ratio": 0.5,
+                
+                # 시간 필터
+                "use_time_filter": True,
+                "avoid_trading_hours": ["09:00-10:00", "14:30-15:30"],
+                
+                # 연속 하락일 필터
+                "use_consecutive_drop_filter": True,
+                "consecutive_drop_days": 2,
+                
+                # 확인 주기 설정
+                "check_interval_seconds": 1800,
+                
+                # 매수 점수 가중치
+                "score_weights": {
+                    "rsi_oversold": 4,
+                    "golden_cross": 2,
+                    "macd_cross_up": 4,
+                    "near_lower_band": 3,
+                    "momentum_turning_up": 2,
+                    "near_support": 3,
+                    "minute_rsi_oversold": 2,
+                    "minute_macd_cross_up": 2,
+                    "consecutive_drop": 2,
+                    "volume_increase": 3,
+                    "bullish_candle": 2,
+                    "sector_strength": 3
+                },
+                
+                # 매수 필터 강화 설정
+                "required_daily_signals": 2,
+                "required_minute_signals": 2,
+                
+                # 뉴스 필터 설정
+                "use_news_filter": False
+            }
+        }
+        
+        # API 정보 항목 추가 (빈 값)
+        config["api_key"] = ""
+        config["api_secret"] = ""
+        config["account_number"] = ""
+        config["account_code"] = ""
+        
+        # 현재 날짜 추가 (섹터 정보 업데이트 트래킹용)
+        config["last_sector_update"] = datetime.datetime.now().strftime("%Y%m%d")
+        
+        # 설정 파일 저장
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, ensure_ascii=False, indent=4)
+        
         logger.info(f"기본 설정 파일 생성 완료: {config_path}")
+        logger.info(f"수집된 종목 수: {len(watch_list)}, 섹터 수: {len(sector_list)}")
+        logger.info(f"API 정보 확인이 필요한 경우 {config_path} 파일에 추가 정보를 입력하세요.")
+        
     except Exception as e:
         logger.exception(f"설정 파일 생성 중 오류: {str(e)}")
+        raise  # 예외를 다시 발생시켜 호출자에게 알림
 
 # 메인 함수
 def main():
