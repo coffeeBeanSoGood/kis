@@ -24,7 +24,6 @@ import requests  # 네이버 금융 조회를 위해 추가
 from bs4 import BeautifulSoup  # 네이버 금융 조회를 위해 추가
 from pykrx import stock
 from typing import List, Dict, Tuple, Optional, Union
-import discord_alert
 
 # KIS API 함수 임포트
 import KIS_Common as Common
@@ -407,13 +406,6 @@ class TrendTraderBot:
         self.use_split_purchase = trading_strategies.get("use_split_purchase", True)
         self.initial_purchase_ratio = trading_strategies.get("initial_purchase_ratio", 0.5)
         self.additional_purchase_drop_pct = trading_strategies.get("additional_purchase_drop_pct", [1.5])
-        # 추가: 기술적 지표 기반 추가 매수 설정
-        add_purchase_config = trading_strategies.get("additional_purchase", {})
-        self.use_technical_filter = add_purchase_config.get("use_technical_filter", True)
-        self.min_positive_signals = add_purchase_config.get("min_positive_signals", 1)
-        self.tech_filter_rsi_threshold = add_purchase_config.get("rsi_threshold", 40)
-        self.tech_filter_volume_increase = add_purchase_config.get("volume_increase_pct", 30)
-
         self.score_weights = trading_strategies.get("score_weights", {})
         self.use_dynamic_stop = trading_strategies.get("use_dynamic_stop", False)
         self.use_trailing_stop = trading_strategies.get("use_trailing_stop", False)
@@ -590,114 +582,8 @@ class TrendTraderBot:
         except Exception as e:
             logger.exception(f"전략 관리 종목 정보 저장 중 오류: {str(e)}")
 
-    def is_safe_for_additional_purchase(self, stock_code, current_price, avg_price):
-        """기술적 지표를 활용한 추가 매수 적정 시점 확인 (완화된 버전)
-        
-        Args:
-            stock_code: 종목 코드
-            current_price: 현재가
-            avg_price: 평균 매수가
-            
-        Returns:
-            bool: 추가 매수 적정 여부
-        """
-        try:
-            # 하락폭 계산
-            drop_percent = (avg_price - current_price) / avg_price * 100
-            
-            # 1. 기본 하락폭 조건 확인
-            if drop_percent < self.additional_purchase_drop_pct[0]:
-                return False
-            
-            # 2. 일봉 데이터 가져오기
-            daily_data = KisKR.GetOhlcvNew(stock_code, 'D', 20, adj_ok=1)
-            if daily_data is None or daily_data.empty:
-                # 데이터가 없으면 기본 하락폭 조건만으로 진행 (기존 방식과 동일)
-                logger.info(f"종목 {stock_code} 일봉 데이터 없음, 단순 하락폭({drop_percent:.2f}%)으로 추가 매수 결정")
-                return True
-                
-            # 필요한 기술적 지표 계산
-            if 'RSI' not in daily_data.columns:
-                daily_data['RSI'] = self.tech_indicators.calculate_rsi(daily_data)
-            
-            # MACD 계산
-            if 'MACD' not in daily_data.columns:
-                macd_data = self.tech_indicators.calculate_macd(
-                    daily_data, 
-                    fast_period=self.macd_fast_period, 
-                    slow_period=self.macd_slow_period, 
-                    signal_period=self.macd_signal_period
-                )
-                daily_data['MACD'] = macd_data['MACD']
-                daily_data['Signal'] = macd_data['Signal']
-                daily_data['Histogram'] = macd_data['Histogram']
-            
-            # 3. 긍정적 신호 확인
-            positive_signals = 0
-            signal_details = []  # 로깅을 위한 신호 설명
-            
-            # a. RSI 과매도 확인 (더 낮은 RSI 값에서 추가 매수)
-            rsi_value = daily_data['RSI'].iloc[-1]
-            if rsi_value < 40:  # 일반적 과매도 기준(30)보다 조금 더 높게 설정
-                positive_signals += 1
-                signal_details.append(f"RSI 과매도: {rsi_value:.2f}")
-            
-            # b. MACD 히스토그램 반등 확인
-            if len(daily_data) >= 3 and 'Histogram' in daily_data.columns:
-                hist_values = daily_data['Histogram'].iloc[-3:].values
-                # 히스토그램이 2일 연속 개선되는지 확인
-                if hist_values[0] < hist_values[1] < hist_values[2]:
-                    positive_signals += 1
-                    signal_details.append("MACD 히스토그램 개선")
-            
-            # c. 거래량 증가 확인
-            if 'volume' in daily_data.columns and len(daily_data) >= 10:
-                avg_volume = daily_data['volume'].iloc[-10:-2].mean()  # 최근 제외 평균
-                recent_volume = daily_data['volume'].iloc[-1]
-                
-                if recent_volume > avg_volume * 1.3:  # 30% 이상 증가
-                    positive_signals += 1
-                    signal_details.append(f"거래량 증가: 평균 대비 {recent_volume/avg_volume:.1f}배")
-            
-            # d. 캔들 패턴 확인 (양봉 or 망치형)
-            if all(col in daily_data.columns for col in ['open', 'close', 'high', 'low']):
-                open_price = daily_data['open'].iloc[-1]
-                close_price = daily_data['close'].iloc[-1]
-                high_price = daily_data['high'].iloc[-1]
-                low_price = daily_data['low'].iloc[-1]
-                
-                # 양봉 확인
-                if close_price > open_price:
-                    body_size = close_price - open_price
-                    total_range = high_price - low_price
-                    
-                    # 강한 양봉 (몸통이 전체 범위의 50% 이상)
-                    if body_size > total_range * 0.5:
-                        positive_signals += 1
-                        signal_details.append("강한 양봉 패턴")
-                    
-                    # 망치형 캔들 (하단 꼬리가 몸통의 2배 이상)
-                    elif (open_price - low_price) > body_size * 2:
-                        positive_signals += 1
-                        signal_details.append("망치형 캔들 패턴")
-            
-            # 완화된 조건: 최소 1개 이상의 긍정적 신호가 있으면 추가 매수
-            if positive_signals >= 1:
-                logger.info(f"종목 {stock_code} 추가 매수 조건 충족: {positive_signals}개 긍정 신호 ({', '.join(signal_details)})")
-                return True
-            else:
-                # 로깅만 하고 false 반환
-                logger.info(f"종목 {stock_code} 긍정 신호 부족으로 추가 매수 보류 (하락률: {drop_percent:.2f}%)")
-                return False
-                
-        except Exception as e:
-            logger.exception(f"추가 매수 조건 확인 중 오류: {str(e)}")
-            # 오류 발생 시에는 기본 하락폭 조건만으로 진행 (안전망)
-            logger.info(f"오류 발생으로 단순 하락폭({drop_percent:.2f}%)으로 추가 매수 결정")
-            return drop_percent >= self.additional_purchase_drop_pct[0]
-
     def check_sector_strength(self, sector_code: str) -> bool:
-        """섹터 강도 확인 - 개선된 버전
+        """섹터 강도 확인 - 실시간 업종 동향 분석 활용
         
         Args:
             sector_code: 섹터 코드
@@ -711,11 +597,10 @@ class TrendTraderBot:
                 return True  # 기본적으로 통과
             
             # 캐싱을 위한 키 생성 (1시간 단위)
-            import datetime
             cache_key = f"sector_strength_{sector_code}_{datetime.datetime.now().strftime('%Y%m%d_%H')}"
             
-            # 캐시된 결과가 있으면 사용
-            if hasattr(self, 'sector_cache') and cache_key in self.sector_cache:
+            # 캐시된 결과가 있는지 확인
+            if cache_key in self.sector_cache:
                 return self.sector_cache[cache_key]
             
             # 섹터 대표 종목 찾기
@@ -725,21 +610,17 @@ class TrendTraderBot:
                 logger.info(f"섹터 '{sector_code}'에 대한 대표 종목을 찾을 수 없습니다. 기본 통과로 설정합니다.")
                 return True
             
-            # 섹터 동향 분석 호출 - 개선된 함수 사용
+            # 업종 동향 분석
             is_strong, details = analyze_sector_trend(representative_stock)
             
-            # 결과 로깅
+            # 분석 결과 로깅
             if isinstance(details, dict):
                 logger.info(f"섹터 '{sector_code}' 분석: 상승 비율 {details.get('rising_ratio', 0):.2f}, " +
-                        f"평균 변동률 {details.get('avg_change', 0):.2f}%, " +
-                        f"상대 모멘텀 {details.get('relative_momentum', 0):.2f}%, " +
-                        f"강세 여부: {is_strong}")
+                        f"평균 변동률 {details.get('avg_change', 0):.2f}%, 강세 여부: {is_strong}")
             else:
                 logger.info(f"섹터 '{sector_code}' 분석: {details}, 강세 여부: {is_strong}")
             
             # 결과 캐싱
-            if not hasattr(self, 'sector_cache'):
-                self.sector_cache = {}
             self.sector_cache[cache_key] = is_strong
             
             return is_strong
@@ -1087,11 +968,11 @@ class TrendTraderBot:
             rsi_threshold_adjusted = self.rsi_oversold
             
             if market_env == "uptrend":
-                # 상승장 전략 - 수정: 손절 기준 크게 완화 (-0.9% → -2.0%)
-                profit_target_adjusted = self.profit_target * 1.8  # 목표 수익률 80% 증가
-                stop_loss_adjusted = self.stop_loss * 0.4  # 손절폭 60% 감소 (기존 0.6 → 0.4)
-                rsi_threshold_adjusted = min(self.rsi_oversold + 8, 38)  # RSI 임계값
-
+                # 상승장 전략 (수정된 부분)
+                profit_target_adjusted = self.profit_target * 1.8  # 목표 수익률 80% 증가 (기존 50%에서 상향)
+                stop_loss_adjusted = self.stop_loss * 0.8  # 손절폭 20% 감소
+                rsi_threshold_adjusted = min(self.rsi_oversold + 8, 38)  # RSI 임계값 크게 완화 (기존 +5에서 +8로 상향)
+                
                 # 추세 확인으로 매수 신호 보강
                 if not daily_data.empty:
                     # 상승장에서는 추가 매매 조건 확인
@@ -1453,9 +1334,9 @@ class TrendTraderBot:
                 # 상승장에서 매도 전략 최적화
                 adjusted_trailing_stop_pct = self.trailing_stop_pct
                 if current_market_env == "uptrend":
-                    # 수정: 1.275% → 2.0~2.5% 범위로 확대 (0.85 → 0.55) 
-                    adjusted_trailing_stop_pct = self.trailing_stop_pct * 0.55  # 45% 감소
-
+                    # 상승장에서는 트레일링 스탑 비율을 낮춰서 더 오래 보유하게 함
+                    adjusted_trailing_stop_pct = self.trailing_stop_pct * 0.85  # 15% 감소
+                
                 # 트레일링 스탑 업데이트
                 if self.use_trailing_stop:
                     # 현재가가 기존 최고가보다 높으면 최고가 및 트레일링 스탑 가격 업데이트
@@ -1469,7 +1350,7 @@ class TrendTraderBot:
                         # 상승장에서는 로깅에 트레일링 스탑 조정 정보 추가
                         if current_market_env == "uptrend":
                             logger.info(f"상승장 트레일링 스탑 업데이트: {stock_code}, 최고가: {current_price:,}원, " +
-                                    f"스탑 가격(조정됨): {new_stop_price:,}원 (원래 비율의 55%)")
+                                    f"스탑 가격(조정됨): {new_stop_price:,}원 (원래 비율의 85%)")
                         else:
                             logger.info(f"트레일링 스탑 업데이트: {stock_code}, 최고가: {current_price:,}원, " +
                                     f"스탑 가격: {new_stop_price:,}원")
@@ -2026,9 +1907,7 @@ class TrendTraderBot:
                     else:
                         drop_pct = drop_thresholds[0] if drop_thresholds else 1.5                
                     
-                    # if profit_percent <= -drop_pct:  # 설정된 하락률 이상 하락했을 때
-                    if profit_percent <= -drop_pct and self.is_safe_for_additional_purchase(stock_code, current_price, avg_price):
-    
+                    if profit_percent <= -drop_pct:  # 설정된 하락률 이상 하락했을 때
                         remaining_budget = holding_info.get("remaining_budget", 0)
                         
                         # 최소 거래 금액 확인
@@ -2105,7 +1984,7 @@ class TrendTraderBot:
             logger.exception(f"매매봇 실행 중 오류: {str(e)}")
 
     def run_backtest(self, start_date: str, end_date: str = None) -> Dict[str, any]:
-        """백테스트 실행 - 상승장 전략 강화 반영 및 기술적 지표 기반 추가 매수 개선
+        """백테스트 실행 - 상승장 전략 강화 반영
         
         Args:
             start_date: 시작일자 (YYYYMMDD)
@@ -2408,16 +2287,16 @@ class TrendTraderBot:
                         if current_market_env == "uptrend":
                             rsi_overbought_threshold += 5  # 상승장에서는 RSI 과매수 기준 상향
                             
-                        if self.tech_indicators.is_overbought_rsi(daily_data['RSI'].iloc[current_idx], rsi_overbought_threshold):
+                        if self.tech_indicators.is_overbought_rsi(daily_data.iloc[current_idx]['RSI'], rsi_overbought_threshold):
                             sell_signal = True
                             if current_market_env == "uptrend":
-                                sell_reason = f"RSI 과매수(상승장 조정): {daily_data['RSI'].iloc[current_idx]:.2f}"
+                                sell_reason = f"RSI 과매수(상승장 조정): {daily_data.iloc[current_idx]['RSI']:.2f}"
                             else:
-                                sell_reason = f"RSI 과매수: {daily_data['RSI'].iloc[current_idx]:.2f}"
+                                sell_reason = f"RSI 과매수: {daily_data.iloc[current_idx]['RSI']:.2f}"
                     
                     # 6. 데드 크로스 (상승장에서는 조건 무시)
-                    elif current_idx > 0 and current_market_env != "uptrend" and daily_data['MA5'].iloc[current_idx-1] > daily_data['MA20'].iloc[current_idx-1] and \
-                        daily_data['MA5'].iloc[current_idx] <= daily_data['MA20'].iloc[current_idx]:
+                    elif current_idx > 0 and current_market_env != "uptrend" and daily_data.iloc[current_idx-1]['MA5'] > daily_data.iloc[current_idx-1]['MA20'] and \
+                        daily_data.iloc[current_idx]['MA5'] <= daily_data.iloc[current_idx]['MA20']:
                         sell_signal = True
                         sell_reason = "데드 크로스 (5일선이 20일선을 하향돌파)"
                     
@@ -2443,13 +2322,13 @@ class TrendTraderBot:
                             pass
                     
                     # 8. 시장 환경 변화에 따른 추가 매도 조건
-                    elif market_env == "uptrend" and current_market_env != "uptrend" and profit_percent > 0 and current_idx > 0 and \
-                        daily_data['MA5'].iloc[current_idx-1] > daily_data['MA20'].iloc[current_idx-1] and \
-                        daily_data['MA5'].iloc[current_idx] < daily_data['MA20'].iloc[current_idx]:
+                    elif market_env == "uptrend" and profit_percent > 0 and current_idx > 0 and \
+                        daily_data.iloc[current_idx-1]['MA5'] > daily_data.iloc[current_idx-1]['MA20'] and \
+                        daily_data.iloc[current_idx]['MA5'] < daily_data.iloc[current_idx]['MA20']:
                         sell_signal = True
                         sell_reason = f"상승 추세 반전 (수익률: {profit_percent:.2f}%)"
                     
-                    elif market_env == "sideways" and current_market_env == "downtrend" and profit_percent > custom_profit_target * 0.5:
+                    elif market_env == "downtrend" and profit_percent > 0.8 * custom_profit_target:
                         sell_signal = True
                         sell_reason = f"하락장 즉시 수익 실현: {profit_percent:.2f}% (목표의 {profit_percent/custom_profit_target*100:.0f}%)"
                     
@@ -2514,7 +2393,6 @@ class TrendTraderBot:
                         )
                         
                         if analysis_result.get("is_buy_signal", False):
-                            # 매수 후보 목록에 추가
                             analysis_result["stock_code"] = stock_code
                             analysis_result["current_price"] = current_price
                             analysis_result["date"] = date
@@ -2522,256 +2400,91 @@ class TrendTraderBot:
                     
                     # 매수 후보가 있으면 점수 기반으로 정렬
                     if buy_candidates:
-                        # 후보 종목들에 점수 부여 및 정렬
-                        score_weights = self.score_weights
-
-                        for candidate in buy_candidates:
-                            score = 0
-                            signals = candidate.get("signals", {})
-                            
-                            # 일봉 시그널 점수
-                            daily_signals = signals.get("daily", {})
-                            if daily_signals.get("rsi_oversold", False): 
-                                score += score_weights.get("rsi_oversold", 2)
-                            if daily_signals.get("golden_cross", False): 
-                                score += score_weights.get("golden_cross", 2)
-                            if daily_signals.get("macd_cross_up", False): 
-                                score += score_weights.get("macd_cross_up", 2)
-                            if daily_signals.get("near_lower_band", False): 
-                                score += score_weights.get("near_lower_band", 1)
-                            if daily_signals.get("momentum_turning_up", False): 
-                                score += score_weights.get("momentum_turning_up", 1)
-                            if daily_signals.get("near_support", False): 
-                                score += score_weights.get("near_support", 2)
-                            if daily_signals.get("volume_increase", False):
-                                score += score_weights.get("volume_increase", 3)
-                            if daily_signals.get("bullish_candle", False):
-                                score += score_weights.get("bullish_candle", 2)
-                            
-                            # 상승장 특화 시그널 점수 추가
-                            if current_market_env == "uptrend":
-                                if daily_signals.get("fresh_golden_cross", False):
-                                    score += 4  # 골든크로스 직후에 높은 가중치
-                                if daily_signals.get("ma_aligned", False):
-                                    score += 2  # 이동평균선 정배열
-                                if daily_signals.get("price_uptrend", False):
-                                    score += 2  # 가격 상승 추세
-                                if daily_signals.get("volume_trend", False):
-                                    score += 2  # 거래량 증가 추세
-                            
-                            # 분봉 시그널 점수
-                            minute_signals = signals.get("minute", {})
-                            if minute_signals.get("rsi_oversold", False): 
-                                score += score_weights.get("minute_rsi_oversold", 1)
-                            if minute_signals.get("macd_cross_up", False): 
-                                score += score_weights.get("minute_macd_cross_up", 1)
-                            
-                            # 시장 환경 추가 점수 (상승장에서는 상승추세 종목에 가산점)
-                            if current_market_env == "uptrend" and daily_signals.get("in_uptrend", False):
-                                score += 2  # 상승장에서 상승추세 종목에 가산점
-                            
-                            # 섹터 강도 점수
-                            stock_code = candidate.get("stock_code", "")
-                            sector_code = self.watch_list_info.get(stock_code, {}).get("sector_code")
-                            if sector_code and self.use_sector_filter:
-                                sector_strength_ok = self.check_sector_strength(sector_code)
-                                if sector_strength_ok:
-                                    score += score_weights.get("sector_strength", 3)
-                            
-                            candidate["score"] = score
-                        
-                        # 점수 기준 내림차순 정렬
+                        # 점수 기반 내림차순 정렬
                         buy_candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
                         
-                        # 매수 가능한 종목 수만큼만 선택 (최대 available_slots개)
+                        # 상위 후보만 선택 (보유 가능 종목 수만큼)
                         available_slots = max_holdings_count - len(virtual_holdings)
                         top_candidates = buy_candidates[:available_slots]
                         
-                        # 상위 종목부터 매수 시도
                         for candidate in top_candidates:
                             stock_code = candidate.get("stock_code")
                             stock_name = candidate.get("stock_name", stock_code)
                             current_price = candidate.get("current_price", 0)
                             
-                            # 조정된 파라미터 가져오기
-                            adjusted_params = candidate.get("adjusted_parameters", {})
-                            custom_profit_target = adjusted_params.get("profit_target", self.profit_target)
-                            custom_stop_loss = adjusted_params.get("stop_loss", self.stop_loss)
-                            
-                            # 종목별 예산 배분 계산
+                            # 종목별 할당 예산 계산
                             stock_info = self.watch_list_info.get(stock_code, {})
+                            allocation_ratio = stock_info.get("allocation_ratio", self.default_allocation_ratio)
                             
                             # 상승장에서는 배분 비율 증가
                             if current_market_env == "uptrend":
-                                allocation_ratio = min(stock_info.get("allocation_ratio", self.default_allocation_ratio) * 1.2, 0.3)  # 20% 증가, 최대 30%로 제한
-                            else:
-                                allocation_ratio = stock_info.get("allocation_ratio", self.default_allocation_ratio)                    
-                            
-                            # 예산 내에서 매수 수량 결정
-                            allocated_budget = min(self.total_budget * allocation_ratio, total_capital)
-                            
-                            # 분할 매수 전략 적용
-                            use_split = self.use_split_purchase
-                            initial_ratio = self.initial_purchase_ratio
-
-                            # 상승장에서 분할 매수 비율 조정 (더 적극적으로)
-                            if current_market_env == "uptrend":
-                                # 상승장에서는 초기 매수 비율 증가 (더 적극적인 진입)
-                                initial_ratio = min(initial_ratio * 1.3, 0.8)  # 30% 증가, 최대 80%까지
-                            
-                            if use_split:
-                                # 설정에서 초기 매수 비율 가져오기 (랜덤 변동 ±10%)
-                                variation = 0.1  # 10% 변동
-                                min_ratio = max(0.1, initial_ratio * (1 - variation))
-                                max_ratio = min(0.9, initial_ratio * (1 + variation))
-                                import random  # 필요한 경우 임포트
-                                split_ratio = random.uniform(min_ratio, max_ratio)
-                            else:
-                                split_ratio = 1.0  # 분할 매수 사용하지 않을 경우 전체 예산 사용
-                            
-                            first_buy_budget = allocated_budget * split_ratio
-                            
-                            # 최소 거래 금액 확인
-                            if first_buy_budget < self.min_trading_amount:
-                                continue
-                            
-                            quantity = max(1, int(first_buy_budget / current_price))
-                            
-                            if quantity > 0 and current_price > 0:
-                                # 매수 금액 재계산
-                                buy_amount = current_price * quantity
+                                allocation_ratio = min(allocation_ratio * 1.2, 0.3)  # 20% 증가, 최대 30%까지
                                 
-                                # 매수 금액이 최소 거래 금액보다 작으면 건너뜀
-                                if buy_amount < self.min_trading_amount:
-                                    continue
-                                
-                                # 자본이 충분한지 확인
-                                if buy_amount <= total_capital:
-                                    # 매수 실행 - 자본 업데이트
-                                    total_capital -= buy_amount
-                                    
-                                    # 거래 기록
-                                    trades.append({
-                                        "stock_code": stock_code,
-                                        "stock_name": stock_name,
-                                        "action": "BUY",
-                                        "reason": candidate.get("reason", "매수 시그널"),
-                                        "date": date,
-                                        "price": current_price,
-                                        "quantity": quantity,
-                                        "amount": buy_amount,
-                                        "market_environment": current_market_env,
-                                        "score": candidate.get("score", 0)
-                                    })
-                                    
-                                    # 보유 종목에 추가 (트레일링 스탑 설정 포함)
-                                    virtual_holdings[stock_code] = {
-                                        "quantity": quantity,
-                                        "avg_price": current_price,
-                                        "buy_date": date,
-                                        "highest_price": current_price,
-                                        "trailing_stop_price": current_price * (1 - self.trailing_stop_pct/100) if self.use_trailing_stop else 0,
-                                        "split_buy": use_split,
-                                        "initial_budget": allocated_budget,
-                                        "used_budget": buy_amount,
-                                        "remaining_budget": allocated_budget - buy_amount,
-                                        # ATR 기반 동적 손절가
-                                        "use_dynamic_stop": self.use_dynamic_stop,
-                                        "dynamic_stop_price": candidate.get("technical_data", {}).get("dynamic_stop_loss", 0),
-                                        # 시장 환경 조정 파라미터
-                                        "profit_target": custom_profit_target,
-                                        "stop_loss": custom_stop_loss,
-                                        "market_environment": current_market_env,
-                                        # 추가 매수를 위한 하락률 설정
-                                        "additional_drop_pct": self.additional_purchase_drop_pct[0]
-                                    }
-                                    
-                                    # 상승장에서는 트레일링 스탑 비율 조정 (더 오래 보유)
-                                    if self.use_trailing_stop and current_market_env == "uptrend":
-                                        adjusted_trailing_stop_pct = self.trailing_stop_pct * 0.85  # 15% 감소
-                                        virtual_holdings[stock_code]["trailing_stop_price"] = current_price * (1 - adjusted_trailing_stop_pct/100)
-                                    
-                                    # 시장 환경 통계 업데이트
-                                    backtest_results["market_environment_stats"][current_market_env] += 1
-                
-                # ============= 개선된 부분: 기술적 지표 기반 추가 매수 필터링 =============
-                # 보유 종목 중 분할 매수가 가능한 종목 추가 매수 검토
-                for stock_code, holding in list(virtual_holdings.items()):
-                    # 분할 매수가 가능한지 확인
-                    if holding.get("split_buy", False) and holding.get("remaining_budget", 0) > self.min_trading_amount:
-                        # 해당 종목의 현재 데이터가 있는지 확인
-                        if stock_code not in stock_data_cache or date not in stock_data_cache[stock_code].index:
-                            continue
+                            allocated_budget = self.total_budget * allocation_ratio
                             
-                        daily_data = stock_data_cache[stock_code]
-                        current_idx = daily_data.index.get_loc(date)
-                        
-                        # 데이터 부족 체크
-                        if current_idx < 10:  # 최소 10일치 데이터 필요
-                            continue
+                            # 시장 환경에 따른 매수 비율 조정
+                            purchase_ratio = 1.0  # 기본값
+                            if current_market_env == "downtrend":
+                                purchase_ratio = 0.7  # 하락장에서는 보수적으로
+                            elif current_market_env == "uptrend":
+                                purchase_ratio = 1.2  # 상승장에서는 적극적으로 (20% 증가)
                             
-                        current_price = daily_data.iloc[current_idx]['close']
-                        avg_price = holding["avg_price"]
-                        
-                        # 수익률 계산
-                        profit_percent = ((current_price / avg_price) - 1) * 100
-                        
-                        # 추가 매수 조건 확인: 하락률 기준 + 기술적 지표 필터링
-                        drop_threshold = holding.get("additional_drop_pct", self.additional_purchase_drop_pct[0])
-                        
-                        # 개선된 코드: 하락률과 기술적 지표 모두 확인
-                        if profit_percent <= -drop_threshold and self.is_safe_for_additional_purchase_backtest(
-                            stock_code,
-                            daily_data,
-                            current_idx,
-                            current_price,
-                            avg_price
-                        ):
-                            # 추가 매수 가능 예산
-                            remaining_budget = holding.get("remaining_budget", 0)
+                            adjusted_budget = min(allocated_budget * purchase_ratio, total_capital)
+                            quantity = max(1, int(adjusted_budget / current_price))
                             
-                            # 추가 매수 수량 계산
-                            add_quantity = max(1, int(remaining_budget / current_price))
-                            add_buy_amount = current_price * add_quantity
+                            # 매수 실행
+                            buy_amount = current_price * quantity
                             
-                            # 최소 거래 금액 및 자본 확인
-                            if add_buy_amount >= self.min_trading_amount and add_buy_amount <= total_capital:
-                                # 기존 정보
-                                existing_quantity = holding.get("quantity", 0)
-                                existing_amount = existing_quantity * avg_price
-                                
-                                # 새로운 평균단가 계산
-                                new_quantity = existing_quantity + add_quantity
-                                new_avg_price = (existing_amount + add_buy_amount) / new_quantity
+                            if buy_amount <= total_capital and buy_amount >= self.min_trading_amount:
+                                # 조정된 파라미터 가져오기
+                                adjusted_params = candidate.get("adjusted_parameters", {})
+                                custom_profit_target = adjusted_params.get("profit_target", self.profit_target)
+                                custom_stop_loss = adjusted_params.get("stop_loss", self.stop_loss)
                                 
                                 # 자본 업데이트
-                                total_capital -= add_buy_amount
+                                total_capital -= buy_amount
+                                
+                                # 트레일링 스탑 비율 조정
+                                trailing_stop_pct = self.trailing_stop_pct
+                                if current_market_env == "uptrend":
+                                    trailing_stop_pct *= 0.85  # 상승장에서는 15% 감소
+                                
+                                # 보유 종목에 추가
+                                virtual_holdings[stock_code] = {
+                                    "quantity": quantity,
+                                    "avg_price": current_price,
+                                    "buy_date": date,
+                                    "highest_price": current_price,
+                                    "trailing_stop_price": current_price * (1 - trailing_stop_pct/100) if self.use_trailing_stop else 0,
+                                    "profit_target": custom_profit_target,
+                                    "stop_loss": custom_stop_loss,
+                                    "market_environment": current_market_env,
+                                    "use_dynamic_stop": self.use_dynamic_stop,
+                                    "dynamic_stop_price": current_price - (daily_data.iloc[current_idx]['ATR'] * self.atr_multiplier) if not pd.isna(daily_data.iloc[current_idx]['ATR']) else 0,
+                                    "partial_profit_taken": False
+                                }
                                 
                                 # 거래 기록
                                 trades.append({
                                     "stock_code": stock_code,
                                     "stock_name": self.watch_list_info.get(stock_code, {}).get("name", stock_code),
-                                    "action": "ADD_BUY",
-                                    "reason": f"추가 매수: 하락률 {-profit_percent:.2f}% + 기술적 지표 신호",
+                                    "action": "BUY",
+                                    "reason": candidate.get("reason", "매수 시그널"),
                                     "date": date,
                                     "price": current_price,
-                                    "quantity": add_quantity,
-                                    "amount": add_buy_amount,
-                                    "prev_avg_price": avg_price,
-                                    "new_avg_price": new_avg_price,
-                                    "market_environment": current_market_env
+                                    "quantity": quantity,
+                                    "amount": buy_amount,
+                                    "market_environment": current_market_env,
+                                    "adjusted_parameters": {
+                                        "profit_target": custom_profit_target, 
+                                        "stop_loss": custom_stop_loss
+                                    },
+                                    "score": candidate.get("score", 0)
                                 })
                                 
-                                # 홀딩 정보 업데이트
-                                virtual_holdings[stock_code]["quantity"] = new_quantity
-                                virtual_holdings[stock_code]["avg_price"] = new_avg_price
-                                virtual_holdings[stock_code]["used_budget"] = holding.get("used_budget", 0) + add_buy_amount
-                                virtual_holdings[stock_code]["remaining_budget"] = remaining_budget - add_buy_amount
-                                
-                                # 분할 매수 모두 사용했으면 플래그 해제
-                                if virtual_holdings[stock_code]["remaining_budget"] < self.min_trading_amount:
-                                    virtual_holdings[stock_code]["split_buy"] = False
-            
+                                # 시장 환경 통계 업데이트
+                                backtest_results["market_environment_stats"][current_market_env] += 1
+
             # 백테스트 종료 시점에 보유중인 종목 청산
             for stock_code, holding in list(virtual_holdings.items()):
                 if stock_code in stock_data_cache:
@@ -2830,7 +2543,7 @@ class TrendTraderBot:
             # 최대 낙폭 계산
             capital_history = [self.total_budget]
             for trade in trades:
-                if trade.get("action") == "BUY" or trade.get("action") == "ADD_BUY":
+                if trade.get("action") == "BUY":
                     capital_history.append(capital_history[-1] - trade.get("amount", 0))
                 elif trade.get("action") in ["SELL", "PARTIAL_SELL"]:
                     capital_history.append(capital_history[-1] + trade.get("price", 0) * trade.get("quantity", 0))
@@ -2854,8 +2567,7 @@ class TrendTraderBot:
                         "name": trade.get("stock_name", code),
                         "total_profit": 0,
                         "trades_count": 0,
-                        "win_count": 0,
-                        "add_buys": 0
+                        "win_count": 0
                     }
                 
                 if trade.get("action") in ["SELL", "PARTIAL_SELL"]:
@@ -2864,11 +2576,8 @@ class TrendTraderBot:
                     stock_performance[code]["trades_count"] += 1
                     if profit > 0:
                         stock_performance[code]["win_count"] += 1
-                
-                if trade.get("action") == "ADD_BUY":
-                    stock_performance[code]["add_buys"] += 1
             
-            # 종목별 승률 및 추가 매수 횟수 계산
+            # 종목별 승률 계산
             for code in stock_performance:
                 trades_count = stock_performance[code]["trades_count"]
                 if trades_count > 0:
@@ -2880,15 +2589,14 @@ class TrendTraderBot:
             
             # 시장 환경별 성과 분석
             market_env_performance = {
-                "uptrend": {"trades": 0, "win_trades": 0, "profit": 0, "add_buys": 0},
-                "downtrend": {"trades": 0, "win_trades": 0, "profit": 0, "add_buys": 0},
-                "sideways": {"trades": 0, "win_trades": 0, "profit": 0, "add_buys": 0}
+                "uptrend": {"trades": 0, "win_trades": 0, "profit": 0},
+                "downtrend": {"trades": 0, "win_trades": 0, "profit": 0},
+                "sideways": {"trades": 0, "win_trades": 0, "profit": 0}
             }
             
             for trade in trades:
-                env = trade.get("market_environment", "sideways")
-                
                 if trade.get("action") in ["SELL", "PARTIAL_SELL"]:
+                    env = trade.get("market_environment", "sideways")
                     profit = trade.get("profit_loss", 0)
                     
                     market_env_performance[env]["trades"] += 1
@@ -2896,9 +2604,6 @@ class TrendTraderBot:
                     
                     if profit > 0:
                         market_env_performance[env]["win_trades"] += 1
-                
-                if trade.get("action") == "ADD_BUY":
-                    market_env_performance[env]["add_buys"] += 1
             
             # 승률 및 평균 수익 계산
             for env, data in market_env_performance.items():
@@ -2911,64 +2616,6 @@ class TrendTraderBot:
             
             backtest_results["market_environment_performance"] = market_env_performance
             
-            # 추가 매수 성과 분석 (개선된 부분)
-            add_buy_stats = {
-                "total_count": 0,
-                "success_count": 0,
-                "profit": 0,
-                "avg_profit_percent": 0
-            }
-            
-            # 추가 매수 성과 계산
-            add_buys = [t for t in trades if t.get("action") == "ADD_BUY"]
-            add_buy_stats["total_count"] = len(add_buys)
-            
-            # 각 추가 매수의 성과 추적
-            add_buy_results = {}
-            
-            for trade in trades:
-                if trade.get("action") == "ADD_BUY":
-                    stock_code = trade.get("stock_code")
-                    date = trade.get("date")
-                    price = trade.get("price")
-                    quantity = trade.get("quantity")
-                    
-                    key = f"{stock_code}_{date}"
-                    add_buy_results[key] = {
-                        "stock_code": stock_code,
-                        "buy_date": date,
-                        "buy_price": price,
-                        "quantity": quantity,
-                        "result": "pending",
-                        "profit_percent": 0
-                    }
-                
-                elif trade.get("action") in ["SELL", "PARTIAL_SELL"]:
-                    stock_code = trade.get("stock_code")
-                    
-                    # 이 종목의 추가 매수 내역 찾기
-                    for key, add_buy in list(add_buy_results.items()):
-                        if add_buy["stock_code"] == stock_code and add_buy["result"] == "pending":
-                            sell_price = trade.get("price")
-                            profit_percent = ((sell_price / add_buy["buy_price"]) - 1) * 100
-                            
-                            add_buy["result"] = "success" if profit_percent > 0 else "loss"
-                            add_buy["profit_percent"] = profit_percent
-                            add_buy["sell_date"] = trade.get("date")
-                            add_buy["sell_price"] = sell_price
-                            
-                            add_buy_stats["profit"] += profit_percent
-                            if profit_percent > 0:
-                                add_buy_stats["success_count"] += 1
-            
-            # 추가 매수 평균 수익률 계산
-            if add_buy_stats["total_count"] > 0:
-                add_buy_stats["win_rate"] = (add_buy_stats["success_count"] / add_buy_stats["total_count"]) * 100
-                add_buy_stats["avg_profit_percent"] = add_buy_stats["profit"] / add_buy_stats["total_count"]
-            
-            backtest_results["add_buy_stats"] = add_buy_stats
-            backtest_results["add_buy_details"] = list(add_buy_results.values())
-            
             logger.info(f"백테스트 완료: 최종 자본금 {backtest_results['final_capital']:,.0f}원, " + 
                     f"수익률 {backtest_results['profit_loss_percent']:.2f}%, " +
                     f"승률 {backtest_results['win_rate']:.2f}%")
@@ -2978,13 +2625,6 @@ class TrendTraderBot:
                 if stats["trades"] > 0:
                     logger.info(f"시장 환경 '{env}' 성과: 거래 수: {stats['trades']}건, " +
                             f"승률: {stats['win_rate']:.2f}%, 평균 수익: {stats['avg_profit']:,.0f}원")
-                    
-            # 추가 매수 성과 로깅
-            if add_buy_stats["total_count"] > 0:
-                logger.info(f"추가 매수 성과: 총 {add_buy_stats['total_count']}건, " +
-                        f"성공: {add_buy_stats['success_count']}건, " +
-                        f"승률: {add_buy_stats['win_rate']:.2f}%, " +
-                        f"평균 수익률: {add_buy_stats['avg_profit_percent']:.2f}%")
             
             return backtest_results
         
@@ -3043,10 +2683,10 @@ class TrendTraderBot:
             
             if current_market_env == "uptrend":
                 # 상승장 전략 (수정된 부분)
-                profit_target_adjusted = self.profit_target * 1.8  # 목표 수익률 80% 증가
-                stop_loss_adjusted = self.stop_loss * 0.4  # 손절폭 60% 감소 (기존 0.6 → 0.4)
-                rsi_threshold_adjusted = min(self.rsi_oversold + 8, 38)  # RSI 임계값
-
+                profit_target_adjusted = self.profit_target * 1.8  # 목표 수익률 80% 증가 (기존 50%에서 상향)
+                stop_loss_adjusted = self.stop_loss * 0.8  # 손절폭 20% 감소
+                rsi_threshold_adjusted = min(self.rsi_oversold + 8, 38)  # RSI 임계값 크게 완화 (기존 +5에서 +8로 상향)
+                
                 # 추세 확인으로 매수 신호 보강
                 if not daily_data.empty:
                     # 상승장에서는 추가 매매 조건 확인
@@ -3084,9 +2724,9 @@ class TrendTraderBot:
             elif current_market_env == "downtrend":
                 # 하락장 전략 (매수 기준 강화, 손절폭 감소)
                 profit_target_adjusted = self.profit_target * 0.8  # 목표 수익률 20% 감소
-                stop_loss_adjusted = self.stop_loss * 0.6  # 손절폭 40% 감소 (기존 유지)
+                stop_loss_adjusted = self.stop_loss * 0.6  # 손절폭 40% 감소 (더 타이트하게)
                 rsi_threshold_adjusted = max(self.rsi_oversold - 5, 20)  # RSI 임계값 강화
-
+                
                 # 안전한 매수 시점인지 확인
                 is_safe_entry = self.is_safe_to_buy_in_downtrend(daily_data)
                 analysis_result["signals"]["daily"]["safe_entry"] = is_safe_entry
@@ -3577,60 +3217,6 @@ class TrendTraderBot:
             logger.warning(f"종목 {stock_code} 백테스트 분석 중 오류: {str(e)}")
             return {"is_buy_signal": False, "reason": f"분석 오류: {str(e)}"}
 
-    def is_safe_for_additional_purchase_backtest(self, stock_code, daily_data, current_idx, current_price, avg_price):
-        """백테스팅용 - 기술적 지표를 활용한 추가 매수 적정 시점 확인
-        
-        Args:
-            stock_code: 종목 코드
-            daily_data: 일봉 데이터 DataFrame
-            current_idx: 현재 데이터 인덱스
-            current_price: 현재가
-            avg_price: 평균 매수가
-            
-        Returns:
-            bool: 추가 매수 적정 여부
-        """
-        try:
-            # 하락폭 계산
-            drop_percent = (avg_price - current_price) / avg_price * 100
-            
-            # 기술적 필터 사용 여부 확인
-            if not hasattr(self, 'use_technical_filter') or not self.use_technical_filter:
-                return True
-            
-            # 데이터 충분한지 확인
-            if daily_data is None or daily_data.empty or current_idx < 10:
-                return True
-                
-            # 긍정적 신호 확인
-            positive_signals = 0
-            
-            # 1. RSI 과매도 확인
-            if 'RSI' in daily_data.columns and current_idx < len(daily_data):
-                rsi_value = daily_data['RSI'].iloc[current_idx]
-                if not pd.isna(rsi_value) and rsi_value < getattr(self, 'tech_filter_rsi_threshold', 40):
-                    positive_signals += 1
-            
-            # 2. 거래량 증가 확인
-            if 'volume' in daily_data.columns and current_idx >= 10 and current_idx < len(daily_data):
-                try:
-                    # 직전 8일 평균 거래량
-                    avg_volume = daily_data['volume'].iloc[current_idx-9:current_idx-1].mean()
-                    recent_volume = daily_data['volume'].iloc[current_idx]
-                    
-                    if recent_volume > avg_volume * (1 + getattr(self, 'tech_filter_volume_increase', 30) / 100):
-                        positive_signals += 1
-                except:
-                    pass
-            
-            # 완화된 조건: 최소 1개 이상의 긍정적 신호 또는 설정된 개수의 긍정적 신호
-            min_signals = getattr(self, 'min_positive_signals', 1)
-            return positive_signals >= min_signals
-                
-        except Exception as e:
-            # 백테스팅에서는 오류 발생 시 안전하게 통과
-            return True
-
 # 추세 필터 클래스 추가
 class TrendFilter:
     """시장 및 일봉 추세 필터 클래스"""
@@ -3770,133 +3356,54 @@ def get_sector_info(stock_code):
         }
 
 # 업종 동향 분석 함수 - 모듈 레벨에 위치
-def analyze_sector_trend(representative_stock, min_sector_stocks=5):
+def analyze_sector_trend(stock_code, min_sector_stocks=2):
     """
-    업종 동향 상세 분석 - 확장 및 개선 버전
-    
-    Args:
-        representative_stock: 대표 종목 코드
-        min_sector_stocks: 분석에 필요한 최소 동일 업종 종목 수
-        
-    Returns:
-        (bool, dict): 강세 여부와 상세 분석 정보
+    업종 동향 상세 분석 - 캐시 적용
     """
     try:
-        # 섹터 정보 가져오기
-        sector_info = get_sector_info(representative_stock)
+        # 기존 섹터 정보 활용
+        sector_info = get_sector_info(stock_code)
         if not sector_info or sector_info['sector'] == 'Unknown':
             return False, "섹터 정보 없음"
             
-        # 같은 섹터 내 종목들 찾기 (대표 종목이 속한 업종과 같은 종목들)
-        from pykrx import stock
-        all_stocks = stock.get_market_ticker_list(market="ALL")
+        # 동일 업종 종목들의 현재가 조회
+        sector_stocks = stock.get_market_ticker_list(market="ALL")
+        sector_prices = {}
         
-        # 동일 섹터 종목들 수집
-        same_sector_stocks = []
-        for ticker in all_stocks[:100]:  # 시가총액 상위 100개 종목만 확인
+        for ticker in sector_stocks[:50]:  # 시가총액 상위 50개만
             try:
-                ticker_sector = get_sector_info(ticker)
-                if ticker_sector and ticker_sector.get('sector') == sector_info['sector']:
-                    same_sector_stocks.append(ticker)
-                    
-                    # 최소 필요 종목 수를 넘으면 종료
-                    if len(same_sector_stocks) >= min_sector_stocks + 5:
-                        break
+                current_price = KisKR.GetCurrentPrice(ticker)
+                prev_close = KisKR.GetStockPrevClose(ticker)
+                if current_price and prev_close:
+                    sector_prices[ticker] = {
+                        'change_rate': (current_price - prev_close) / prev_close * 100
+                    }
             except:
                 continue
-        
-        if len(same_sector_stocks) < min_sector_stocks:
-            return False, f"동일 섹터 종목 부족 ({len(same_sector_stocks)}개)"
-        
-        # 섹터 종목들의 최근 가격 및 변동 추이 분석
-        sector_prices = {}
-        for ticker in same_sector_stocks:
-            try:
-                # 일봉 데이터 가져오기 (최근 5일)
-                daily_data = KisKR.GetOhlcvNew(ticker, 'D', 5, adj_ok=1)
-                if daily_data is None or daily_data.empty:
-                    continue
                 
-                current_price = daily_data['close'].iloc[-1]
-                prev_close = daily_data['close'].iloc[-2] if len(daily_data) > 1 else None
-                
-                # 거래량 및 주가 변동 분석
-                volume_change = 0
-                if len(daily_data) > 1 and 'volume' in daily_data.columns:
-                    avg_volume = daily_data['volume'].iloc[-5:-1].mean() if len(daily_data) >= 5 else daily_data['volume'].iloc[:-1].mean()
-                    volume_change = (daily_data['volume'].iloc[-1] / avg_volume - 1) * 100 if avg_volume > 0 else 0
-                
-                # 3일 모멘텀 계산
-                momentum_3d = 0
-                if len(daily_data) >= 4:
-                    momentum_3d = (current_price / daily_data['close'].iloc[-4] - 1) * 100
-                
-                # 결과 저장
-                if prev_close and prev_close > 0:
-                    change_rate = (current_price - prev_close) / prev_close * 100
-                    sector_prices[ticker] = {
-                        'change_rate': change_rate,
-                        'volume_change': volume_change,
-                        'momentum_3d': momentum_3d
-                    }
-            except Exception as e:
-                logger.warning(f"종목 {ticker} 분석 중 오류: {str(e)}")
-                continue
-        
         if len(sector_prices) < min_sector_stocks:
-            return False, f"유효 데이터 부족 ({len(sector_prices)}개)"
-        
-        # 섹터 강도 종합 분석
-        rising_count = sum(1 for data in sector_prices.values() if data['change_rate'] > 0)
-        rising_ratio = rising_count / len(sector_prices)
-        
+            return False, "업종 데이터 부족"
+            
+        # 업종 강도 분석
+        rising_count = sum(1 for data in sector_prices.values() 
+                         if data['change_rate'] > 0)
         avg_change = sum(data['change_rate'] for data in sector_prices.values()) / len(sector_prices)
-        avg_volume_change = sum(data['volume_change'] for data in sector_prices.values()) / len(sector_prices)
-        avg_momentum = sum(data['momentum_3d'] for data in sector_prices.values()) / len(sector_prices)
         
-        # 업종 상대 모멘텀 평가 (코스피/코스닥 대비)
-        try:
-            # 대표 지수 데이터 가져오기 (KODEX 200 ETF)
-            market_data = KisKR.GetOhlcvNew("069500", 'D', 5, adj_ok=1)
-            if market_data is not None and not market_data.empty and len(market_data) >= 4:
-                market_momentum = (market_data['close'].iloc[-1] / market_data['close'].iloc[-4] - 1) * 100
-                relative_momentum = avg_momentum - market_momentum
-            else:
-                relative_momentum = 0
-        except:
-            relative_momentum = 0
-        
-        # 강세 기준 확장
+        # 업종 동향 판단
         is_sector_strong = (
-            (rising_ratio >= 0.55) or  # 55% 이상 상승 중
-            (avg_change > 1.0) or      # 평균 1% 이상 상승
-            (avg_volume_change > 30 and avg_change > 0) or  # 거래량 증가 + 가격 상승
-            (relative_momentum > 2.0)   # 시장 대비 모멘텀 강함
+            rising_count / len(sector_prices) > 0.3 or  # 30% 이상 상승
+            avg_change > 0 or                           # 평균 상승
+            rising_count >= min_sector_stocks            # 최소 종목 수 만족
         )
         
-        # 추가 요소 - 상위 종목들 상승 여부
-        top_stocks = list(sector_prices.keys())[:3]  # 상위 3개 종목
-        top_stocks_rising = sum(1 for ticker in top_stocks if ticker in sector_prices and sector_prices[ticker]['change_rate'] > 0)
-        
-        # 상위 종목들이 모두 상승 중이면 강세로 인정
-        if len(top_stocks) >= 3 and top_stocks_rising >= 2:
-            is_sector_strong = True
-        
         return is_sector_strong, {
-            'sector': sector_info['sector'],
-            'stocks_count': len(sector_prices),
-            'rising_ratio': rising_ratio,
-            'avg_change': avg_change,
-            'avg_volume_change': avg_volume_change,
-            'avg_momentum': avg_momentum,
-            'relative_momentum': relative_momentum,
-            'top_stocks_rising': top_stocks_rising
+            'rising_ratio': rising_count / len(sector_prices),
+            'avg_change': avg_change
         }
         
     except Exception as e:
-        logger.error(f"섹터 분석 중 오류: {str(e)}")
+        logger.error(f"업종 분석 중 에러: {str(e)}")
         return False, str(e)
-
 
 # 설정파일 생성 함수
 def create_config_file(config_path: str = "trend_trader_config.json") -> None:
@@ -3910,10 +3417,12 @@ def create_config_file(config_path: str = "trend_trader_config.json") -> None:
         
         # 대표 지수/종목 코드
         sample_codes = [
-            "042660",  # 한화오션
-            "000155",  # 두산우
-            "272210",  # 한화시스템
-            "007660"   # 이수페타시스
+            "000660",  # SK하이닉스
+            "207940",  # 삼성바이오로직스
+            "006400",  # 삼성SDI
+            "051910",  # LG화학
+            "035900",  # JYP Ent.
+            "293490"   # 카카오게임즈
         ]
         
         # 이미 정의된 섹터 정보 함수 활용
@@ -3975,7 +3484,7 @@ def create_config_file(config_path: str = "trend_trader_config.json") -> None:
         config = {
             "watch_list": watch_list,
             "sector_list": sector_list,
-            "total_budget": 100000000,
+            "total_budget": 5000000,
             "profit_target": 5.0,
             "stop_loss": -1.5,
             "max_stocks": 4,
@@ -4017,16 +3526,7 @@ def create_config_file(config_path: str = "trend_trader_config.json") -> None:
                 "initial_purchase_ratio": 0.30,
                 "additional_purchase_ratios": [0.30, 0.30, 0.10],
                 "additional_purchase_drop_pct": [1.5, 3.0, 5.0],
-
-                # 추가: 기술적 지표 기반 추가 매수 설정
-                "additional_purchase": {
-                    "use_technical_filter": True,
-                    "min_positive_signals": 1,
-                    "rsi_threshold": 40,
-                    "volume_increase_pct": 30,
-                    "log_only_mode": False
-                },
-
+                
                 # 볼린저 밴드 관련 설정
                 "bollinger_period": 18,
                 "bollinger_std": 2.0,
@@ -4054,21 +3554,18 @@ def create_config_file(config_path: str = "trend_trader_config.json") -> None:
                 
                 # 매수 점수 가중치
                 "score_weights": {
-                    # 핵심 기술 지표 (높은 가중치)
-                    "rsi_oversold": 5,          # RSI 과매도 (강화: 3→5)
-                    "macd_cross_up": 5,         # MACD 상향돌파 (강화: 3→5)
-                    "near_lower_band": 4,       # 볼린저밴드 하단 접근 (강화: 2→4)
-                    "near_support": 4,          # 지지선 근처 (강화: 3→4)
-                    # 중요 추세 지표 (중간 가중치)
-                    "golden_cross": 3,          # 골든크로스 (강화: 2→3) 
-                    "bullish_candle": 2,        # 강세 캔들 (유지)
-                    "volume_increase": 3,       # 거래량 증가 (유지)
-                    "momentum_turning_up": 2,   # 모멘텀 상승 전환 (유지)
-                    # 보조 지표 (낮은 가중치)
-                    "minute_rsi_oversold": 1,   # 분봉 RSI 과매도 (약화: 2→1)
-                    "minute_macd_cross_up": 1,  # 분봉 MACD 상향돌파 (약화: 2→1)
-                    "consecutive_drop": 1,      # 연속 하락 (약화: 2→1)
-                    "sector_strength": 2        # 섹터 강도 (유지)
+                    "rsi_oversold": 4,
+                    "golden_cross": 2,
+                    "macd_cross_up": 4,
+                    "near_lower_band": 3,
+                    "momentum_turning_up": 2,
+                    "near_support": 3,
+                    "minute_rsi_oversold": 2,
+                    "minute_macd_cross_up": 2,
+                    "consecutive_drop": 2,
+                    "volume_increase": 3,
+                    "bullish_candle": 2,
+                    "sector_strength": 3
                 },
                 
                 # 매수 필터 강화 설정
