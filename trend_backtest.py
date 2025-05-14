@@ -67,6 +67,9 @@ def run_backtest(start_date=None, end_date=None, days=30, is_adaptive=True):
     """
     # 기간 설정 (start_date가 없으면 days 기준으로 계산)
     if not start_date:
+        # days가 문자열인 경우 정수로 변환 시도
+        if isinstance(days, str) and days.isdigit():
+            days = int(days)
         start_date = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime("%Y%m%d")
     
     # 종료일 설정 (end_date가 없으면 현재일)
@@ -308,10 +311,10 @@ def main():
         else:
             logger.error(f"알 수 없는 명령: {command}")
             print("사용법:")
-            print("  python run_backtest.py - 백테스트 필요성 확인 후 실행")
-            print("  python run_backtest.py force [일수/시작일] [종료일] - 강제 백테스트 실행")
-            print("  python run_backtest.py check - 백테스트 필요성 확인 후 필요시 실행")
-            print("  python run_backtest.py period <시작일> [종료일] [--standard] - 특정 기간 백테스트")
+            print("  python trend_backtest.py - 백테스트 필요성 확인 후 실행")
+            print("  python trend_backtest.py force [일수/시작일] [종료일] - 강제 백테스트 실행")
+            print("  python trend_backtest.py check - 백테스트 필요성 확인 후 필요시 실행")
+            print("  python trend_backtest.py period <시작일> [종료일] [--standard] - 특정 기간 백테스트")
     else:
         # 기본 동작: 필요성 확인 후 실행
         check_and_run_backtest()
