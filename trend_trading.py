@@ -1492,6 +1492,154 @@ class TrendTraderBot:
             logger.exception(f"종목 {stock_code} 분석 중 오류: {str(e)}")
             return {"is_buy_signal": False, "reason": f"분석 오류: {str(e)}"}
 
+    def calculate_trading_fee(self, price, quantity, is_buy=True):
+        """거래 수수료 및 세금 계산"""
+        commission_rate = 0.0000156  # 수수료 0.00156%
+        # tax_rate = 0.0023  # 매도 시 거래세 0.23%
+        tax_rate = 0  # 매도 시 거래세 0%
+        special_tax_rate = 0.0015  # 농어촌특별세 (매도금액의 0.15%)
+        
+        commission = price * quantity * commission_rate
+        if not is_buy:  # 매도 시에만 세금 부과
+            tax = price * quantity * tax_rate
+            special_tax = price * quantity * special_tax_rate
+        else:
+            tax = 0
+            special_tax = 0
+        
+        return commission + tax + special_tax
+
+    def send_trade_alert(self, trade_type, stock_code, price, quantity, profit_loss=None, profit_loss_percent=None):
+        """매수/매도 알림 전송
+        
+        Args:
+            trade_type: 거래 유형 ('BUY', 'SELL')
+            stock_code: 종목 코드
+            price: 거래 가격
+            quantity: 거래 수량
+            profit_loss: 손익금액 (매도 시)
+            profit_loss_percent: 손익률 (매도 시)
+        """
+        try:
+            # 종목명 조회
+            stock_info = KisKR.GetCurrentStatus(stock_code)
+            stock_name = stock_info.get("StockName", stock_code) if isinstance(stock_info, dict) else stock_code
+            
+            # 거래 비용 계산
+            is_buy = (trade_type == 'BUY')
+            fee = self.calculate_trading_fee(price, quantity, is_buy)
+            total_amount = price * quantity
+            
+            # 알림 메시지 구성
+            if is_buy:
+                msg = f"🛒 매수 알림 🛒\n"
+                msg += f"종목: {stock_name} ({stock_code})\n"
+                msg += f"매수가: {price:,}원\n"
+                msg += f"수량: {quantity}주\n"
+                msg += f"총액: {total_amount:,.0f}원\n"
+                msg += f"수수료: {fee:,.0f}원\n"
+                msg += f"최종 비용: {total_amount + fee:,.0f}원"
+            else:
+                msg = f"💰 매도 알림 💰\n"
+                msg += f"종목: {stock_name} ({stock_code})\n"
+                msg += f"매도가: {price:,}원\n"
+                msg += f"수량: {quantity}주\n"
+                msg += f"총액: {total_amount:,.0f}원\n"
+                msg += f"수수료/세금: {fee:,.0f}원\n"
+                
+                if profit_loss is not None and profit_loss_percent is not None:
+                    profit_text = "이익" if profit_loss > 0 else "손실"
+                    msg += f"손익: {profit_loss:,.0f}원 ({profit_loss_percent:.2f}%) {profit_text}\n"
+                
+                msg += f"최종 수익: {total_amount - fee:,.0f}원"
+            
+            # 알림 전송
+            import discord_alert
+            discord_alert.SendMessage(msg)
+            logger.info(f"거래 알림 전송 완료: {trade_type} {stock_code}")
+            
+        except Exception as e:
+            logger.exception(f"거래 알림 전송 중 오류: {str(e)}")
+        
+    def send_periodic_report(self, period_type="weekly"):
+        """주간/월간 수익률 보고서 전송
+        
+        Args:
+            period_type: 보고서 유형 ('weekly', 'monthly')
+        """
+        try:
+            # 현재 시간
+            now = datetime.datetime.now()
+            
+            # 기간 문자열 구성
+            if period_type == "weekly":
+                period_str = f"{now.year}년 {now.month}월 {now.day}일 주간 보고서"
+            else:  # monthly
+                period_str = f"{now.year}년 {now.month}월 월간 보고서"
+            
+            # 계좌 정보 조회
+            account_balance = KisKR.GetBalance()
+            
+            # 알림 메시지 구성
+            msg = f"📊 {period_str} 📊\n\n"
+            
+            # 계좌 정보가 정상적으로 조회된 경우
+            if account_balance and not isinstance(account_balance, str):
+                total_balance = account_balance.get("TotalBalance", 0)
+                available_cash = account_balance.get("RemainMoney", 0)
+                invested_amount = total_balance - available_cash
+                
+                msg += f"계좌 총액: {total_balance:,.0f}원\n"
+                msg += f"사용 가능: {available_cash:,.0f}원\n"
+                msg += f"투자 금액: {invested_amount:,.0f}원\n\n"
+                
+                # 보유 종목 정보
+                stock_list = account_balance.get("StockList", [])
+                
+                if stock_list:
+                    msg += "🔹 보유 종목 현황 🔹\n\n"
+                    
+                    for stock in stock_list:
+                        stock_code = stock.get("StockCode", "")
+                        stock_name = stock.get("StockName", stock_code)
+                        current_price = stock.get("CurrentPrice", 0)
+                        avg_price = stock.get("AveragePrice", 0)
+                        quantity = stock.get("Quantity", 0)
+                        total_stock_amount = current_price * quantity
+                        
+                        # 수익률 계산
+                        profit_loss_percent = ((current_price / avg_price) - 1) * 100 if avg_price > 0 else 0
+                        profit_loss = (current_price - avg_price) * quantity
+                        
+                        profit_text = "이익" if profit_loss > 0 else "손실"
+                        msg += f"• {stock_name} ({stock_code})\n"
+                        msg += f"  보유량: {quantity}주\n"
+                        msg += f"  평균단가: {avg_price:,.0f}원\n"
+                        msg += f"  현재가: {current_price:,.0f}원\n"
+                        msg += f"  평가금액: {total_stock_amount:,.0f}원\n"
+                        msg += f"  손익: {profit_loss:,.0f}원 ({profit_loss_percent:.2f}%) {profit_text}\n\n"
+                else:
+                    msg += "보유 종목이 없습니다.\n\n"
+                
+                # 기간 손익 계산
+                # 여기서는 계좌 기본 정보만으로 표시하지만, 더 정확한 기간 손익을 위해서는 
+                # 기간별 거래 내역을 추적하는 별도의 로직이 필요합니다.
+                total_profit = account_balance.get("TotalProfit", 0)
+                profit_percent = account_balance.get("ProfitRatio", 0)
+                
+                msg += f"🔹 {period_type} 손익 현황 🔹\n"
+                msg += f"총 손익: {total_profit:,.0f}원 ({profit_percent:.2f}%)\n"
+            else:
+                msg += "계좌 정보를 조회할 수 없습니다."
+            
+            # 알림 전송
+            import discord_alert
+            discord_alert.SendMessage(msg)
+            logger.info(f"{period_type} 보고서 전송 완료")
+            
+        except Exception as e:
+            logger.exception(f"주기적 보고서 전송 중 오류: {str(e)}")
+
 
     # 트레일링 스탑 로직을 포함한 check_sell_signals 메서드
     def check_sell_signals(self) -> None:
@@ -5672,6 +5820,15 @@ def main():
                     result['results'],
                     output_file=f"incremental_backtest_viz_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
                 )
+
+        # 여기에 주간/월간 보고서 명령 추가
+        elif sys.argv[1] == "weekly-report":
+            logger.info("주간 보고서 생성")
+            trend_bot.send_periodic_report("weekly")
+            
+        elif sys.argv[1] == "monthly-report":
+            logger.info("월간 보고서 생성")
+            trend_bot.send_periodic_report("monthly")
 
         elif sys.argv[1] == "virtual":
             # 가상 계좌 모드로 변경
