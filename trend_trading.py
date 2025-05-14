@@ -429,6 +429,18 @@ class AdaptiveMarketStrategy:
                     "sideways": {"use_common": True}
                 }
             }
+
+        # 환경별 전략 데이터 구조 확인
+        if "adaptive_strategy" not in self.stock_performance[stock_code]:
+            self.stock_performance[stock_code]["adaptive_strategy"] = {
+                "uptrend": {"use_common": True},
+                "downtrend": {"use_common": True},
+                "sideways": {"use_common": True}
+            }
+        
+        # 현재 시장 환경에 대한 전략 데이터 확인
+        if market_env not in self.stock_performance[stock_code]["adaptive_strategy"]:
+            self.stock_performance[stock_code]["adaptive_strategy"][market_env] = {"use_common": True}
         
         # 종목별 맞춤 전략 가져오기
         stock_data = self.stock_performance[stock_code]
@@ -469,8 +481,10 @@ class AdaptiveMarketStrategy:
         
         # 승률 계산
         if env_data["trades"] > 0:
-            env_data["winrate"] = (env_data["wins"] / env_data["trades"]) * 100
-        
+            if env_data["trades"] > 0:
+                env_data["winrate"] = (env_data["wins"] / env_data["trades"]) * 100
+            else:
+                env_data["winrate"] = 0.0
         # 맞춤 전략 조정 (승률에 따른 자동 조정)
         self._adjust_strategy(stock_code, market_env)
         
@@ -1807,7 +1821,11 @@ class TrendTraderBot:
                         market_returns = market_data.loc[common_dates, 'Returns'].values
                         
                         # 베타 계산 (시장 대비 변동성)
-                        beta = np.cov(stock_returns, market_returns)[0, 1] / np.var(market_returns)
+                        try:
+                            var_market = np.var(market_returns)
+                            beta = np.cov(stock_returns, market_returns)[0, 1] / var_market if var_market > 0 else 1.0
+                        except:
+                            beta = 1.0  # 예외 발생 시 기본값                        
                     else:
                         beta = 1.0  # 기본값
                 else:
@@ -1827,13 +1845,15 @@ class TrendTraderBot:
                 # API 또는 웹 스크래핑으로 가져올 수 있으나 여기서는 생략
                 
                 # 특성 점수 계산
+                # beta가 유효한지 확인
+                valid_beta = not np.isnan(beta) and not np.isinf(beta)
                 growth_score = (
-                    relative_volatility * 0.3 +  # 변동성이 높을수록 성장주 특성
-                    momentum_score * 10 +        # 모멘텀이 높을수록 성장주 특성
-                    volume_volatility * 0.2 +    # 거래량 변동이 클수록 성장주 특성
-                    (beta - 1) * 20              # 베타가 높을수록 성장주 특성
+                    relative_volatility * 0.3 +
+                    momentum_score * 10 +
+                    volume_volatility * 0.2 +
+                    ((beta - 1) * 20 if valid_beta else 0)  # beta가 유효하지 않으면 이 항목 무시
                 )
-                
+
                 value_score = (
                     (1 - relative_volatility/10) * 30 +  # 변동성이 낮을수록 가치주 특성
                     above_ma20_ratio * 0.3 +            # 추세를 유지할수록 가치주 특성
@@ -2062,7 +2082,17 @@ class TrendTraderBot:
                 # 메타데이터는 건너뜀
                 if stock_code == "_metadata":
                     continue
-                    
+
+                if "metrics" in data:
+                    for key, value in list(data["metrics"].items()):
+                        if isinstance(value, float) and (np.isnan(value) or np.isinf(value)):
+                            if key in ["beta"]:
+                                data["metrics"][key] = 1.0
+                            elif key in ["growth_score", "value_score"]:
+                                data["metrics"][key] = 50.0
+                            else:
+                                data["metrics"][key] = 0.0
+
                 stock_name = self.watch_list_info.get(stock_code, {}).get("name", stock_code)
                 char_type = data.get("characteristic", "알 수 없음")
                 
@@ -2219,7 +2249,6 @@ class TrendTraderBot:
             return {}
 
     def visualize_adaptive_backtest(self, analysis_results, backtest_results, output_file=None):
-    
         """적응형 전략 백테스트 결과 시각화"""
         try:
             import matplotlib.pyplot as plt
@@ -2231,6 +2260,22 @@ class TrendTraderBot:
             # 플롯 설정
             plt.figure(figsize=(15, 12))
             gs = GridSpec(3, 2)
+            
+            # 거래 내역 확인
+            if not backtest_results.get("trades", []):
+                # 거래가 없는 경우 처리
+                logger.warning("시각화할 거래 내역이 없습니다.")
+                
+                # 단순 정보 텍스트가 있는 플롯 생성
+                plt.figtext(0.5, 0.5, "백테스트 기간 내 거래 내역이 없습니다.",
+                        ha='center', va='center', fontsize=14)
+                
+                if output_file:
+                    plt.savefig(output_file, dpi=300, bbox_inches='tight')
+                    logger.info(f"백테스트 결과 시각화 저장 완료: {output_file}")
+                
+                plt.close()
+                return
             
             # 1. 전체 성과 그래프
             ax1 = plt.subplot(gs[0, :])
@@ -2245,50 +2290,68 @@ class TrendTraderBot:
                     cumulative_returns.append(cumulative_returns[-1] + trade.get("profit_loss", 0))
             
             # 첫 날짜 추가 (시작일)
-            trade_dates.insert(0, pd.to_datetime(backtest_results["trades"][0]["date"]))
-            # 누적 수익 그래프
-            ax1.plot(trade_dates, cumulative_returns, 'b-', linewidth=2)
-            ax1.set_title('Cumulative Profit/Loss Over Time')
-            ax1.set_ylabel('Profit/Loss (KRW)')
-            ax1.grid(True)
-            ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+            if backtest_results["trades"]:
+                # 거래가 있는 경우에만 첫 날짜 추가
+                trade_dates.insert(0, pd.to_datetime(backtest_results["trades"][0]["date"]))
+            
+            # 누적 수익 그래프 (거래가 있는 경우에만)
+            if trade_dates:
+                ax1.plot(trade_dates, cumulative_returns, 'b-', linewidth=2)
+                ax1.set_title('Cumulative Profit/Loss Over Time')
+                ax1.set_ylabel('Profit/Loss (KRW)')
+                ax1.grid(True)
+                ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+            else:
+                ax1.text(0.5, 0.5, '거래 내역이 없습니다.', 
+                        horizontalalignment='center', verticalalignment='center',
+                        transform=ax1.transAxes, fontsize=12)
             
             # 2. 시장 환경별 승률 비교
             ax2 = plt.subplot(gs[1, 0])
             
-            env_names = list(analysis_results["market_env_performance"].keys())
-            win_rates = [analysis_results["market_env_performance"][env]["win_rate"] for env in env_names]
-            
-            bars = ax2.bar(env_names, win_rates, color=['green', 'red', 'blue'])
-            ax2.set_title('Win Rate by Market Environment')
-            ax2.set_ylabel('Win Rate (%)')
-            ax2.set_ylim(0, 100)
-            
-            # 바 위에 값 표시
-            for bar, value in zip(bars, win_rates):
-                ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 2, 
-                        f'{value:.1f}%', ha='center', va='bottom')
+            if analysis_results.get("market_env_performance"):
+                env_names = list(analysis_results["market_env_performance"].keys())
+                win_rates = [analysis_results["market_env_performance"][env]["win_rate"] for env in env_names]
+                
+                bars = ax2.bar(env_names, win_rates, color=['green', 'red', 'blue'])
+                ax2.set_title('Win Rate by Market Environment')
+                ax2.set_ylabel('Win Rate (%)')
+                ax2.set_ylim(0, 100)
+                
+                # 바 위에 값 표시
+                for bar, value in zip(bars, win_rates):
+                    ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 2, 
+                            f'{value:.1f}%', ha='center', va='bottom')
+            else:
+                ax2.text(0.5, 0.5, '시장 환경별 승률 데이터가 없습니다.', 
+                        horizontalalignment='center', verticalalignment='center',
+                        transform=ax2.transAxes, fontsize=12)
             
             # 3. 종목별 승률
             ax3 = plt.subplot(gs[1, 1])
             
-            stocks = list(analysis_results["stock_performance"].keys())
-            stock_win_rates = [analysis_results["stock_performance"][s]["win_rate"] for s in stocks]
-            
-            # 승률 기준 정렬
-            sorted_indices = np.argsort(stock_win_rates)
-            sorted_stocks = [stocks[i] for i in sorted_indices]
-            sorted_win_rates = [stock_win_rates[i] for i in sorted_indices]
-            
-            bars = ax3.barh(sorted_stocks, sorted_win_rates, color='orange')
-            ax3.set_title('Win Rate by Stock')
-            ax3.set_xlabel('Win Rate (%)')
-            ax3.set_xlim(0, 100)
-            
-            # 바 위에 값 표시
-            for bar, value in zip(bars, sorted_win_rates):
-                ax3.text(bar.get_width() + 2, bar.get_y() + bar.get_height()/2, 
-                        f'{value:.1f}%', va='center')
+            if analysis_results.get("stock_performance"):
+                stocks = list(analysis_results["stock_performance"].keys())
+                stock_win_rates = [analysis_results["stock_performance"][s]["win_rate"] for s in stocks]
+                
+                # 승률 기준 정렬
+                sorted_indices = np.argsort(stock_win_rates)
+                sorted_stocks = [stocks[i] for i in sorted_indices]
+                sorted_win_rates = [stock_win_rates[i] for i in sorted_indices]
+                
+                bars = ax3.barh(sorted_stocks, sorted_win_rates, color='orange')
+                ax3.set_title('Win Rate by Stock')
+                ax3.set_xlabel('Win Rate (%)')
+                ax3.set_xlim(0, 100)
+                
+                # 바 위에 값 표시
+                for bar, value in zip(bars, sorted_win_rates):
+                    ax3.text(bar.get_width() + 2, bar.get_y() + bar.get_height()/2, 
+                            f'{value:.1f}%', va='center')
+            else:
+                ax3.text(0.5, 0.5, '종목별 승률 데이터가 없습니다.', 
+                        horizontalalignment='center', verticalalignment='center',
+                        transform=ax3.transAxes, fontsize=12)
             
             # 4. 전략 진화 (승률 향상)
             ax4 = plt.subplot(gs[2, :])
@@ -2298,31 +2361,36 @@ class TrendTraderBot:
             improvements = []
             env_colors = []
             
-            for stock_code, env_data in analysis_results["strategy_evolution"].items():
+            for stock_code, env_data in analysis_results.get("strategy_evolution", {}).items():
                 for env, data in env_data.items():
-                    if data["trades"] >= 5:  # 최소 5회 이상 거래가 있는 경우만
+                    if data.get("trades", 0) >= 5:  # 최소 5회 이상 거래가 있는 경우만
                         stocks_with_evolution.append(f"{stock_code} ({env})")
-                        improvements.append(data["improvement"])
+                        improvements.append(data.get("improvement", 0))
                         env_colors.append({'uptrend_winrate_improvement': 'green', 
                                         'downtrend_winrate_improvement': 'red', 
-                                        'sideways_winrate_improvement': 'blue'}[env])
+                                        'sideways_winrate_improvement': 'blue'}.get(env, 'gray'))
             
-            # 개선도 기준 정렬
-            sorted_indices = np.argsort(improvements)
-            sorted_stocks_with_evolution = [stocks_with_evolution[i] for i in sorted_indices]
-            sorted_improvements = [improvements[i] for i in sorted_indices]
-            sorted_env_colors = [env_colors[i] for i in sorted_indices]
-            
-            bars = ax4.barh(sorted_stocks_with_evolution, sorted_improvements, color=sorted_env_colors)
-            ax4.set_title('Strategy Evolution: Win Rate Improvement')
-            ax4.set_xlabel('Win Rate Improvement (%)')
-            ax4.axvline(x=0, color='k', linestyle='--')
-            
-            # 바 위에 값 표시
-            for bar, value in zip(bars, sorted_improvements):
-                ax4.text(bar.get_width() + (2 if value >= 0 else -10), 
-                        bar.get_y() + bar.get_height()/2, 
-                        f'{value:.1f}%', va='center', ha='left' if value >= 0 else 'right')
+            if stocks_with_evolution:
+                # 개선도 기준 정렬
+                sorted_indices = np.argsort(improvements)
+                sorted_stocks_with_evolution = [stocks_with_evolution[i] for i in sorted_indices]
+                sorted_improvements = [improvements[i] for i in sorted_indices]
+                sorted_env_colors = [env_colors[i] for i in sorted_indices]
+                
+                bars = ax4.barh(sorted_stocks_with_evolution, sorted_improvements, color=sorted_env_colors)
+                ax4.set_title('Strategy Evolution: Win Rate Improvement')
+                ax4.set_xlabel('Win Rate Improvement (%)')
+                ax4.axvline(x=0, color='k', linestyle='--')
+                
+                # 바 위에 값 표시
+                for bar, value in zip(bars, sorted_improvements):
+                    ax4.text(bar.get_width() + (2 if value >= 0 else -10), 
+                            bar.get_y() + bar.get_height()/2, 
+                            f'{value:.1f}%', va='center', ha='left' if value >= 0 else 'right')
+            else:
+                ax4.text(0.5, 0.5, '전략 진화 데이터가 없습니다.', 
+                        horizontalalignment='center', verticalalignment='center',
+                        transform=ax4.transAxes, fontsize=12)
             
             plt.tight_layout()
             
@@ -2331,7 +2399,7 @@ class TrendTraderBot:
                 plt.savefig(output_file, dpi=300, bbox_inches='tight')
                 logger.info(f"백테스트 결과 시각화 저장 완료: {output_file}")
             
-            plt.show()
+            plt.close()
             
         except Exception as e:
             logger.exception(f"적응형 전략 백테스트 결과 시각화 중 오류: {str(e)}")
@@ -3598,6 +3666,25 @@ class TrendTraderBot:
             backtest_adaptive_strategy = AdaptiveMarketStrategy("backtest_adaptive_strategy.json")
         
         try:
+            # 날짜 형식 변환
+            try:
+                # YYYYMMDD 형식 변환
+                if isinstance(start_date, str) and len(start_date) == 8:
+                    start_date_dt = pd.to_datetime(start_date, format='%Y%m%d')
+                else:
+                    start_date_dt = pd.to_datetime(start_date)
+                    
+                if end_date and isinstance(end_date, str) and len(end_date) == 8:
+                    end_date_dt = pd.to_datetime(end_date, format='%Y%m%d')
+                elif end_date:
+                    end_date_dt = pd.to_datetime(end_date)
+                else:
+                    end_date_dt = pd.to_datetime(datetime.datetime.now().strftime("%Y%m%d"), format='%Y%m%d')
+            except Exception as e:
+                logger.warning(f"날짜 변환 실패: {e}, 문자열 형식으로 계속 진행합니다.")
+                start_date_dt = start_date
+                end_date_dt = end_date if end_date else datetime.datetime.now().strftime("%Y%m%d")
+    
             # 종목 특성 초기 분석
             characteristics = self.analyze_stock_characteristics()
             
@@ -5451,13 +5538,13 @@ def main():
         logger.info(f"API 정보 확인이 필요한 경우 {config_path} 파일에 추가 정보를 입력하세요.")
 
     # 백테스트 체커 실행 (자동 백테스트 필요 여부 확인)
-    try:
-        from backtest_checker import check_and_run_backtest
-        check_and_run_backtest()
-    except ImportError:
-        logger.info("백테스트 체커 모듈이 없습니다. 자동 백테스트 건너뜁니다.")
-    except Exception as e:
-        logger.exception(f"백테스트 체커 실행 중 오류: {str(e)}")
+    # try:
+    #     from backtest_checker import check_and_run_backtest
+    #     check_and_run_backtest()
+    # except ImportError:
+    #     logger.info("백테스트 체커 모듈이 없습니다. 자동 백테스트 건너뜁니다.")
+    # except Exception as e:
+    #     logger.exception(f"백테스트 체커 실행 중 오류: {str(e)}")
 
     # 매매봇 인스턴스 생성
     trend_bot = TrendTraderBot(config_path)
@@ -5466,28 +5553,40 @@ def main():
     if len(sys.argv) > 1:
         # 백테스트 모드
         if sys.argv[1] == "backtest":
-            # 백테스트 기간 설정
-            start_date = sys.argv[2] if len(sys.argv) > 2 else (datetime.datetime.now() - datetime.timedelta(days=90)).strftime("%Y%m%d")
-            end_date = sys.argv[3] if len(sys.argv) > 3 else None
-            
-            # 적응형 백테스트 여부
+           # 플래그 먼저 확인
             adaptive = "--adaptive" in sys.argv
             reset = "--reset" in sys.argv
+            visualize = "--visualize" in sys.argv  # 시각화 옵션 추가
+            
+            # 백테스트 기간 설정 (플래그 제외)
+            args = [arg for arg in sys.argv[2:] if not arg.startswith("--")]
+
+            # 백테스트 기간 설정
+            start_date = args[0] if len(args) > 0 else (datetime.datetime.now() - datetime.timedelta(days=90)).strftime("%Y%m%d")
+            end_date = args[1] if len(args) > 1 else None
             
             if adaptive:
                 logger.info(f"적응형 백테스트 모드 실행: {start_date} ~ {end_date or '현재'}")
                 results = trend_bot.run_adaptive_backtest(start_date, end_date, reset_strategy=reset)
-               # 결과 분석 및 시각화
-                analysis = trend_bot.analyze_adaptive_backtest_results(results)
-                trend_bot.visualize_adaptive_backtest(
-                    analysis, 
-                    results,  # 백테스트 결과 추가
-                    output_file=f"adaptive_backtest_viz_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-                )
+                
+                # 시각화 옵션이 있을 때만 시각화 실행
+                if visualize and results:
+                    logger.info("백테스트 결과 시각화 시작")
+                    # 결과 분석 및 시각화
+                    analysis = trend_bot.analyze_adaptive_backtest_results(results)
+                    trend_bot.visualize_adaptive_backtest(
+                        analysis, 
+                        results,  # 백테스트 결과 추가
+                        output_file=f"adaptive_backtest_viz_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                    )
 
             else:
                 logger.info(f"일반 백테스트 모드 실행: {start_date} ~ {end_date or '현재'}")
                 results = trend_bot.run_backtest(start_date, end_date)
+                
+                # 일반 백테스트에서도 시각화 옵션 처리 (필요시 구현)
+                # if visualize and results:
+                #     # 일반 백테스트 결과 시각화 코드 구현
             
             # 백테스트 결과 저장
             results_file = f"backtest_result_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
@@ -5496,6 +5595,36 @@ def main():
                 json.dump(results, f, ensure_ascii=False, indent=4, default=str)            
                 
             logger.info(f"백테스트 결과 저장 완료: {results_file}")
+
+        # 새로운 명령어: 백테스트 결과 시각화
+        elif sys.argv[1] == "visualize-backtest":
+            if len(sys.argv) < 3:
+                logger.error("시각화할 백테스트 결과 파일을 지정해주세요.")
+                return
+                
+            backtest_file = sys.argv[2]
+            
+            # 백테스트 결과 파일 로드
+            try:
+                with open(backtest_file, 'r', encoding='utf-8') as f:
+                    backtest_results = json.load(f)
+                
+                logger.info(f"백테스트 결과 파일 로드 완료: {backtest_file}")
+                
+                # 결과 분석 및 시각화
+                analysis = trend_bot.analyze_adaptive_backtest_results(backtest_results)
+                
+                output_file = f"backtest_viz_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                trend_bot.visualize_adaptive_backtest(
+                    analysis, 
+                    backtest_results,
+                    output_file=output_file
+                )
+                
+                logger.info(f"백테스트 결과 시각화 완료: {output_file}")
+                
+            except Exception as e:
+                logger.exception(f"백테스트 결과 시각화 중 오류: {str(e)}")
 
         # 백테스트 분석 모드
         elif sys.argv[1] == "analyze-backtest":
@@ -5529,9 +5658,20 @@ def main():
                     pass
                 
             apply_results = "--no-apply" not in sys.argv
+            visualize = "--visualize" in sys.argv  # 시각화 옵션 추가
             
             logger.info(f"증분 백테스트 시작: 최근 {days}일, 결과 적용: {apply_results}")
-            trend_bot.run_incremental_backtest(days, apply_results)
+            result = trend_bot.run_incremental_backtest(days, apply_results)
+            
+            # 시각화 옵션이 활성화된 경우 시각화 수행
+            if visualize and result and 'results' in result:
+                logger.info("증분 백테스트 결과 시각화 시작")
+                analysis = trend_bot.analyze_adaptive_backtest_results(result['results'])
+                trend_bot.visualize_adaptive_backtest(
+                    analysis,
+                    result['results'],
+                    output_file=f"incremental_backtest_viz_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                )
 
         elif sys.argv[1] == "virtual":
             # 가상 계좌 모드로 변경
@@ -5553,6 +5693,14 @@ def main():
                 logger.info("현재 장 중이 아닙니다. 매매봇을 종료합니다.")
         else:
             logger.error(f"알 수 없는 실행 모드: {sys.argv[1]}")
+            print("사용법:")
+            print("  python trend_trading.py - 실시간 매매 모드 실행")
+            print("  python trend_trading.py backtest <시작일> <종료일> [--adaptive] [--reset] [--visualize] - 백테스트 실행")
+            print("  python trend_trading.py visualize-backtest <결과파일> - 백테스트 결과 시각화")
+            print("  python trend_trading.py analyze-backtest <결과파일> - 백테스트 결과 분석")
+            print("  python trend_trading.py apply-optimal [전략파일] - 최적 전략 적용")
+            print("  python trend_trading.py incremental-backtest [일수] [--no-apply] [--visualize] - 증분 백테스트")
+            print("  python trend_trading.py virtual - 모의 계좌 모드 실행")
     else:
         # 실시간 매매 모드
         logger.info("실시간 매매 모드 실행")
@@ -5563,7 +5711,6 @@ def main():
             trend_bot.run()
         else:
             logger.info("현재 장 중이 아닙니다. 매매봇을 종료합니다.")
-
 
 if __name__ == "__main__":
     main()
