@@ -1,0 +1,1285 @@
+{
+    "initial_capital": 5000000,
+    "final_capital": 4522750.0,
+    "profit_loss": -477250.0,
+    "profit_loss_percent": -9.545,
+    "trades": [
+        {
+            "stock_code": "000155",
+            "stock_name": "두산우",
+            "action": "BUY",
+            "reason": "매수 시그널: RSI 과매도, 강세 캔들 패턴",
+            "date": "2024-08-21 00:00:00",
+            "price": 83400.0,
+            "quantity": 11,
+            "amount": 917400.0,
+            "market_environment": "sideways",
+            "adjusted_parameters": {
+                "profit_target": 5.0,
+                "stop_loss": -7.59375
+            },
+            "score": "4"
+        },
+        {
+            "stock_code": "000155",
+            "stock_name": "두산우",
+            "action": "SELL",
+            "reason": "트레일링 스탑 발동: 최고가 83,400.0원의 1.5% 하락",
+            "date": "2024-08-22 00:00:00",
+            "price": 81300.0,
+            "quantity": 11,
+            "profit_loss": -23100.0,
+            "profit_loss_percent": -2.517985611510787,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "000155",
+            "stock_name": "두산우",
+            "action": "BUY",
+            "reason": "매수 시그널: RSI 과매도, 지지선 근처",
+            "date": "2024-08-22 00:00:00",
+            "price": 81300.0,
+            "quantity": 12,
+            "amount": 975600.0,
+            "market_environment": "sideways",
+            "adjusted_parameters": {
+                "profit_target": 5.0,
+                "stop_loss": -7.59375
+            },
+            "score": "4"
+        },
+        {
+            "stock_code": "000155",
+            "stock_name": "두산우",
+            "action": "SELL",
+            "reason": "트레일링 스탑 발동: 최고가 81,300.0원의 1.5% 하락",
+            "date": "2024-08-26 00:00:00",
+            "price": 78700.0,
+            "quantity": 12,
+            "profit_loss": -31200.0,
+            "profit_loss_percent": -3.1980319803198043,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "000155",
+            "stock_name": "두산우",
+            "action": "BUY",
+            "reason": "매수 시그널: RSI 과매도, 지지선 근처, 강세 캔들 패턴",
+            "date": "2024-09-02 00:00:00",
+            "price": 78000.0,
+            "quantity": 12,
+            "amount": 936000.0,
+            "market_environment": "sideways",
+            "adjusted_parameters": {
+                "profit_target": 5.0,
+                "stop_loss": -7.59375
+            },
+            "score": "6"
+        },
+        {
+            "stock_code": "000155",
+            "stock_name": "두산우",
+            "action": "SELL",
+            "reason": "트레일링 스탑 발동: 최고가 80,000.0원의 1.5% 하락",
+            "date": "2024-09-04 00:00:00",
+            "price": 76400.0,
+            "quantity": 12,
+            "profit_loss": -19200.0,
+            "profit_loss_percent": -2.051282051282055,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "000155",
+            "stock_name": "두산우",
+            "action": "BUY",
+            "reason": "매수 시그널: RSI 과매도, 볼린저 밴드 하단, 지지선 근처",
+            "date": "2024-09-05 00:00:00",
+            "price": 74400.0,
+            "quantity": 13,
+            "amount": 967200.0,
+            "market_environment": "sideways",
+            "adjusted_parameters": {
+                "profit_target": 5.0,
+                "stop_loss": -7.59375
+            },
+            "score": "6"
+        },
+        {
+            "stock_code": "000660",
+            "stock_name": "SK하이닉스",
+            "action": "BUY",
+            "reason": "매수 시그널: RSI 과매도, 지지선 근처",
+            "date": "2024-09-05 00:00:00",
+            "price": 159400.0,
+            "quantity": 6,
+            "amount": 956400.0,
+            "market_environment": "sideways",
+            "adjusted_parameters": {
+                "profit_target": 5.0,
+                "stop_loss": -7.59375
+            },
+            "score": "4"
+        },
+        {
+            "stock_code": "000155",
+            "stock_name": "두산우",
+            "action": "SELL",
+            "reason": "트레일링 스탑 발동: 최고가 74,400.0원의 1.5% 하락",
+            "date": "2024-09-06 00:00:00",
+            "price": 72400.0,
+            "quantity": 13,
+            "profit_loss": -26000.0,
+            "profit_loss_percent": -2.6881720430107503,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "000660",
+            "stock_name": "SK하이닉스",
+            "action": "SELL",
+            "reason": "트레일링 스탑 발동: 최고가 159,400.0원의 1.5% 하락",
+            "date": "2024-09-06 00:00:00",
+            "price": 156400.0,
+            "quantity": 6,
+            "profit_loss": -18000.0,
+            "profit_loss_percent": -1.8820577164366359,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "000660",
+            "stock_name": "SK하이닉스",
+            "action": "BUY",
+            "reason": "매수 시그널: RSI 과매도, 지지선 근처, 모멘텀 상승전환, 강세 캔들 패턴",
+            "date": "2024-09-06 00:00:00",
+            "price": 156400.0,
+            "quantity": 6,
+            "amount": 938400.0,
+            "market_environment": "sideways",
+            "adjusted_parameters": {
+                "profit_target": 5.0,
+                "stop_loss": -7.59375
+            },
+            "score": "8"
+        },
+        {
+            "stock_code": "000155",
+            "stock_name": "두산우",
+            "action": "BUY",
+            "reason": "매수 시그널: RSI 과매도, 볼린저 밴드 하단, 지지선 근처, 연속 하락 후 반등 기대",
+            "date": "2024-09-06 00:00:00",
+            "price": 72400.0,
+            "quantity": 13,
+            "amount": 941200.0,
+            "market_environment": "sideways",
+            "adjusted_parameters": {
+                "profit_target": 5.0,
+                "stop_loss": -7.59375
+            },
+            "score": "8"
+        },
+        {
+            "stock_code": "007660",
+            "stock_name": "이수페타시스",
+            "action": "BUY",
+            "reason": "매수 시그널: RSI 과매도, 지지선 근처, 강세 캔들 패턴",
+            "date": "2024-09-09 00:00:00",
+            "price": 33800.0,
+            "quantity": 29,
+            "amount": 980200.0,
+            "market_environment": "sideways",
+            "adjusted_parameters": {
+                "profit_target": 5.0,
+                "stop_loss": -7.59375
+            },
+            "score": "6"
+        },
+        {
+            "stock_code": "000660",
+            "stock_name": "SK하이닉스",
+            "action": "PARTIAL_SELL",
+            "reason": "부분 익절: 7.93%",
+            "date": "2024-09-12 00:00:00",
+            "price": 168800.0,
+            "quantity": 3,
+            "profit_loss": 37200.0,
+            "profit_loss_percent": 7.928388746803061,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "000155",
+            "stock_name": "두산우",
+            "action": "PARTIAL_SELL",
+            "reason": "부분 익절: 8.70%",
+            "date": "2024-09-12 00:00:00",
+            "price": 78700.0,
+            "quantity": 6,
+            "profit_loss": 37800.0,
+            "profit_loss_percent": 8.701657458563528,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "007660",
+            "stock_name": "이수페타시스",
+            "action": "PARTIAL_SELL",
+            "reason": "부분 익절: 8.73%",
+            "date": "2024-09-12 00:00:00",
+            "price": 36750.0,
+            "quantity": 14,
+            "profit_loss": 41300.0,
+            "profit_loss_percent": 8.72781065088757,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "000660",
+            "stock_name": "SK하이닉스",
+            "action": "SELL",
+            "reason": "트레일링 스탑 발동: 최고가 168,800.0원의 1.5% 하락",
+            "date": "2024-09-13 00:00:00",
+            "price": 162800.0,
+            "quantity": 3,
+            "profit_loss": 19200.0,
+            "profit_loss_percent": 4.092071611253201,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "000155",
+            "stock_name": "두산우",
+            "action": "SELL",
+            "reason": "목표 수익률 달성: 7.46% (기준: 5.00%)",
+            "date": "2024-09-13 00:00:00",
+            "price": 77800.0,
+            "quantity": 7,
+            "profit_loss": 37800.0,
+            "profit_loss_percent": 7.458563535911611,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "007660",
+            "stock_name": "이수페타시스",
+            "action": "SELL",
+            "reason": "목표 수익률 달성: 8.73% (기준: 5.00%)",
+            "date": "2024-09-13 00:00:00",
+            "price": 36750.0,
+            "quantity": 15,
+            "profit_loss": 44250.0,
+            "profit_loss_percent": 8.72781065088757,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "028300",
+            "stock_name": "HLB",
+            "action": "BUY",
+            "reason": "매수 시그널: RSI 과매도, 볼린저 밴드 하단, 지지선 근처, 거래량 증가, 연속 하락 후 반등 기대",
+            "date": "2024-10-11 00:00:00",
+            "price": 72600.0,
+            "quantity": 13,
+            "amount": 943800.0,
+            "market_environment": "sideways",
+            "adjusted_parameters": {
+                "profit_target": 5.0,
+                "stop_loss": -7.59375
+            },
+            "score": "10"
+        },
+        {
+            "stock_code": "028300",
+            "stock_name": "HLB",
+            "action": "SELL",
+            "reason": "트레일링 스탑 발동: 최고가 72,600.0원의 1.5% 하락",
+            "date": "2024-10-14 00:00:00",
+            "price": 68000.0,
+            "quantity": 13,
+            "profit_loss": -59800.0,
+            "profit_loss_percent": -6.336088154269969,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "028300",
+            "stock_name": "HLB",
+            "action": "BUY",
+            "reason": "매수 시그널: RSI 과매도, 볼린저 밴드 하단, 지지선 근처, 거래량 증가, 연속 하락 후 반등 기대",
+            "date": "2024-10-14 00:00:00",
+            "price": 68000.0,
+            "quantity": 14,
+            "amount": 952000.0,
+            "market_environment": "sideways",
+            "adjusted_parameters": {
+                "profit_target": 5.0,
+                "stop_loss": -7.59375
+            },
+            "score": "10"
+        },
+        {
+            "stock_code": "028300",
+            "stock_name": "HLB",
+            "action": "PARTIAL_SELL",
+            "reason": "부분 익절: 5.74%",
+            "date": "2024-10-15 00:00:00",
+            "price": 71900.0,
+            "quantity": 7,
+            "profit_loss": 27300.0,
+            "profit_loss_percent": 5.735294117647061,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "028300",
+            "stock_name": "HLB",
+            "action": "SELL",
+            "reason": "트레일링 스탑 발동: 최고가 71,900.0원의 1.5% 하락",
+            "date": "2024-10-16 00:00:00",
+            "price": 71000.0,
+            "quantity": 7,
+            "profit_loss": 21000.0,
+            "profit_loss_percent": 4.4117647058823595,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "028300",
+            "stock_name": "HLB",
+            "action": "BUY",
+            "reason": "매수 시그널: RSI 과매도, 지지선 근처, 모멘텀 상승전환",
+            "date": "2024-10-16 00:00:00",
+            "price": 71000.0,
+            "quantity": 14,
+            "amount": 994000.0,
+            "market_environment": "sideways",
+            "adjusted_parameters": {
+                "profit_target": 5.0,
+                "stop_loss": -7.59375
+            },
+            "score": "6"
+        },
+        {
+            "stock_code": "028300",
+            "stock_name": "HLB",
+            "action": "SELL",
+            "reason": "트레일링 스탑 발동(상승장 조정): 최고가 71,000.0원의 1.275% 하락",
+            "date": "2024-10-17 00:00:00",
+            "price": 69700.0,
+            "quantity": 14,
+            "profit_loss": -18200.0,
+            "profit_loss_percent": -1.8309859154929553,
+            "market_environment": "uptrend"
+        },
+        {
+            "stock_code": "000155",
+            "stock_name": "두산우",
+            "action": "BUY",
+            "reason": "매수 시그널: 모멘텀 상승전환, 거래량 증가, 강세 캔들 패턴, 이동평균선 정배열, 가격 상승 추세, 거래량 증가 추세",
+            "date": "2024-10-17 00:00:00",
+            "price": 96500.0,
+            "quantity": 14,
+            "amount": 1351000.0,
+            "market_environment": "uptrend",
+            "adjusted_parameters": {
+                "profit_target": 9.0,
+                "stop_loss": -6.075
+            },
+            "score": "17"
+        },
+        {
+            "stock_code": "007660",
+            "stock_name": "이수페타시스",
+            "action": "BUY",
+            "reason": "매수 시그널: 모멘텀 상승전환, 이동평균선 정배열, 가격 상승 추세, 거래량 증가 추세",
+            "date": "2024-10-17 00:00:00",
+            "price": 45600.0,
+            "quantity": 31,
+            "amount": 1413600.0,
+            "market_environment": "uptrend",
+            "adjusted_parameters": {
+                "profit_target": 9.0,
+                "stop_loss": -6.075
+            },
+            "score": "13"
+        },
+        {
+            "stock_code": "005490",
+            "stock_name": "POSCO홀딩스",
+            "action": "BUY",
+            "reason": "매수 시그널: RSI 과매도, 볼린저 밴드 하단, 지지선 근처, 연속 하락 후 반등 기대",
+            "date": "2024-10-17 00:00:00",
+            "price": 342500.0,
+            "quantity": 4,
+            "amount": 1370000.0,
+            "market_environment": "uptrend",
+            "adjusted_parameters": {
+                "profit_target": 9.0,
+                "stop_loss": -6.075
+            },
+            "score": "8"
+        },
+        {
+            "stock_code": "028300",
+            "stock_name": "HLB",
+            "action": "BUY",
+            "reason": "매수 시그널: RSI 과매도, 지지선 근처, 거래량 증가 추세",
+            "date": "2024-10-17 00:00:00",
+            "price": 69700.0,
+            "quantity": 13,
+            "amount": 906100.0,
+            "market_environment": "uptrend",
+            "adjusted_parameters": {
+                "profit_target": 9.0,
+                "stop_loss": -6.075
+            },
+            "score": "8"
+        },
+        {
+            "stock_code": "000155",
+            "stock_name": "두산우",
+            "action": "SELL",
+            "reason": "트레일링 스탑 발동(상승장 조정): 최고가 96,500.0원의 1.275% 하락",
+            "date": "2024-10-18 00:00:00",
+            "price": 93600.0,
+            "quantity": 14,
+            "profit_loss": -40600.0,
+            "profit_loss_percent": -3.005181347150254,
+            "market_environment": "uptrend"
+        },
+        {
+            "stock_code": "007660",
+            "stock_name": "이수페타시스",
+            "action": "SELL",
+            "reason": "트레일링 스탑 발동(상승장 조정): 최고가 45,600.0원의 1.275% 하락",
+            "date": "2024-10-18 00:00:00",
+            "price": 43400.0,
+            "quantity": 31,
+            "profit_loss": -68200.0,
+            "profit_loss_percent": -4.824561403508776,
+            "market_environment": "uptrend"
+        },
+        {
+            "stock_code": "000155",
+            "stock_name": "두산우",
+            "action": "BUY",
+            "reason": "매수 시그널: 이동평균선 정배열, 거래량 증가 추세",
+            "date": "2024-10-18 00:00:00",
+            "price": 93600.0,
+            "quantity": 15,
+            "amount": 1404000.0,
+            "market_environment": "uptrend",
+            "adjusted_parameters": {
+                "profit_target": 9.0,
+                "stop_loss": -6.075
+            },
+            "score": "8"
+        },
+        {
+            "stock_code": "007660",
+            "stock_name": "이수페타시스",
+            "action": "BUY",
+            "reason": "매수 시그널: 이동평균선 정배열, 거래량 증가 추세",
+            "date": "2024-10-18 00:00:00",
+            "price": 43400.0,
+            "quantity": 29,
+            "amount": 1258600.0,
+            "market_environment": "uptrend",
+            "adjusted_parameters": {
+                "profit_target": 9.0,
+                "stop_loss": -6.075
+            },
+            "score": "8"
+        },
+        {
+            "stock_code": "000155",
+            "stock_name": "두산우",
+            "action": "PARTIAL_SELL",
+            "reason": "부분 익절: 6.20%",
+            "date": "2024-10-21 00:00:00",
+            "price": 99400.0,
+            "quantity": 6,
+            "profit_loss": 34800.0,
+            "profit_loss_percent": 6.196581196581197,
+            "market_environment": "uptrend"
+        },
+        {
+            "stock_code": "005490",
+            "stock_name": "POSCO홀딩스",
+            "action": "SELL",
+            "reason": "트레일링 스탑 발동: 최고가 345,000.0원의 1.5% 하락",
+            "date": "2024-10-22 00:00:00",
+            "price": 331500.0,
+            "quantity": 4,
+            "profit_loss": -44000.0,
+            "profit_loss_percent": -3.2116788321167933,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "028300",
+            "stock_name": "HLB",
+            "action": "SELL",
+            "reason": "트레일링 스탑 발동: 최고가 70,900.0원의 1.5% 하락",
+            "date": "2024-10-22 00:00:00",
+            "price": 69300.0,
+            "quantity": 13,
+            "profit_loss": -5200.0,
+            "profit_loss_percent": -0.5738880918220945,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "005490",
+            "stock_name": "POSCO홀딩스",
+            "action": "BUY",
+            "reason": "매수 시그널: RSI 과매도, 볼린저 밴드 하단, 지지선 근처",
+            "date": "2024-10-22 00:00:00",
+            "price": 331500.0,
+            "quantity": 3,
+            "amount": 994500.0,
+            "market_environment": "sideways",
+            "adjusted_parameters": {
+                "profit_target": 5.0,
+                "stop_loss": -7.59375
+            },
+            "score": "6"
+        },
+        {
+            "stock_code": "028300",
+            "stock_name": "HLB",
+            "action": "BUY",
+            "reason": "매수 시그널: RSI 과매도, 지지선 근처",
+            "date": "2024-10-22 00:00:00",
+            "price": 69300.0,
+            "quantity": 14,
+            "amount": 970200.0,
+            "market_environment": "sideways",
+            "adjusted_parameters": {
+                "profit_target": 5.0,
+                "stop_loss": -7.59375
+            },
+            "score": "4"
+        },
+        {
+            "stock_code": "000155",
+            "stock_name": "두산우",
+            "action": "SELL",
+            "reason": "트레일링 스탑 발동: 최고가 99,400.0원의 1.5% 하락",
+            "date": "2024-10-23 00:00:00",
+            "price": 97500.0,
+            "quantity": 9,
+            "profit_loss": 35100.0,
+            "profit_loss_percent": 4.166666666666674,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "007660",
+            "stock_name": "이수페타시스",
+            "action": "PARTIAL_SELL",
+            "reason": "부분 익절: 5.30%",
+            "date": "2024-10-23 00:00:00",
+            "price": 45700.0,
+            "quantity": 14,
+            "profit_loss": 32200.0,
+            "profit_loss_percent": 5.299539170506917,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "005490",
+            "stock_name": "POSCO홀딩스",
+            "action": "PARTIAL_SELL",
+            "reason": "부분 익절: 3.17%",
+            "date": "2024-10-23 00:00:00",
+            "price": 342000.0,
+            "quantity": 1,
+            "profit_loss": 10500.0,
+            "profit_loss_percent": 3.167420814479649,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "028300",
+            "stock_name": "HLB",
+            "action": "SELL",
+            "reason": "트레일링 스탑 발동: 최고가 69,300.0원의 1.5% 하락",
+            "date": "2024-10-23 00:00:00",
+            "price": 68100.0,
+            "quantity": 14,
+            "profit_loss": -16800.0,
+            "profit_loss_percent": -1.7316017316017285,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "028300",
+            "stock_name": "HLB",
+            "action": "BUY",
+            "reason": "매수 시그널: RSI 과매도, 지지선 근처",
+            "date": "2024-10-23 00:00:00",
+            "price": 68100.0,
+            "quantity": 14,
+            "amount": 953400.0,
+            "market_environment": "sideways",
+            "adjusted_parameters": {
+                "profit_target": 5.0,
+                "stop_loss": -7.59375
+            },
+            "score": "4"
+        },
+        {
+            "stock_code": "007660",
+            "stock_name": "이수페타시스",
+            "action": "SELL",
+            "reason": "트레일링 스탑 발동: 최고가 45,700.0원의 1.5% 하락",
+            "date": "2024-10-24 00:00:00",
+            "price": 44900.0,
+            "quantity": 15,
+            "profit_loss": 22500.0,
+            "profit_loss_percent": 3.4562211981566726,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "028300",
+            "stock_name": "HLB",
+            "action": "SELL",
+            "reason": "트레일링 스탑 발동: 최고가 68,100.0원의 1.5% 하락",
+            "date": "2024-10-24 00:00:00",
+            "price": 65500.0,
+            "quantity": 14,
+            "profit_loss": -36400.0,
+            "profit_loss_percent": -3.8179148311306865,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "028300",
+            "stock_name": "HLB",
+            "action": "BUY",
+            "reason": "매수 시그널: RSI 과매도, 지지선 근처, 연속 하락 후 반등 기대",
+            "date": "2024-10-24 00:00:00",
+            "price": 65500.0,
+            "quantity": 15,
+            "amount": 982500.0,
+            "market_environment": "sideways",
+            "adjusted_parameters": {
+                "profit_target": 5.0,
+                "stop_loss": -7.59375
+            },
+            "score": "6"
+        },
+        {
+            "stock_code": "005490",
+            "stock_name": "POSCO홀딩스",
+            "action": "SELL",
+            "reason": "트레일링 스탑 발동: 최고가 342,000.0원의 1.5% 하락",
+            "date": "2024-10-25 00:00:00",
+            "price": 335500.0,
+            "quantity": 2,
+            "profit_loss": 8000.0,
+            "profit_loss_percent": 1.2066365007541435,
+            "market_environment": "downtrend"
+        },
+        {
+            "stock_code": "028300",
+            "stock_name": "HLB",
+            "action": "PARTIAL_SELL",
+            "reason": "부분 익절: 4.12%",
+            "date": "2024-10-28 00:00:00",
+            "price": 68200.0,
+            "quantity": 7,
+            "profit_loss": 18900.0,
+            "profit_loss_percent": 4.122137404580162,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "028300",
+            "stock_name": "HLB",
+            "action": "SELL",
+            "reason": "트레일링 스탑 발동: 최고가 68,200.0원의 1.5% 하락",
+            "date": "2024-10-29 00:00:00",
+            "price": 67200.0,
+            "quantity": 8,
+            "profit_loss": 13600.0,
+            "profit_loss_percent": 2.595419847328251,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "028300",
+            "stock_name": "HLB",
+            "action": "BUY",
+            "reason": "매수 시그널: RSI 과매도, 지지선 근처",
+            "date": "2024-10-29 00:00:00",
+            "price": 67200.0,
+            "quantity": 14,
+            "amount": 940800.0,
+            "market_environment": "sideways",
+            "adjusted_parameters": {
+                "profit_target": 5.0,
+                "stop_loss": -7.59375
+            },
+            "score": "4"
+        },
+        {
+            "stock_code": "028300",
+            "stock_name": "HLB",
+            "action": "SELL",
+            "reason": "트레일링 스탑 발동: 최고가 67,200.0원의 1.5% 하락",
+            "date": "2024-10-30 00:00:00",
+            "price": 65700.0,
+            "quantity": 14,
+            "profit_loss": -21000.0,
+            "profit_loss_percent": -2.2321428571428603,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "028300",
+            "stock_name": "HLB",
+            "action": "BUY",
+            "reason": "매수 시그널: RSI 과매도, 지지선 근처",
+            "date": "2024-10-30 00:00:00",
+            "price": 65700.0,
+            "quantity": 15,
+            "amount": 985500.0,
+            "market_environment": "sideways",
+            "adjusted_parameters": {
+                "profit_target": 5.0,
+                "stop_loss": -7.59375
+            },
+            "score": "4"
+        },
+        {
+            "stock_code": "028300",
+            "stock_name": "HLB",
+            "action": "SELL",
+            "reason": "트레일링 스탑 발동: 최고가 66,000.0원의 1.5% 하락",
+            "date": "2024-11-01 00:00:00",
+            "price": 63800.0,
+            "quantity": 15,
+            "profit_loss": -28500.0,
+            "profit_loss_percent": -2.8919330289193357,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "007660",
+            "stock_name": "이수페타시스",
+            "action": "BUY",
+            "reason": "매수 시그널: RSI 과매도, 지지선 근처, 거래량 증가, 연속 하락 후 반등 기대",
+            "date": "2024-11-04 00:00:00",
+            "price": 34500.0,
+            "quantity": 28,
+            "amount": 966000.0,
+            "market_environment": "sideways",
+            "adjusted_parameters": {
+                "profit_target": 5.0,
+                "stop_loss": -7.59375
+            },
+            "score": "8"
+        },
+        {
+            "stock_code": "007660",
+            "stock_name": "이수페타시스",
+            "action": "SELL",
+            "reason": "손절: -7.68% (기준: -7.59%)",
+            "date": "2024-11-05 00:00:00",
+            "price": 31850.0,
+            "quantity": 28,
+            "profit_loss": -74200.0,
+            "profit_loss_percent": -7.681159420289852,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "007660",
+            "stock_name": "이수페타시스",
+            "action": "BUY",
+            "reason": "매수 시그널: RSI 과매도, 볼린저 밴드 하단, 지지선 근처, 거래량 증가, 연속 하락 후 반등 기대",
+            "date": "2024-11-05 00:00:00",
+            "price": 31850.0,
+            "quantity": 31,
+            "amount": 987350.0,
+            "market_environment": "sideways",
+            "adjusted_parameters": {
+                "profit_target": 5.0,
+                "stop_loss": -7.59375
+            },
+            "score": "10"
+        },
+        {
+            "stock_code": "007660",
+            "stock_name": "이수페타시스",
+            "action": "SELL",
+            "reason": "트레일링 스탑 발동: 최고가 31,850.0원의 1.5% 하락",
+            "date": "2024-11-06 00:00:00",
+            "price": 30950.0,
+            "quantity": 31,
+            "profit_loss": -27900.0,
+            "profit_loss_percent": -2.8257456828885363,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "007660",
+            "stock_name": "이수페타시스",
+            "action": "BUY",
+            "reason": "매수 시그널: RSI 과매도, 볼린저 밴드 하단, 지지선 근처, 연속 하락 후 반등 기대",
+            "date": "2024-11-06 00:00:00",
+            "price": 30950.0,
+            "quantity": 32,
+            "amount": 990400.0,
+            "market_environment": "sideways",
+            "adjusted_parameters": {
+                "profit_target": 5.0,
+                "stop_loss": -7.59375
+            },
+            "score": "8"
+        },
+        {
+            "stock_code": "007660",
+            "stock_name": "이수페타시스",
+            "action": "PARTIAL_SELL",
+            "reason": "부분 익절: 8.89%",
+            "date": "2024-11-07 00:00:00",
+            "price": 33700.0,
+            "quantity": 16,
+            "profit_loss": 44000.0,
+            "profit_loss_percent": 8.885298869143776,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "007660",
+            "stock_name": "이수페타시스",
+            "action": "SELL",
+            "reason": "트레일링 스탑 발동: 최고가 33,700.0원의 1.5% 하락",
+            "date": "2024-11-08 00:00:00",
+            "price": 31750.0,
+            "quantity": 16,
+            "profit_loss": 12800.0,
+            "profit_loss_percent": 2.5848142164781818,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "028300",
+            "stock_name": "HLB",
+            "action": "BUY",
+            "reason": "매수 시그널: RSI 과매도, 볼린저 밴드 하단, 지지선 근처, 연속 하락 후 반등 기대",
+            "date": "2024-11-08 00:00:00",
+            "price": 61000.0,
+            "quantity": 16,
+            "amount": 976000.0,
+            "market_environment": "sideways",
+            "adjusted_parameters": {
+                "profit_target": 5.0,
+                "stop_loss": -7.59375
+            },
+            "score": "8"
+        },
+        {
+            "stock_code": "007660",
+            "stock_name": "이수페타시스",
+            "action": "BUY",
+            "reason": "매수 시그널: RSI 과매도, 지지선 근처",
+            "date": "2024-11-08 00:00:00",
+            "price": 31750.0,
+            "quantity": 31,
+            "amount": 984250.0,
+            "market_environment": "sideways",
+            "adjusted_parameters": {
+                "profit_target": 5.0,
+                "stop_loss": -7.59375
+            },
+            "score": "4"
+        },
+        {
+            "stock_code": "007660",
+            "stock_name": "이수페타시스",
+            "action": "SELL",
+            "reason": "손절: -22.68% (기준: -7.59%)",
+            "date": "2024-11-11 00:00:00",
+            "price": 24550.0,
+            "quantity": 31,
+            "profit_loss": -223200.0,
+            "profit_loss_percent": -22.677165354330707,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "007660",
+            "stock_name": "이수페타시스",
+            "action": "BUY",
+            "reason": "매수 시그널: RSI 과매도, 볼린저 밴드 하단, 지지선 근처, 거래량 증가",
+            "date": "2024-11-11 00:00:00",
+            "price": 24550.0,
+            "quantity": 40,
+            "amount": 982000.0,
+            "market_environment": "sideways",
+            "adjusted_parameters": {
+                "profit_target": 5.0,
+                "stop_loss": -7.59375
+            },
+            "score": "8"
+        },
+        {
+            "stock_code": "028300",
+            "stock_name": "HLB",
+            "action": "SELL",
+            "reason": "트레일링 스탑 발동: 최고가 61,000.0원의 1.5% 하락",
+            "date": "2024-11-12 00:00:00",
+            "price": 60000.0,
+            "quantity": 16,
+            "profit_loss": -16000.0,
+            "profit_loss_percent": -1.6393442622950838,
+            "market_environment": "downtrend"
+        },
+        {
+            "stock_code": "007660",
+            "stock_name": "이수페타시스",
+            "action": "SELL",
+            "reason": "트레일링 스탑 발동: 최고가 24,650.0원의 1.5% 하락",
+            "date": "2024-11-14 00:00:00",
+            "price": 23550.0,
+            "quantity": 40,
+            "profit_loss": -40000.0,
+            "profit_loss_percent": -4.073319755600813,
+            "market_environment": "downtrend"
+        },
+        {
+            "stock_code": "007660",
+            "stock_name": "이수페타시스",
+            "action": "BUY",
+            "reason": "매수 시그널: RSI 과매도, MACD 상향돌파, 모멘텀 상승전환, 강세 캔들 패턴",
+            "date": "2024-11-25 00:00:00",
+            "price": 23400.0,
+            "quantity": 42,
+            "amount": 982800.0,
+            "market_environment": "sideways",
+            "adjusted_parameters": {
+                "profit_target": 5.0,
+                "stop_loss": -7.59375
+            },
+            "score": "8"
+        },
+        {
+            "stock_code": "007660",
+            "stock_name": "이수페타시스",
+            "action": "SELL",
+            "reason": "트레일링 스탑 발동: 최고가 23,400.0원의 1.5% 하락",
+            "date": "2024-11-26 00:00:00",
+            "price": 22600.0,
+            "quantity": 42,
+            "profit_loss": -33600.0,
+            "profit_loss_percent": -3.4188034188034178,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "000155",
+            "stock_name": "두산우",
+            "action": "BUY",
+            "reason": "매수 시그널: RSI 과매도, 볼린저 밴드 하단, 지지선 근처, 연속 하락 후 반등 기대",
+            "date": "2024-11-27 00:00:00",
+            "price": 96500.0,
+            "quantity": 14,
+            "amount": 1351000.0,
+            "market_environment": "uptrend",
+            "adjusted_parameters": {
+                "profit_target": 9.0,
+                "stop_loss": -6.075
+            },
+            "score": "8"
+        },
+        {
+            "stock_code": "000660",
+            "stock_name": "SK하이닉스",
+            "action": "BUY",
+            "reason": "매수 시그널: RSI 과매도, 지지선 근처",
+            "date": "2024-11-27 00:00:00",
+            "price": 168300.0,
+            "quantity": 8,
+            "amount": 1346400.0,
+            "market_environment": "uptrend",
+            "adjusted_parameters": {
+                "profit_target": 9.0,
+                "stop_loss": -6.075
+            },
+            "score": "4"
+        },
+        {
+            "stock_code": "007660",
+            "stock_name": "이수페타시스",
+            "action": "BUY",
+            "reason": "매수 시그널: RSI 과매도, 지지선 근처",
+            "date": "2024-11-27 00:00:00",
+            "price": 21600.0,
+            "quantity": 66,
+            "amount": 1425600.0,
+            "market_environment": "uptrend",
+            "adjusted_parameters": {
+                "profit_target": 9.0,
+                "stop_loss": -6.075
+            },
+            "score": "4"
+        },
+        {
+            "stock_code": "000660",
+            "stock_name": "SK하이닉스",
+            "action": "SELL",
+            "reason": "트레일링 스탑 발동: 최고가 168,300.0원의 1.5% 하락",
+            "date": "2024-11-28 00:00:00",
+            "price": 161100.0,
+            "quantity": 8,
+            "profit_loss": -57600.0,
+            "profit_loss_percent": -4.278074866310155,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "000660",
+            "stock_name": "SK하이닉스",
+            "action": "BUY",
+            "reason": "매수 시그널: RSI 과매도, 지지선 근처",
+            "date": "2024-11-28 00:00:00",
+            "price": 161100.0,
+            "quantity": 6,
+            "amount": 966600.0,
+            "market_environment": "sideways",
+            "adjusted_parameters": {
+                "profit_target": 5.0,
+                "stop_loss": -7.59375
+            },
+            "score": "4"
+        },
+        {
+            "stock_code": "007660",
+            "stock_name": "이수페타시스",
+            "action": "PARTIAL_SELL",
+            "reason": "부분 익절: 3.24%",
+            "date": "2024-11-29 00:00:00",
+            "price": 22300.0,
+            "quantity": 33,
+            "profit_loss": 23100.0,
+            "profit_loss_percent": 3.240740740740744,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "007660",
+            "stock_name": "이수페타시스",
+            "action": "SELL",
+            "reason": "트레일링 스탑 발동: 최고가 22,300.0원의 1.5% 하락",
+            "date": "2024-12-02 00:00:00",
+            "price": 21100.0,
+            "quantity": 33,
+            "profit_loss": -16500.0,
+            "profit_loss_percent": -2.314814814814814,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "000155",
+            "stock_name": "두산우",
+            "action": "PARTIAL_SELL",
+            "reason": "부분 익절: 4.77%",
+            "date": "2024-12-03 00:00:00",
+            "price": 101100.0,
+            "quantity": 7,
+            "profit_loss": 32200.0,
+            "profit_loss_percent": 4.766839378238341,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "000155",
+            "stock_name": "두산우",
+            "action": "SELL",
+            "reason": "트레일링 스탑 발동: 최고가 101,100.0원의 1.5% 하락",
+            "date": "2024-12-04 00:00:00",
+            "price": 98800.0,
+            "quantity": 7,
+            "profit_loss": 16100.0,
+            "profit_loss_percent": 2.3834196891191706,
+            "market_environment": "downtrend"
+        },
+        {
+            "stock_code": "000660",
+            "stock_name": "SK하이닉스",
+            "action": "PARTIAL_SELL",
+            "reason": "부분 익절: 4.28%",
+            "date": "2024-12-04 00:00:00",
+            "price": 168000.0,
+            "quantity": 3,
+            "profit_loss": 20700.0,
+            "profit_loss_percent": 4.283054003724396,
+            "market_environment": "downtrend"
+        },
+        {
+            "stock_code": "000660",
+            "stock_name": "SK하이닉스",
+            "action": "SELL",
+            "reason": "목표 수익률 달성: 7.39% (기준: 5.00%)",
+            "date": "2024-12-05 00:00:00",
+            "price": 173000.0,
+            "quantity": 3,
+            "profit_loss": 35700.0,
+            "profit_loss_percent": 7.38671632526382,
+            "market_environment": "downtrend"
+        },
+        {
+            "stock_code": "005490",
+            "stock_name": "POSCO홀딩스",
+            "action": "BUY",
+            "reason": "매수 시그널: RSI 과매도, 지지선 근처, 연속 하락 후 반등 기대",
+            "date": "2024-12-17 00:00:00",
+            "price": 264000.0,
+            "quantity": 3,
+            "amount": 792000.0,
+            "market_environment": "sideways",
+            "adjusted_parameters": {
+                "profit_target": 5.0,
+                "stop_loss": -7.59375
+            },
+            "score": "6"
+        },
+        {
+            "stock_code": "000155",
+            "stock_name": "두산우",
+            "action": "BUY",
+            "reason": "매수 시그널: 강세 캔들 패턴, 이동평균선 정배열, 거래량 증가 추세",
+            "date": "2024-12-18 00:00:00",
+            "price": 110400.0,
+            "quantity": 13,
+            "amount": 1435200.0,
+            "market_environment": "uptrend",
+            "adjusted_parameters": {
+                "profit_target": 9.0,
+                "stop_loss": -6.075
+            },
+            "score": "10"
+        },
+        {
+            "stock_code": "007660",
+            "stock_name": "이수페타시스",
+            "action": "BUY",
+            "reason": "매수 시그널: 이동평균선 정배열, 거래량 증가 추세",
+            "date": "2024-12-18 00:00:00",
+            "price": 26500.0,
+            "quantity": 54,
+            "amount": 1431000.0,
+            "market_environment": "uptrend",
+            "adjusted_parameters": {
+                "profit_target": 9.0,
+                "stop_loss": -6.075
+            },
+            "score": "8"
+        },
+        {
+            "stock_code": "000660",
+            "stock_name": "SK하이닉스",
+            "action": "BUY",
+            "reason": "매수 시그널: 강세 캔들 패턴, 이동평균선 정배열",
+            "date": "2024-12-18 00:00:00",
+            "price": 183500.0,
+            "quantity": 5,
+            "amount": 917500.0,
+            "market_environment": "uptrend",
+            "adjusted_parameters": {
+                "profit_target": 9.0,
+                "stop_loss": -6.075
+            },
+            "score": "6"
+        },
+        {
+            "stock_code": "005490",
+            "stock_name": "POSCO홀딩스",
+            "action": "SELL",
+            "reason": "트레일링 스탑 발동: 최고가 268,500.0원의 1.5% 하락",
+            "date": "2024-12-19 00:00:00",
+            "price": 263000.0,
+            "quantity": 3,
+            "profit_loss": -3000.0,
+            "profit_loss_percent": -0.37878787878787845,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "000660",
+            "stock_name": "SK하이닉스",
+            "action": "SELL",
+            "reason": "트레일링 스탑 발동: 최고가 183,500.0원의 1.5% 하락",
+            "date": "2024-12-19 00:00:00",
+            "price": 175000.0,
+            "quantity": 5,
+            "profit_loss": -42500.0,
+            "profit_loss_percent": -4.63215258855586,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "000155",
+            "stock_name": "두산우",
+            "action": "SELL",
+            "reason": "트레일링 스탑 발동: 최고가 110,400.0원의 1.5% 하락",
+            "date": "2024-12-20 00:00:00",
+            "price": 108800.0,
+            "quantity": 13,
+            "profit_loss": -20800.0,
+            "profit_loss_percent": -1.449275362318836,
+            "market_environment": "sideways"
+        },
+        {
+            "stock_code": "007660",
+            "stock_name": "이수페타시스",
+            "action": "SELL",
+            "reason": "손절: -6.42% (기준: -6.08%)",
+            "date": "2024-12-20 00:00:00",
+            "price": 24800.0,
+            "quantity": 54,
+            "profit_loss": -91800.0,
+            "profit_loss_percent": -6.41509433962264,
+            "market_environment": "sideways"
+        }
+    ],
+    "win_rate": 46.0,
+    "avg_profit": 27219.565217391304,
+    "avg_loss": -40862.96296296296,
+    "max_drawdown": 99.55196517681199,
+    "market_environment_stats": {
+        "uptrend": 16,
+        "downtrend": 6,
+        "sideways": 66
+    },
+    "stock_performance": {
+        "000155": {
+            "name": "두산우",
+            "total_profit": 32900.0,
+            "trades_count": 12,
+            "win_count": 6,
+            "win_rate": 50.0
+        },
+        "000660": {
+            "name": "SK하이닉스",
+            "total_profit": -5300.0,
+            "trades_count": 7,
+            "win_count": 4,
+            "win_rate": 57.14285714285714
+        },
+        "007660": {
+            "name": "이수페타시스",
+            "total_profit": -355250.0,
+            "trades_count": 15,
+            "win_count": 7,
+            "win_rate": 46.666666666666664
+        },
+        "028300": {
+            "name": "HLB",
+            "total_profit": -121100.0,
+            "trades_count": 12,
+            "win_count": 4,
+            "win_rate": 33.33333333333333
+        },
+        "005490": {
+            "name": "POSCO홀딩스",
+            "total_profit": -28500.0,
+            "trades_count": 4,
+            "win_count": 2,
+            "win_rate": 50.0
+        }
+    },
+    "market_environment_performance": {
+        "uptrend": {
+            "trades": 4,
+            "win_trades": 1,
+            "profit": -92200.0,
+            "win_rate": 25.0,
+            "avg_profit": -23050.0
+        },
+        "downtrend": {
+            "trades": 6,
+            "win_trades": 4,
+            "profit": 24500.0,
+            "win_rate": 66.66666666666666,
+            "avg_profit": 4083.3333333333335
+        },
+        "sideways": {
+            "trades": 40,
+            "win_trades": 18,
+            "profit": -409550.0,
+            "win_rate": 45.0,
+            "avg_profit": -10238.75
+        }
+    }
+}
