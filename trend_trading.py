@@ -560,6 +560,10 @@ class TrendTraderBot:
         if self.config.get("trading_strategies", {}).get("use_auto_sector_lookup", True):
             self._update_sector_info()
 
+        # 손절 후 재매수 제한을 위한 딕셔너리 추가
+        self.sell_cooldown = {}
+        self.cooldown_days = self.config.get("trading_strategies", {}).get("cooldown_days", 2)
+
         # 여기서 하드코딩된 기본값을 제거하고 항상 config에서 가져옴
         self.total_budget = self.config.get("total_budget")
         self.profit_target = self.config.get("profit_target")
@@ -1058,6 +1062,14 @@ class TrendTraderBot:
     def analyze_stock(self, stock_code: str) -> Dict[str, any]:
         """종목 분석 - 상승장에서의 매수 시그널 강화"""
         try:
+            # 쿨다운 체크 추가 (재매수 제한 확인)
+            current_date = datetime.datetime.now().date()
+            if stock_code in self.sell_cooldown:
+                cooldown_end_date = self.sell_cooldown.get(stock_code)
+                if current_date <= cooldown_end_date:
+                    logger.debug(f"종목 {stock_code} 매매 제한 기간: ~{cooldown_end_date}")
+                    return {"is_buy_signal": False, "reason": f"매매 제한 기간 ({cooldown_end_date})"}
+
             # 일봉 데이터 조회 (60일)
             daily_data = KisKR.GetOhlcvNew(stock_code, 'D', 60, adj_ok=1)
             
@@ -1886,6 +1898,13 @@ class TrendTraderBot:
                             # 보유 종목에서 제거
                             del self.holdings[stock_code]
                             self._save_holdings()
+
+                            # 손절인 경우 쿨다운 적용
+                            if profit_percent < 0:
+                                cooldown_end_date = datetime.datetime.now().date() + datetime.timedelta(days=self.cooldown_days)
+                                self.sell_cooldown[stock_code] = cooldown_end_date
+                                logger.info(f"손절 후 매매 제한: {stock_code}, 해제일: {cooldown_end_date}")
+
                         else:
                             logger.error(f"매도 주문 실패: {stock_code}, {order_result}")
 
@@ -2553,7 +2572,7 @@ class TrendTraderBot:
             logger.exception(f"적응형 전략 백테스트 결과 시각화 중 오류: {str(e)}")
 
     def apply_optimal_strategy_from_backtest(self, optimal_strategy_file="optimal_adaptive_strategy.json"):
-        """백테스트에서 도출된 최적 전략을 적용"""
+        """백테스트에서 도출된 최적 전략을 적용 - 개선된 버전"""
         try:
             # 최적 전략 파일 로드
             if not os.path.exists(optimal_strategy_file):
@@ -2569,6 +2588,31 @@ class TrendTraderBot:
             
             # 종목별 특성 분석 (기존 함수 활용)
             characteristics = self.analyze_stock_characteristics()
+            
+            # 전역 설정 업데이트 (있는 경우)
+            if "config_updates" in optimal_strategy:
+                config_updates = optimal_strategy["config_updates"]
+                
+                # 손절 기준 업데이트
+                if "stop_loss" in config_updates:
+                    self.stop_loss = config_updates["stop_loss"]
+                    self.config["stop_loss"] = config_updates["stop_loss"]
+                    logger.info(f"글로벌 손절 기준 업데이트: {self.stop_loss}")
+                
+                # 쿨다운 기간 설정
+                if "cooldown_days" in config_updates:
+                    self.cooldown_days = config_updates["cooldown_days"]
+                    self.config["trading_strategies"]["cooldown_days"] = config_updates["cooldown_days"]
+                    # 쿨다운 딕셔너리가 없으면 초기화
+                    if not hasattr(self, 'sell_cooldown'):
+                        self.sell_cooldown = {}
+                    logger.info(f"손절 후 재매수 제한 기간 설정: {self.cooldown_days}일")
+                
+                # 점수 가중치 업데이트
+                if "score_weights" in config_updates:
+                    self.score_weights = config_updates["score_weights"]
+                    self.config["trading_strategies"]["score_weights"] = config_updates["score_weights"]
+                    logger.info(f"매수 점수 가중치 업데이트 완료")
             
             # 각 종목에 대해 최적 전략 적용
             for stock_code, char_info in characteristics.items():
@@ -2630,6 +2674,10 @@ class TrendTraderBot:
             # 전략 저장
             self.adaptive_strategy.save_strategy()
             logger.info(f"백테스트 최적 전략 적용 완료")
+            
+            # 설정 파일도 저장
+            self._save_config()
+            logger.info(f"업데이트된 설정 저장 완료")
             
             return True
             
@@ -4493,7 +4541,7 @@ class TrendTraderBot:
             return None        
 
     def find_optimal_strategy_parameters(self, backtest_results_file, output_file=None):
-        """백테스트 결과 분석을 통한 최적 전략 파라미터 도출"""
+        """백테스트 결과 분석을 통한 최적 전략 파라미터 도출 - 개선된 버전"""
         try:
             # 백테스트 결과 로드
             with open(backtest_results_file, 'r', encoding='utf-8') as f:
@@ -4509,6 +4557,7 @@ class TrendTraderBot:
             # 종목별 시장환경별 성과 집계
             stock_env_performance = {}
             
+            # 1. 기존 분석 로직
             for trade in backtest_results["trades"]:
                 if trade["action"] in ["SELL", "PARTIAL_SELL"]:
                     stock_code = trade["stock_code"]
@@ -4535,117 +4584,176 @@ class TrendTraderBot:
                     if "adjusted_parameters" in trade:
                         stock_env_performance[stock_code][market_env]["parameters"].append(trade["adjusted_parameters"])
             
-            # 종목별 최적 전략 분석
-            for stock_code, env_data in stock_env_performance.items():
+            # 2. 백테스트 결과에서 식별된 문제점을 반영한 파라미터 최적화
+            
+            # 백테스트 결과 요약 분석
+            stock_performance = backtest_results.get("stock_performance", {})
+            market_env_performance = backtest_results.get("market_environment_performance", {})
+            
+            # 문제 종목 및 우수 종목 동적 식별
+            problematic_stocks = []
+            good_performance_stocks = []
+            
+            for stock_code, perf in stock_performance.items():
+                win_rate = perf.get("win_rate", 0)
+                total_profit = perf.get("total_profit", 0)
+                trades_count = perf.get("trades_count", 0)
+                
+                # 충분한 거래 횟수(최소 3회)가 있는 종목 중
+                if trades_count >= 3:
+                    # 승률이 낮거나 큰 손실을 기록한 종목은 문제 있는 종목으로 판단
+                    if win_rate < 40 or total_profit < -100000:
+                        problematic_stocks.append(stock_code)
+                        logger.info(f"문제 종목 식별: {stock_code} (승률: {win_rate:.1f}%, 총 손익: {total_profit:,.0f}원)")
+                    # 승률이 높고 수익을 낸 종목은 좋은 성과 종목으로 판단
+                    elif win_rate > 60 and total_profit > 0:
+                        good_performance_stocks.append(stock_code)
+                        logger.info(f"우수 종목 식별: {stock_code} (승률: {win_rate:.1f}%, 총 손익: {total_profit:,.0f}원)")
+            
+            # 전체 시장 환경별 최적 전략 업데이트 (백테스트 결과 기반)
+            for env, perf in market_env_performance.items():
+                if env not in analysis["market_env_optimal_strategies"]:
+                    analysis["market_env_optimal_strategies"][env] = {
+                        "trade_count": perf.get("trades", 0),
+                        "win_rate": perf.get("win_rate", 0),
+                        "avg_return": perf.get("avg_profit", 0),
+                        "optimal_parameters": {}
+                    }
+                    
+                # 기본 파라미터 설정
+                default_params = {
+                    "profit_target": self.profit_target,
+                    "stop_loss": self.stop_loss,
+                    "trailing_stop_pct": self.trailing_stop_pct,
+                    "rsi_threshold": self.rsi_oversold
+                }
+                
+                # 시장 환경별 최적화된 파라미터 설정
+                if env == "uptrend":
+                    # 상승장 성과가 약했으므로 더 엄격한 매수 조건과 넓은 손절 기준
+                    adjusted_params = {
+                        "profit_target": default_params["profit_target"] * 1.5,  # 수익 목표 증가
+                        "stop_loss": default_params["stop_loss"] * 1.67,  # 손절폭 확대 (-1.5 → -2.5)
+                        "trailing_stop_pct": 2.0,  # 상승장 트레일링 스탑 조정
+                        "rsi_threshold": 45  # 상승장 RSI 조건 완화
+                    }
+                elif env == "downtrend":
+                    # 하락장 성과가 좋았으므로 기존 전략 기반에 약간의 파라미터 최적화
+                    adjusted_params = {
+                        "profit_target": default_params["profit_target"] * 0.7,  # 수익 목표 감소
+                        "stop_loss": default_params["stop_loss"] * 0.8,  # 손절폭 축소 (타이트하게)
+                        "trailing_stop_pct": 1.0,  # 하락장 트레일링 스탑 더 타이트하게
+                        "rsi_threshold": 25  # 하락장 RSI 조건 강화
+                    }
+                else:  # "sideways"
+                    # 횡보장 성과 개선을 위한 최적화
+                    adjusted_params = {
+                        "profit_target": default_params["profit_target"] * 1.2,  # 수익 목표 약간 증가
+                        "stop_loss": default_params["stop_loss"] * 1.33,  # 손절폭 확대 (-1.5 → -2.0)
+                        "trailing_stop_pct": 1.5,  # 횡보장 트레일링 스탑 기본 유지
+                        "rsi_threshold": 30  # 횡보장 RSI 기본 유지
+                    }
+                
+                analysis["market_env_optimal_strategies"][env]["optimal_parameters"] = adjusted_params
+            
+            # 3. 종목별 최적 전략 분석 (기존 종목별 성과 고려)
+            for stock_code, perf in stock_performance.items():
                 analysis["stock_optimal_strategies"][stock_code] = {}
                 
-                for env, data in env_data.items():
-                    if len(data["trades"]) >= 3:  # 최소 3회 이상 거래가 있는 경우만
-                        # 수익률 기준 거래 정렬
-                        sorted_trades = sorted(data["trades"], key=lambda x: x["profit_percent"], reverse=True)
-                        
-                        # 상위 30% 거래의 평균 파라미터 계산
-                        top_n = max(1, int(len(sorted_trades) * 0.3))
-                        top_trades = sorted_trades[:top_n]
-                        
-                        # 해당 거래들의 파라미터가 있으면 분석
-                        if data["parameters"]:
-                            avg_params = {}
-                            for param_key in data["parameters"][0].keys():
-                                avg_params[param_key] = sum(p.get(param_key, 0) for p in data["parameters"][:top_n]) / top_n
-                            
-                            # 결과 저장
-                            analysis["stock_optimal_strategies"][stock_code][env] = {
-                                "trade_count": len(data["trades"]),
-                                "avg_return": sum(t["profit_percent"] for t in data["trades"]) / len(data["trades"]),
-                                "top_trades_avg_return": sum(t["profit_percent"] for t in top_trades) / len(top_trades),
-                                "optimal_parameters": avg_params
-                            }
+                # 종목별 승률 및 성과 분석
+                win_rate = perf.get("win_rate", 0)
+                total_profit = perf.get("total_profit", 0)
+                
+                # 문제 있는 종목 여부 확인 (동적으로 결정됨)
+                is_problematic = stock_code in problematic_stocks
+                is_good_performer = stock_code in good_performance_stocks
+                
+                # 각 시장 환경별 파라미터 설정
+                for env in ["uptrend", "downtrend", "sideways"]:
+                    env_trades = stock_env_performance.get(stock_code, {}).get(env, {}).get("trades", [])
+                    
+                    if not env_trades:
+                        # 해당 환경에서 거래 없는 경우, 전체 시장 환경 최적 전략 적용
+                        analysis["stock_optimal_strategies"][stock_code][env] = \
+                            analysis["market_env_optimal_strategies"][env]["optimal_parameters"].copy()
+                        continue
+                    
+                    # 해당 환경에서 종목 성과 계산
+                    env_profit = sum(trade.get("profit", 0) for trade in env_trades)
+                    env_win_rate = sum(1 for trade in env_trades if trade.get("profit", 0) > 0) / len(env_trades) * 100 if env_trades else 0
+                    
+                    # 환경별 기본 파라미터 가져오기
+                    base_params = analysis["market_env_optimal_strategies"][env]["optimal_parameters"].copy()
+                    
+                    # 문제가 있는 종목은 더 엄격한 파라미터 적용
+                    if is_problematic:
+                        if env == "uptrend":
+                            # 상승장에서 문제 종목은 매우 엄격한 매수 조건
+                            base_params["stop_loss"] = base_params["stop_loss"] * 0.8  # 손절폭 축소
+                            base_params["rsi_threshold"] = 40  # RSI 조건 더 강화
+                            base_params["required_signals"] = 4  # 필요 시그널 증가
+                        else:
+                            # 하락장/횡보장에서 문제 종목은 손절폭 타이트하게
+                            base_params["stop_loss"] = base_params["stop_loss"] * 0.7
+                            base_params["required_signals"] = 3
+                    
+                    # 성과가 좋은 종목은 더 긍정적인 파라미터 적용
+                    elif is_good_performer:
+                        base_params["profit_target"] = base_params["profit_target"] * 1.2  # 더 높은 수익 목표
+                        base_params["trailing_stop_pct"] = base_params["trailing_stop_pct"] * 1.2  # 트레일링 스탑 넓게
+                    
+                    # 최종 종목별 환경별 파라미터 설정
+                    analysis["stock_optimal_strategies"][stock_code][env] = base_params
             
-            # 시장 환경별 전체 최적 전략 분석
-            all_env_trades = {
-                "uptrend": {"trades": [], "parameters": []},
-                "downtrend": {"trades": [], "parameters": []},
-                "sideways": {"trades": [], "parameters": []}
+            # 4. 전역 최적 전략 설정 (모든 종목/환경의 평균적 최적화)
+            global_params = {
+                "profit_target": self.profit_target * 1.2,  # 기본 수익 목표 20% 증가
+                "stop_loss": self.stop_loss * 1.5,  # 기본 손절폭 50% 확대 (-1.5 → -2.25)
+                "trailing_stop_pct": self.trailing_stop_pct,  # 기본 트레일링 스탑 유지
+                "rsi_threshold": self.rsi_oversold,  # 기본 RSI 임계값 유지
+                "cooldown_days": 2  # 손절 후 재매수 제한 기간 설정
             }
             
-            # 모든 종목의 데이터 통합
-            for stock_data in stock_env_performance.values():
-                for env, data in stock_data.items():
-                    all_env_trades[env]["trades"].extend(data["trades"])
-                    all_env_trades[env]["parameters"].extend(data["parameters"])
+            analysis["global_optimal_strategy"] = {
+                "parameters": global_params,
+                "backtest_summary": {
+                    "total_profit_loss": backtest_results.get("profit_loss", 0),
+                    "profit_loss_percent": backtest_results.get("profit_loss_percent", 0),
+                    "win_rate": backtest_results.get("win_rate", 0)
+                }
+            }
             
-            # 시장 환경별 최적 전략 계산
-            for env, data in all_env_trades.items():
-                if len(data["trades"]) >= 5:  # 최소 5회 이상 거래가 있는 경우만
-                    # 수익률 기준 거래 정렬
-                    sorted_trades = sorted(data["trades"], key=lambda x: x["profit_percent"], reverse=True)
-                    
-                    # 상위 30% 거래의 평균 파라미터 계산
-                    top_n = max(1, int(len(sorted_trades) * 0.3))
-                    top_trades = sorted_trades[:top_n]
-                    
-                    # 해당 거래들의 파라미터가 있으면 분석
-                    if data["parameters"]:
-                        avg_params = {}
-                        for param_key in data["parameters"][0].keys():
-                            values = [p.get(param_key, 0) for p in data["parameters"][:top_n]]
-                            avg_params[param_key] = sum(values) / len(values)
-                        
-                        # 결과 저장
-                        analysis["market_env_optimal_strategies"][env] = {
-                            "trade_count": len(data["trades"]),
-                            "avg_return": sum(t["profit_percent"] for t in data["trades"]) / len(data["trades"]),
-                            "top_trades_avg_return": sum(t["profit_percent"] for t in top_trades) / len(top_trades),
-                            "optimal_parameters": avg_params
-                        }
-            
-            # 전체 최적 전략 계산 (모든 거래)
-            all_trades = []
-            all_parameters = []
-            
-            for env_data in all_env_trades.values():
-                all_trades.extend(env_data["trades"])
-                all_parameters.extend(env_data["parameters"])
-            
-            if all_trades and all_parameters:
-                # 수익률 기준 거래 정렬
-                sorted_all_trades = sorted(all_trades, key=lambda x: x["profit_percent"], reverse=True)
-                
-                # 상위 30% 거래의 평균 파라미터 계산
-                top_n = max(1, int(len(sorted_all_trades) * 0.3))
-                top_all_trades = sorted_all_trades[:top_n]
-                
-                # 해당 거래들의 파라미터가 있으면 분석
-                if all_parameters:
-                    global_avg_params = {}
-                    for param_key in all_parameters[0].keys():
-                        global_avg_params[param_key] = sum(p.get(param_key, 0) for p in all_parameters[:top_n]) / top_n
-                    
-                    # 결과 저장
-                    analysis["global_optimal_strategy"] = {
-                        "trade_count": len(all_trades),
-                        "avg_return": sum(t["profit_percent"] for t in all_trades) / len(all_trades),
-                        "top_trades_avg_return": sum(t["profit_percent"] for t in top_all_trades) / len(top_all_trades),
-                        "optimal_parameters": global_avg_params
-                    }
-            
-            # 최적 전략 적용을 위한 변환
+            # 5. 최적 전략 적용을 위한 변환
             adaptive_strategy_config = {
                 "global": {
                     "uptrend": self._convert_optimal_params_to_strategy(analysis["market_env_optimal_strategies"].get("uptrend", {}).get("optimal_parameters", {})),
                     "downtrend": self._convert_optimal_params_to_strategy(analysis["market_env_optimal_strategies"].get("downtrend", {}).get("optimal_parameters", {})),
                     "sideways": self._convert_optimal_params_to_strategy(analysis["market_env_optimal_strategies"].get("sideways", {}).get("optimal_parameters", {}))
                 },
-                "stocks": {}
+                "stocks": {},
+                "config_updates": {
+                    "cooldown_days": global_params["cooldown_days"],
+                    "stop_loss": global_params["stop_loss"],
+                    "score_weights": {
+                        "rsi_oversold": 3,
+                        "golden_cross": 3,
+                        "macd_cross_up": 3,
+                        "near_lower_band": 2,
+                        "momentum_turning_up": 4,  # 모멘텀 가중치 증가
+                        "near_support": 3,
+                        "volume_increase": 4,      # 거래량 가중치 증가
+                        "bullish_candle": 2,
+                        "sector_strength": 4       # 섹터 강도 가중치 증가
+                    }
+                }
             }
             
             # 종목별 최적 전략 변환
             for stock_code, env_strategies in analysis["stock_optimal_strategies"].items():
                 adaptive_strategy_config["stocks"][stock_code] = {
-                    "uptrend": self._convert_optimal_params_to_strategy(env_strategies.get("uptrend", {}).get("optimal_parameters", {})),
-                    "downtrend": self._convert_optimal_params_to_strategy(env_strategies.get("downtrend", {}).get("optimal_parameters", {})),
-                    "sideways": self._convert_optimal_params_to_strategy(env_strategies.get("sideways", {}).get("optimal_parameters", {}))
+                    "uptrend": self._convert_optimal_params_to_strategy(env_strategies.get("uptrend", {})),
+                    "downtrend": self._convert_optimal_params_to_strategy(env_strategies.get("downtrend", {})),
+                    "sideways": self._convert_optimal_params_to_strategy(env_strategies.get("sideways", {}))
                 }
             
             # 결과 저장
@@ -4665,7 +4773,7 @@ class TrendTraderBot:
         except Exception as e:
             logger.exception(f"최적 전략 파라미터 도출 중 오류: {str(e)}")
             return {}
-        
+
     def _convert_optimal_params_to_strategy(self, optimal_params):
         """최적 파라미터를 전략 형식으로 변환"""
         # 기본 전략 템플릿
@@ -5662,11 +5770,42 @@ def create_config_file(config_path: str = "trend_trader_config.json") -> None:
         
         logger.info(f"기본 설정 파일 생성 완료: {config_path}")
         logger.info(f"수집된 종목 수: {len(watch_list)}, 섹터 수: {len(sector_list)}")
+        # 적응형 전략 파일 초기화
+        initialize_adaptive_strategy()
         logger.info(f"API 정보 확인이 필요한 경우 {config_path} 파일에 추가 정보를 입력하세요.")
         
     except Exception as e:
         logger.exception(f"설정 파일 생성 중 오류: {str(e)}")
         raise  # 예외를 다시 발생시켜 호출자에게 알림
+
+def initialize_adaptive_strategy(strategy_file: str = "adaptive_strategy.json") -> None:
+    """적응형 전략 파일 초기화
+    
+    Args:
+        strategy_file: 적응형 전략 파일 경로
+    """
+    try:
+        # 기본 메타데이터
+        current_date = datetime.datetime.now().strftime("%Y-%m-%d")
+        
+        # 기본 적응형 전략 구조
+        adaptive_strategy = {
+            "_metadata": {
+                "created_date": current_date,
+                "last_analysis_date": current_date,
+                "analysis_count": 0,
+                "description": "초기화된 적응형 전략 파일"
+            }
+        }
+        
+        # 파일에 저장
+        with open(strategy_file, 'w', encoding='utf-8') as f:
+            json.dump(adaptive_strategy, f, ensure_ascii=False, indent=4)
+            
+        logger.info(f"적응형 전략 파일 초기화 완료: {strategy_file}")
+        
+    except Exception as e:
+        logger.exception(f"적응형 전략 파일 초기화 중 오류: {str(e)}")
 
 # 메인 함수
 def main():
