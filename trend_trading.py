@@ -6013,11 +6013,9 @@ def create_config_file(config_path: str = "trend_trader_config.json") -> None:
         
         # 대표 지수/종목 코드
         sample_codes = [
-            "000660",  # SK하이닉스
-            "005490",  # 삼성SDI
-            "028300",  # LG화학
-            "000155",  # JYP Ent.
-            "007660"   # 카카오게임즈
+             "000155",  # SK하이닉스
+             "034020"  # 삼성SDI
+            #"028300"
         ]
         
         # 이미 정의된 섹터 정보 함수 활용
