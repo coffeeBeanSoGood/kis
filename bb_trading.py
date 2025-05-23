@@ -2,12 +2,13 @@
 # -*- coding: utf-8 -*-
 
 """
-타겟 종목 매매봇 (Target Stock Trading Bot)
+타겟 종목 매매봇 (Target Stock Trading Bot) - Config 클래스 적용 완전 개선 버전
 bb_trading.py의 방식을 참고하여 trend_trading.py의 기술적 분석을 적용
 1. 미리 설정된 타겟 종목들에 대해서만 매매 진행
 2. 종목별 개별 매매 파라미터 적용
 3. trend_trading.py의 고도화된 기술적 분석 활용
 4. bb_trading.py의 체계적인 리스크 관리 적용
+5. Config 클래스로 모든 설정 통합 관리
 """
 
 import os
@@ -34,33 +35,236 @@ from trend_trading import TechnicalIndicators, AdaptiveMarketStrategy, TrendFilt
 import requests
 from bs4 import BeautifulSoup
 
-################################### 상수 정의 ##################################
+################################### 설정 클래스 ##################################
 
-# 봇 네임 설정
-BOT_NAME = Common.GetNowDist() + "_TargetStockBot"
-
-# 전략 설정 (bb_trading.py 방식 참고)
-TRADE_BUDGET_RATIO = 0.90           # 전체 계좌의 90%를 이 봇이 사용
-MAX_POSITIONS = 8                   # 최대 보유 종목 수 (타겟 종목 수와 동일하게)
-MIN_STOCK_PRICE = 3000              # 최소 주가 3,000원
-MAX_STOCK_PRICE = 200000            # 최대 주가 200,000원
-
-# 손익 관리 설정
-STOP_LOSS_RATIO = -0.025            # 손절 비율 (-2.5%)
-TAKE_PROFIT_RATIO = 0.055           # 익절 비율 (5.5%)
-TRAILING_STOP_RATIO = 0.018         # 트레일링 스탑 비율 (1.8%)
-MAX_DAILY_LOSS = -0.04              # 일일 최대 손실 한도 (-4%)
-MAX_DAILY_PROFIT = 0.06             # 일일 최대 수익 한도 (6%)
-
-# 기술적 분석 설정 (trend_trading.py 방식 적용)
-RSI_PERIOD = 14
-RSI_OVERSOLD = 30
-RSI_OVERBOUGHT = 70
-MACD_FAST = 12
-MACD_SLOW = 26
-MACD_SIGNAL = 9
-BB_PERIOD = 20
-BB_STD = 2.0
+class TradingConfig:
+    """거래 설정 관리 클래스"""
+    
+    def __init__(self, config_path: str = "target_stock_config.json"):
+        self.config_path = config_path
+        self.config = {}
+        self.load_config()
+    
+    def load_config(self):
+        """설정 파일 로드"""
+        self.config = self._load_config_file(self.config_path)
+        if hasattr(self, '_logger_initialized'):
+            logger.info("거래 설정 로드 완료")
+            logger.info(f"예산 비율: {self.trade_budget_ratio*100}%, 최대 보유: {self.max_positions}개")
+    
+    def save_config(self):
+        """설정 파일 저장"""
+        self._save_config_file(self.config, self.config_path)
+    
+    def _load_config_file(self, config_path: str) -> Dict[str, any]:
+        """설정 파일 로드 (내부 함수)"""
+        default_config = {
+            "target_stocks": {},
+            
+            # 전략 설정
+            "trade_budget_ratio": 0.90,
+            "max_positions": 8,
+            "min_stock_price": 3000,
+            "max_stock_price": 200000,
+            
+            # 손익 관리 설정
+            "stop_loss_ratio": -0.025,
+            "take_profit_ratio": 0.055,
+            "trailing_stop_ratio": 0.018,
+            "max_daily_loss": -0.04,
+            "max_daily_profit": 0.06,
+            
+            # 기술적 분석 설정
+            "rsi_period": 14,
+            "rsi_oversold": 30,
+            "rsi_overbought": 70,
+            "macd_fast": 12,
+            "macd_slow": 26,
+            "macd_signal": 9,
+            "bb_period": 20,
+            "bb_std": 2.0,
+            
+            # 기타 설정
+            "last_sector_update": "",
+            "bot_name": "TargetStockBot",
+            "use_discord_alert": True,
+            "check_interval_minutes": 30
+        }
+        
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                loaded_config = json.load(f)
+            
+            # 기본 설정과 로드된 설정 병합
+            def merge_config(default, loaded):
+                result = default.copy()
+                for key, value in loaded.items():
+                    if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+                        result[key] = merge_config(result[key], value)
+                    else:
+                        result[key] = value
+                return result
+            
+            merged_config = merge_config(default_config, loaded_config)
+            if hasattr(self, '_logger_initialized'):
+                logger.info(f"설정 파일 로드 완료: {config_path}")
+            return merged_config
+        
+        except FileNotFoundError:
+            if hasattr(self, '_logger_initialized'):
+                logger.warning(f"설정 파일 {config_path}을 찾을 수 없습니다. 기본값을 사용합니다.")
+            return default_config
+        
+        except json.JSONDecodeError:
+            if hasattr(self, '_logger_initialized'):
+                logger.error(f"설정 파일 {config_path}의 형식이 올바르지 않습니다. 기본값을 사용합니다.")
+            return default_config
+        
+        except Exception as e:
+            if hasattr(self, '_logger_initialized'):
+                logger.exception(f"설정 파일 로드 중 오류: {str(e)}")
+            return default_config
+    
+    def _save_config_file(self, config: dict, config_path: str) -> None:
+        """설정 파일 저장 (내부 함수)"""
+        try:
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=4)
+            if hasattr(self, '_logger_initialized'):
+                logger.info(f"설정 파일 저장 완료: {config_path}")
+        except Exception as e:
+            if hasattr(self, '_logger_initialized'):
+                logger.exception(f"설정 파일 저장 중 오류: {str(e)}")
+    
+    # =========================== 전략 설정 ===========================
+    @property
+    def trade_budget_ratio(self):
+        """거래 예산 비율"""
+        return self.config.get("trade_budget_ratio", 0.90)
+    
+    @property
+    def max_positions(self):
+        """최대 보유 종목 수"""
+        return self.config.get("max_positions", 8)
+    
+    @property
+    def min_stock_price(self):
+        """최소 주가"""
+        return self.config.get("min_stock_price", 3000)
+    
+    @property
+    def max_stock_price(self):
+        """최대 주가"""
+        return self.config.get("max_stock_price", 200000)
+    
+    # =========================== 손익 관리 ===========================
+    @property
+    def stop_loss_ratio(self):
+        """손절 비율"""
+        return self.config.get("stop_loss_ratio", -0.025)
+    
+    @property
+    def take_profit_ratio(self):
+        """익절 비율"""
+        return self.config.get("take_profit_ratio", 0.055)
+    
+    @property
+    def trailing_stop_ratio(self):
+        """트레일링 스탑 비율"""
+        return self.config.get("trailing_stop_ratio", 0.018)
+    
+    @property
+    def max_daily_loss(self):
+        """일일 최대 손실 한도"""
+        return self.config.get("max_daily_loss", -0.04)
+    
+    @property
+    def max_daily_profit(self):
+        """일일 최대 수익 한도"""
+        return self.config.get("max_daily_profit", 0.06)
+    
+    # =========================== 기술적 분석 ===========================
+    @property
+    def rsi_period(self):
+        """RSI 기간"""
+        return self.config.get("rsi_period", 14)
+    
+    @property
+    def rsi_oversold(self):
+        """RSI 과매도 기준"""
+        return self.config.get("rsi_oversold", 30)
+    
+    @property
+    def rsi_overbought(self):
+        """RSI 과매수 기준"""
+        return self.config.get("rsi_overbought", 70)
+    
+    @property
+    def macd_fast(self):
+        """MACD 빠른 기간"""
+        return self.config.get("macd_fast", 12)
+    
+    @property
+    def macd_slow(self):
+        """MACD 느린 기간"""
+        return self.config.get("macd_slow", 26)
+    
+    @property
+    def macd_signal(self):
+        """MACD 시그널 기간"""
+        return self.config.get("macd_signal", 9)
+    
+    @property
+    def bb_period(self):
+        """볼린저밴드 기간"""
+        return self.config.get("bb_period", 20)
+    
+    @property
+    def bb_std(self):
+        """볼린저밴드 표준편차"""
+        return self.config.get("bb_std", 2.0)
+    
+    # =========================== 타겟 종목 관리 ===========================
+    @property
+    def target_stocks(self):
+        """타겟 종목 딕셔너리"""
+        return self.config.get("target_stocks", {})
+    
+    def get_stock_config(self, stock_code: str):
+        """특정 종목의 설정 반환"""
+        return self.target_stocks.get(stock_code, {})
+    
+    def update_target_stocks(self, target_stocks: dict):
+        """타겟 종목 업데이트"""
+        self.config["target_stocks"] = target_stocks
+        self.save_config()
+    
+    # =========================== 기타 설정 ===========================
+    @property
+    def bot_name(self):
+        """봇 이름"""
+        return self.config.get("bot_name", "TargetStockBot")
+    
+    @property
+    def last_sector_update(self):
+        """마지막 섹터 업데이트 날짜"""
+        return self.config.get("last_sector_update", "")
+    
+    def update_last_sector_update(self, date_str: str):
+        """마지막 섹터 업데이트 날짜 갱신"""
+        self.config["last_sector_update"] = date_str
+        self.save_config()
+    
+    def update_setting(self, key: str, value):
+        """설정 값 업데이트"""
+        self.config[key] = value
+        self.save_config()
+        if hasattr(self, '_logger_initialized'):
+            logger.info(f"설정 업데이트: {key} = {value}")
+    
+    def reload_config(self):
+        """설정 파일 다시 로드"""
+        self.load_config()
 
 ################################### 로깅 처리 ##################################
 
@@ -103,67 +307,23 @@ logger.addHandler(console_handler)
 KisKR.set_logger(logger)
 Common.set_logger(logger)
 
-################################### 타겟 종목 설정 ##################################
-TARGET_STOCKS = {}
-################################### 설정 파일 관리 ##################################
+# =========================== 전역 설정 인스턴스 ===========================
+trading_config = None
 
-def _load_config(config_path: str = "target_stock_config.json") -> Dict[str, any]:
-    """설정 파일 로드"""
-    default_config = {
-        "target_stocks": TARGET_STOCKS,
-        "total_budget": 50000000,
-        "max_positions": 8,
-        "min_stock_price": 3000,
-        "max_stock_price": 200000,
-        "stop_loss_ratio": -0.025,
-        "take_profit_ratio": 0.055,
-        "trailing_stop_ratio": 0.018,
-        "max_daily_loss": -0.04,
-        "max_daily_profit": 0.06,
-        "rsi_oversold": 30,
-        "rsi_overbought": 70,
-        "last_sector_update": ""
-    }
-    
-    try:
-        with open(config_path, 'r', encoding='utf-8') as f:
-            loaded_config = json.load(f)
-        
-        # 기본 설정과 로드된 설정 병합
-        def merge_config(default, loaded):
-            result = default.copy()
-            for key, value in loaded.items():
-                if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-                    result[key] = merge_config(result[key], value)
-                else:
-                    result[key] = value
-            return result
-        
-        merged_config = merge_config(default_config, loaded_config)
-        logger.info(f"설정 파일 로드 완료: {config_path}")
-        return merged_config
-    
-    except FileNotFoundError:
-        logger.warning(f"설정 파일 {config_path}을 찾을 수 없습니다. 기본값을 사용합니다.")
-        return default_config
-    
-    except json.JSONDecodeError:
-        logger.error(f"설정 파일 {config_path}의 형식이 올바르지 않습니다. 기본값을 사용합니다.")
-        return default_config
-    
-    except Exception as e:
-        logger.exception(f"설정 파일 로드 중 오류: {str(e)}")
-        return default_config
+def initialize_config(config_path: str = "target_stock_config.json"):
+    """설정 초기화"""
+    global trading_config
+    trading_config = TradingConfig(config_path)
+    trading_config._logger_initialized = True  # 로거 초기화 완료 표시
+    trading_config.load_config()  # 로거 초기화 후 다시 로드하여 로그 출력
+    return trading_config
 
-def _save_config(config: dict, config_path: str = "target_stock_config.json") -> None:
-    """설정 파일 저장"""
-    try:
-        with open(config_path, 'w', encoding='utf-8') as f:
-            json.dump(config, f, ensure_ascii=False, indent=4)
-        logger.info(f"설정 파일 저장 완료: {config_path}")
-    except Exception as e:
-        logger.exception(f"설정 파일 저장 중 오류: {str(e)}")
-
+def get_bot_name():
+    """봇 이름 반환"""
+    if trading_config:
+        return Common.GetNowDist() + "_" + trading_config.bot_name
+    else:
+        return Common.GetNowDist() + "_TargetStockBot"
 
 ################################### 유틸리티 함수 ##################################
 
@@ -211,10 +371,8 @@ def get_sector_info(stock_code):
             'industry': 'Unknown'
         }
 
-################################### 유틸리티 함수 ##################################
-
 def _update_stock_info(target_stocks):
-    """종목별 이름과 섹터 정보 자동 업데이트 (신규 함수)"""
+    """종목별 이름과 섹터 정보 자동 업데이트"""
     try:
         updated_count = 0
         
@@ -256,25 +414,38 @@ def _update_stock_info(target_stocks):
     except Exception as e:
         logger.exception(f"종목 정보 업데이트 중 오류: {str(e)}")
         return target_stocks
-        
+
 def calculate_trading_fee(price, quantity, is_buy=True):
-    """거래 수수료 및 세금 계산 (bb_trading.py 방식)"""
-    commission_rate = 0.0000156
-    tax_rate = 0
-    special_tax_rate = 0.0015
-    
-    commission = price * quantity * commission_rate
-    if not is_buy:
-        tax = price * quantity * tax_rate
-        special_tax = price * quantity * special_tax_rate
-    else:
-        tax = 0
-        special_tax = 0
-    
-    return commission + tax + special_tax
+    """거래 수수료 및 세금 계산 (개선된 버전)"""
+    try:
+        if price <= 0 or quantity <= 0:
+            return 0
+            
+        trade_amount = price * quantity
+        
+        # 증권사 수수료 (통상 0.015%, 최소 1000원)
+        commission_rate = 0.00015  # 0.015%
+        commission = max(trade_amount * commission_rate, 1000)  # 최소 1000원
+        
+        total_fee = commission
+        
+        if not is_buy:  # 매도시에만 추가 세금
+            # 증권거래세 (0.23%)
+            securities_tax = trade_amount * 0.0023
+            
+            # 농어촌특별세 (증권거래세의 20%, 즉 거래금액의 0.046%)
+            special_tax = securities_tax * 0.2
+            
+            total_fee += securities_tax + special_tax
+        
+        return round(total_fee, 0)  # 원 단위로 반올림
+        
+    except Exception as e:
+        logger.error(f"거래 수수료 계산 중 에러: {str(e)}")
+        return 0
 
 def check_trading_time():
-    """장중 거래 가능한 시간대인지 체크 (bb_trading.py 방식)"""
+    """장중 거래 가능한 시간대인지 체크 (개선된 버전)"""
     try:
         if KisKR.IsTodayOpenCheck() == 'N':
             logger.info("휴장일 입니다.")
@@ -286,10 +457,17 @@ def check_trading_time():
             return False, False
             
         status_code = market_status.get('Status', '')
-        
         current_time = datetime.datetime.now().time()
-        is_market_open = (status_code == '0' and current_time.hour == 8)
-        is_trading_time = (status_code == '2')
+        
+        # 동시호가: 8:30-9:00
+        is_market_open = (status_code == '0' and 
+                         current_time >= datetime.time(8, 30) and 
+                         current_time < datetime.time(9, 0))
+        
+        # 정규장: 9:00-15:30
+        is_trading_time = (status_code == '2' and
+                          current_time >= datetime.time(9, 0) and
+                          current_time < datetime.time(15, 30))
         
         status_desc = {
             '': '장 개시전',
@@ -310,7 +488,7 @@ def check_trading_time():
 ################################### 기술적 분석 함수 ##################################
 
 def get_stock_data(stock_code):
-    """종목 데이터 조회 및 기술적 분석 (trend_trading.py 방식 적용)"""
+    """종목 데이터 조회 및 기술적 분석 (Config 적용)"""
     try:
         # 일봉 데이터 조회
         df = Common.GetOhlcv("KR", stock_code, 60)
@@ -325,16 +503,16 @@ def get_stock_data(stock_code):
             logger.error(f"{stock_code}: 현재가 조회 실패")
             return None
         
-        # trend_trading.py의 기술적 지표 계산 활용
-        df['RSI'] = TechnicalIndicators.calculate_rsi(df, RSI_PERIOD)
+        # Config에서 기술적 지표 설정값 사용
+        df['RSI'] = TechnicalIndicators.calculate_rsi(df, trading_config.rsi_period)
         
         macd_data = TechnicalIndicators.calculate_macd(
-            df, MACD_FAST, MACD_SLOW, MACD_SIGNAL
+            df, trading_config.macd_fast, trading_config.macd_slow, trading_config.macd_signal
         )
         df[['MACD', 'Signal', 'Histogram']] = macd_data
         
         bb_data = TechnicalIndicators.calculate_bollinger_bands(
-            df, BB_PERIOD, BB_STD
+            df, trading_config.bb_period, trading_config.bb_std
         )
         df[['MiddleBand', 'UpperBand', 'LowerBand']] = bb_data
         
@@ -375,7 +553,7 @@ def get_stock_data(stock_code):
 ################################### 매매 신호 분석 ##################################
 
 def analyze_buy_signal(stock_data, target_config):
-    """매수 신호 분석 (trend_trading.py 방식 + bb_trading.py 점수 시스템)"""
+    """매수 신호 분석 (Config 적용)"""
     try:
         signals = []
         score = 0
@@ -384,8 +562,8 @@ def analyze_buy_signal(stock_data, target_config):
         current_price = stock_data['current_price']
         rsi = stock_data['rsi']
         
-        # 종목별 개별 설정 적용
-        rsi_oversold = target_config.get('rsi_oversold', RSI_OVERSOLD)
+        # 종목별 개별 설정 적용 (없으면 전역 설정 사용)
+        rsi_oversold = target_config.get('rsi_oversold', trading_config.rsi_oversold)
         min_score = target_config.get('min_score', 70)
         
         # 1. RSI 과매도 신호 (25점)
@@ -440,7 +618,7 @@ def analyze_buy_signal(stock_data, target_config):
             score += 10
             signals.append("지지선 근처 (+10)")
         
-        # 6. 거래량 분석 (trend_trading.py 방식 적용)
+        # 6. 거래량 분석
         df = stock_data['ohlcv_data']
         if len(df) >= 20:
             recent_volume = df['volume'].iloc[-1]
@@ -476,7 +654,7 @@ def analyze_buy_signal(stock_data, target_config):
         return {'is_buy_signal': False, 'score': 0, 'signals': []}
 
 def analyze_sell_signal(stock_data, position, target_config):
-    """매도 신호 분석 (bb_trading.py 방식 + trend_trading.py 기술적 분석)"""
+    """매도 신호 분석 (Config 적용)"""
     try:
         stock_code = stock_data['stock_code']
         current_price = stock_data['current_price']
@@ -485,11 +663,11 @@ def analyze_sell_signal(stock_data, position, target_config):
         # 수익률 계산
         profit_rate = (current_price - entry_price) / entry_price
         
-        # 종목별 개별 설정 적용
-        profit_target = target_config.get('profit_target', TAKE_PROFIT_RATIO)
-        stop_loss = target_config.get('stop_loss', STOP_LOSS_RATIO)
-        trailing_stop = target_config.get('trailing_stop', TRAILING_STOP_RATIO)
-        rsi_overbought = target_config.get('rsi_overbought', RSI_OVERBOUGHT)
+        # 종목별 개별 설정 적용 (없으면 전역 설정 사용)
+        profit_target = target_config.get('profit_target', trading_config.take_profit_ratio)
+        stop_loss = target_config.get('stop_loss', trading_config.stop_loss_ratio)
+        trailing_stop = target_config.get('trailing_stop', trading_config.trailing_stop_ratio)
+        rsi_overbought = target_config.get('rsi_overbought', trading_config.rsi_overbought)
         
         # 1. 손익 관리 신호 (최우선)
         if profit_rate <= stop_loss:
@@ -552,8 +730,11 @@ def analyze_sell_signal(stock_data, position, target_config):
             score += 20
             signals.append("데드크로스 발생")
         
-        # 기술적 매도 신호 판정 (70점 이상 + 수익 상태일 때)
-        is_sell_signal = score >= 70 and profit_rate > 0.01  # 최소 1% 수익일 때만
+        # 기술적 매도 신호 판정
+        if profit_rate > 0.01:  # 수익 상태에서는 낮은 점수로도 매도
+            is_sell_signal = score >= 70
+        else:  # 손실 상태에서는 더 높은 점수 요구
+            is_sell_signal = score >= 85
         
         if is_sell_signal:
             return {
@@ -579,9 +760,10 @@ def analyze_sell_signal(stock_data, position, target_config):
 ################################### 상태 관리 ##################################
 
 def load_trading_state():
-    """트레이딩 상태 로드 (bb_trading.py 방식)"""
+    """트레이딩 상태 로드"""
     try:
-        with open(f"TargetStockBot_{BOT_NAME}.json", 'r') as f:
+        bot_name = get_bot_name()
+        with open(f"TargetStockBot_{bot_name}.json", 'r') as f:
             return json.load(f)
     except:
         return {
@@ -596,38 +778,116 @@ def load_trading_state():
         }
 
 def save_trading_state(state):
-    """트레이딩 상태 저장 (bb_trading.py 방식)"""
-    with open(f"TargetStockBot_{BOT_NAME}.json", 'w') as f:
+    """트레이딩 상태 저장"""
+    bot_name = get_bot_name()
+    with open(f"TargetStockBot_{bot_name}.json", 'w') as f:
         json.dump(state, f, indent=2)
 
 ################################### 매매 실행 ##################################
 
 def calculate_position_size(target_config, available_budget, stock_price):
-    """포지션 크기 계산 (bb_trading.py + 종목별 설정)"""
+    """포지션 크기 계산 (개선된 버전 - Config 적용)"""
     try:
-        # 계좌 잔고 확인
+        # 1. 기본 검증
+        if stock_price <= 0:
+            logger.warning("주가가 0 이하입니다.")
+            return 0
+            
+        if available_budget <= 0:
+            logger.warning("사용 가능한 예산이 없습니다.")
+            return 0
+        
+        # 2. 계좌 잔고 재확인 (실시간)
         balance = KisKR.GetBalance()
         if not balance:
+            logger.error("계좌 정보 조회 실패")
             return 0
             
         actual_balance = float(balance.get('RemainMoney', 0))
+        logger.info(f"실제 잔고: {actual_balance:,.0f}원, 사용가능 예산: {available_budget:,.0f}원")
+        
+        # 3. 실제 사용 가능한 예산 조정
         usable_budget = min(available_budget, actual_balance)
         
-        # 종목별 할당 비율 적용
-        allocation_ratio = target_config.get('allocation_ratio', 0.125)  # 기본 12.5% (8개 종목 기준)
+        if usable_budget <= 0:
+            logger.warning("실제 사용 가능한 예산이 없습니다.")
+            return 0
+        
+        # 4. 종목별 할당 비율 적용
+        allocation_ratio = target_config.get('allocation_ratio', 0.125)  # 기본 12.5%
+        
+        # 할당 비율 검증 (0.01% ~ 50% 범위)
+        allocation_ratio = max(0.0001, min(0.5, allocation_ratio))
+        
         allocated_budget = usable_budget * allocation_ratio
+        logger.info(f"할당 예산: {allocated_budget:,.0f}원 (비율: {allocation_ratio*100:.1f}%)")
         
-        # 매수 가능 수량 계산
-        max_quantity = int(allocated_budget / stock_price)
+        # 5. 최소 주문 금액 체크
+        min_order_amount = target_config.get('min_order_amount', 10000)  # 기본 1만원
+        if allocated_budget < min_order_amount:
+            logger.info(f"할당 예산이 최소 주문 금액({min_order_amount:,}원)보다 작습니다.")
+            return 0
         
-        return max(1, max_quantity) if max_quantity > 0 else 0
+        # 6. 최대 주문 금액 제한 (리스크 관리)
+        max_order_amount = target_config.get('max_order_amount', usable_budget * 0.2)  # 기본 20% 제한
+        allocated_budget = min(allocated_budget, max_order_amount)
+        
+        # 7. 기본 수량 계산
+        base_quantity = int(allocated_budget / stock_price)
+        logger.info(f"기본 계산 수량: {base_quantity}주")
+        
+        if base_quantity <= 0:
+            logger.info("계산된 수량이 0 이하입니다.")
+            return 0
+        
+        # 8. 수수료 고려한 실제 필요 금액 계산
+        estimated_fee = calculate_trading_fee(stock_price, base_quantity, True)
+        total_needed = (stock_price * base_quantity) + estimated_fee
+        
+        # 9. 수수료 포함해서 예산 초과하면 수량 조정
+        while total_needed > allocated_budget and base_quantity > 0:
+            base_quantity -= 1
+            if base_quantity > 0:
+                estimated_fee = calculate_trading_fee(stock_price, base_quantity, True)
+                total_needed = (stock_price * base_quantity) + estimated_fee
+            else:
+                break
+        
+        # 10. 최종 검증
+        if base_quantity <= 0:
+            logger.info("수수료 고려 후 매수 가능한 수량이 없습니다.")
+            return 0
+        
+        # 11. 종목별 최소/최대 수량 제한 적용
+        min_quantity = target_config.get('min_quantity', 1)
+        max_quantity = target_config.get('max_quantity', float('inf'))
+        
+        final_quantity = max(min_quantity, min(base_quantity, max_quantity))
+        
+        # 12. 최종 금액 검증
+        final_amount = stock_price * final_quantity
+        final_fee = calculate_trading_fee(stock_price, final_quantity, True)
+        final_total = final_amount + final_fee
+        
+        if final_total > allocated_budget:
+            logger.warning(f"최종 필요금액({final_total:,.0f}원)이 할당예산({allocated_budget:,.0f}원)을 초과합니다.")
+            return 0
+        
+        # 13. 로깅
+        logger.info(f"최종 매수 수량: {final_quantity}주")
+        logger.info(f"필요 금액: {final_amount:,.0f}원")
+        logger.info(f"예상 수수료: {final_fee:,.0f}원")
+        logger.info(f"총 필요 금액: {final_total:,.0f}원")
+        logger.info(f"남은 할당 예산: {allocated_budget - final_total:,.0f}원")
+        
+        return final_quantity
         
     except Exception as e:
         logger.error(f"포지션 크기 계산 중 에러: {str(e)}")
         return 0
 
 def execute_buy_order(stock_code, target_config, quantity, price):
-    """매수 주문 실행 (bb_trading.py 방식)"""
+    """매수 주문 실행"""
     try:
         stock_name = target_config.get('name', stock_code)
         logger.info(f"{stock_name}({stock_code}) 매수 주문: {quantity}주 @ {price:,.0f}원")
@@ -639,9 +899,9 @@ def execute_buy_order(stock_code, target_config, quantity, price):
             logger.error(f"매수 주문 실패: {order_result}")
             return None, None
         
-        # 체결 확인 (최대 30초 대기)
+        # 체결 확인 (최대 60초 대기)
         start_time = time.time()
-        while time.time() - start_time < 30:
+        while time.time() - start_time < 60:
             my_stocks = KisKR.GetMyStockList()
             for stock in my_stocks:
                 if stock['StockCode'] == stock_code:
@@ -650,7 +910,7 @@ def execute_buy_order(stock_code, target_config, quantity, price):
                         avg_price = float(stock.get('AvrPrice', price))
                         logger.info(f"매수 체결 확인: {executed_amount}주 @ {avg_price:,.0f}원")
                         return avg_price, executed_amount
-            time.sleep(2)
+            time.sleep(3)
         
         logger.warning(f"매수 체결 확인 실패: {stock_code}")
         return None, None
@@ -660,7 +920,7 @@ def execute_buy_order(stock_code, target_config, quantity, price):
         return None, None
 
 def execute_sell_order(stock_code, target_config, quantity):
-    """매도 주문 실행 (bb_trading.py 방식)"""
+    """매도 주문 실행"""
     try:
         stock_name = target_config.get('name', stock_code)
         logger.info(f"{stock_name}({stock_code}) 매도 주문: {quantity}주")
@@ -672,11 +932,11 @@ def execute_sell_order(stock_code, target_config, quantity):
             logger.error(f"매도 주문 실패: {order_result}")
             return None, None
         
-        # 체결 확인 (최대 30초 대기)
+        # 체결 확인 (최대 60초 대기)
         start_time = time.time()
         initial_amount = quantity
         
-        while time.time() - start_time < 30:
+        while time.time() - start_time < 60:
             my_stocks = KisKR.GetMyStockList()
             current_amount = 0
             
@@ -691,7 +951,7 @@ def execute_sell_order(stock_code, target_config, quantity):
                 logger.info(f"매도 체결 확인: {executed_amount}주 @ {current_price:,.0f}원")
                 return current_price, executed_amount
             
-            time.sleep(2)
+            time.sleep(3)
         
         logger.warning(f"매도 체결 확인 실패: {stock_code}")
         return None, None
@@ -703,7 +963,7 @@ def execute_sell_order(stock_code, target_config, quantity):
 ################################### 보고서 생성 ##################################
 
 def send_daily_report(trading_state):
-    """일일 거래 성과 보고서 (bb_trading.py 방식)"""
+    """일일 거래 성과 보고서"""
     try:
         balance = KisKR.GetBalance()
         my_stocks = KisKR.GetMyStockList()
@@ -722,9 +982,9 @@ def send_daily_report(trading_state):
             msg += "\n[보유 종목 현황]\n"
             for stock in my_stocks:
                 stock_code = stock['StockCode']
-                if stock_code in trading_state['positions'] and stock_code in TARGET_STOCKS:
-                    target_config = TARGET_STOCKS[stock_code]
-                    msg += f"- {target_config['name']}({stock_code}): "
+                if stock_code in trading_state['positions'] and stock_code in trading_config.target_stocks:
+                    target_config = trading_config.target_stocks[stock_code]
+                    msg += f"- {target_config.get('name', stock_code)}({stock_code}): "
                     msg += f"{stock['StockAmt']}주, {float(stock['StockRevenueMoney']):,.0f}원 "
                     msg += f"({stock['StockRevenueRate']}%)\n"
         else:
@@ -748,7 +1008,7 @@ def send_target_stock_status():
         msg = "📋 타겟 종목 현황 📋\n"
         msg += f"========== {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')} ==========\n"
         
-        for stock_code, config in TARGET_STOCKS.items():
+        for stock_code, config in trading_config.target_stocks.items():
             if not config.get('enabled', True):
                 continue
                 
@@ -758,10 +1018,10 @@ def send_target_stock_status():
                 if stock_data:
                     buy_analysis = analyze_buy_signal(stock_data, config)
                     
-                    msg += f"\n[{config['name']}({stock_code})]\n"
+                    msg += f"\n[{config.get('name', stock_code)}({stock_code})]\n"
                     msg += f"현재가: {current_price:,}원\n"
-                    msg += f"RSI: {stock_data['rsi']:.1f} (기준: {config['rsi_oversold']})\n"
-                    msg += f"매수점수: {buy_analysis['score']}/{config['min_score']}\n"
+                    msg += f"RSI: {stock_data['rsi']:.1f} (기준: {config.get('rsi_oversold', trading_config.rsi_oversold)})\n"
+                    msg += f"매수점수: {buy_analysis['score']}/{config.get('min_score', 70)}\n"
                     
                     if buy_analysis['is_buy_signal']:
                         msg += "✅ 매수 신호 발생!\n"
@@ -777,19 +1037,19 @@ def send_target_stock_status():
 ################################### 메인 로직 ##################################
 
 def scan_target_stocks(trading_state):
-    """타겟 종목 매수 기회 스캔 (bb_trading.py 방식 + trend_trading.py 분석)"""
+    """타겟 종목 매수 기회 스캔 (Config 적용)"""
     try:
         buy_opportunities = []
         current_positions = len(trading_state['positions'])
         
-        # 최대 보유 종목 수 확인
-        if current_positions >= MAX_POSITIONS:
-            logger.info(f"최대 보유 종목 수({MAX_POSITIONS}개) 도달")
+        # Config에서 최대 보유 종목 수 확인
+        if current_positions >= trading_config.max_positions:
+            logger.info(f"최대 보유 종목 수({trading_config.max_positions}개) 도달")
             return []
         
-        logger.info(f"타겟 종목 매수 기회 스캔 시작: {len(TARGET_STOCKS)}개 종목 분석")
+        logger.info(f"타겟 종목 매수 기회 스캔 시작: {len(trading_config.target_stocks)}개 종목 분석")
         
-        for stock_code, target_config in TARGET_STOCKS.items():
+        for stock_code, target_config in trading_config.target_stocks.items():
             try:
                 # 비활성화된 종목 제외
                 if not target_config.get('enabled', True):
@@ -799,9 +1059,9 @@ def scan_target_stocks(trading_state):
                 if stock_code in trading_state['positions']:
                     continue
                 
-                # 가격 필터링
+                # Config에서 가격 필터링
                 current_price = KisKR.GetCurrentPrice(stock_code)
-                if not current_price or current_price < MIN_STOCK_PRICE or current_price > MAX_STOCK_PRICE:
+                if not current_price or current_price < trading_config.min_stock_price or current_price > trading_config.max_stock_price:
                     continue
                 
                 # 종목 데이터 분석
@@ -815,7 +1075,7 @@ def scan_target_stocks(trading_state):
                 if buy_analysis['is_buy_signal']:
                     buy_opportunities.append({
                         'stock_code': stock_code,
-                        'stock_name': target_config['name'],
+                        'stock_name': target_config.get('name', stock_code),
                         'price': current_price,
                         'score': buy_analysis['score'],
                         'min_score': buy_analysis['min_score'],
@@ -824,7 +1084,7 @@ def scan_target_stocks(trading_state):
                         'target_config': target_config
                     })
                     
-                    logger.info(f"✅ 매수 기회 발견: {target_config['name']}({stock_code})")
+                    logger.info(f"✅ 매수 기회 발견: {target_config.get('name', stock_code)}({stock_code})")
                     logger.info(f"   점수: {buy_analysis['score']}/{buy_analysis['min_score']}점")
                     for signal in buy_analysis['signals']:
                         logger.info(f"   - {signal}")
@@ -844,9 +1104,9 @@ def scan_target_stocks(trading_state):
         return []
 
 def update_trailing_stop(position, current_price, target_config):
-    """트레일링 스탑 업데이트 (bb_trading.py 방식 + 종목별 설정)"""
+    """트레일링 스탑 업데이트 (Config 적용)"""
     try:
-        trailing_stop_ratio = target_config.get('trailing_stop', TRAILING_STOP_RATIO)
+        trailing_stop_ratio = target_config.get('trailing_stop', trading_config.trailing_stop_ratio)
         
         # 고점 업데이트
         if 'high_price' not in position or current_price > position['high_price']:
@@ -861,7 +1121,7 @@ def update_trailing_stop(position, current_price, target_config):
         return position
 
 def process_positions(trading_state):
-    """보유 포지션 관리 (bb_trading.py 방식 + trend_trading.py 분석)"""
+    """보유 포지션 관리 (Config 적용)"""
     try:
         my_stocks = KisKR.GetMyStockList()
         positions_to_remove = []
@@ -869,7 +1129,7 @@ def process_positions(trading_state):
         for stock_code, position in trading_state['positions'].items():
             try:
                 # 타겟 종목이 아닌 경우 스킵
-                if stock_code not in TARGET_STOCKS:
+                if stock_code not in trading_config.target_stocks:
                     continue
                 
                 # 실제 보유 여부 확인
@@ -884,7 +1144,7 @@ def process_positions(trading_state):
                     positions_to_remove.append(stock_code)
                     continue
                 
-                target_config = TARGET_STOCKS[stock_code]
+                target_config = trading_config.target_stocks[stock_code]
                 current_amount = int(actual_holding.get('StockAmt', 0))
                 
                 if current_amount <= 0:
@@ -906,7 +1166,7 @@ def process_positions(trading_state):
                 sell_analysis = analyze_sell_signal(stock_data, position, target_config)
                 
                 if sell_analysis['is_sell_signal']:
-                    logger.info(f"🔴 매도 신호 감지: {target_config['name']}({stock_code})")
+                    logger.info(f"🔴 매도 신호 감지: {target_config.get('name', stock_code)}({stock_code})")
                     logger.info(f"   유형: {sell_analysis['sell_type']}")
                     logger.info(f"   이유: {sell_analysis['reason']}")
                     
@@ -932,7 +1192,7 @@ def process_positions(trading_state):
                             trading_state['daily_stats']['winning_trades'] += 1
                         
                         # 매도 완료 알림
-                        msg = f"💰 매도 완료: {target_config['name']}({stock_code})\n"
+                        msg = f"💰 매도 완료: {target_config.get('name', stock_code)}({stock_code})\n"
                         msg += f"매도가: {executed_price:,.0f}원\n"
                         msg += f"수량: {executed_amount}주\n"
                         msg += f"순손익: {net_profit:,.0f}원 ({profit_rate:.2f}%)\n"
@@ -944,7 +1204,7 @@ def process_positions(trading_state):
                         # 포지션 제거
                         positions_to_remove.append(stock_code)
                     else:
-                        logger.error(f"매도 주문 실패: {target_config['name']}({stock_code})")
+                        logger.error(f"매도 주문 실패: {target_config.get('name', stock_code)}({stock_code})")
                 
             except Exception as e:
                 logger.error(f"포지션 처리 중 에러 ({stock_code}): {str(e)}")
@@ -963,7 +1223,7 @@ def process_positions(trading_state):
         return trading_state
 
 def execute_buy_opportunities(buy_opportunities, trading_state):
-    """매수 기회 실행 (bb_trading.py 방식 + 종목별 설정)"""
+    """매수 기회 실행 (Config 적용)"""
     try:
         if not buy_opportunities:
             return trading_state
@@ -975,23 +1235,24 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
             return trading_state
         
         total_money = float(balance.get('TotalMoney', 0))
-        available_budget = total_money * TRADE_BUDGET_RATIO
+        # Config에서 예산 비율 사용
+        available_budget = total_money * trading_config.trade_budget_ratio
         
-        # 일일 손실/수익 한도 확인
+        # Config에서 일일 손실/수익 한도 확인
         daily_stats = trading_state['daily_stats']
         if daily_stats['start_balance'] > 0:
             daily_profit_rate = daily_stats['total_profit'] / daily_stats['start_balance']
             
-            if daily_profit_rate <= MAX_DAILY_LOSS:
+            if daily_profit_rate <= trading_config.max_daily_loss:
                 logger.info(f"일일 손실 한도 도달: {daily_profit_rate*100:.1f}%")
                 return trading_state
             
-            if daily_profit_rate >= MAX_DAILY_PROFIT:
+            if daily_profit_rate >= trading_config.max_daily_profit:
                 logger.info(f"일일 수익 한도 도달: {daily_profit_rate*100:.1f}%")
                 return trading_state
         
         current_positions = len(trading_state['positions'])
-        max_new_positions = MAX_POSITIONS - current_positions
+        max_new_positions = trading_config.max_positions - current_positions
         
         # 상위 종목들에 대해 매수 실행
         for i, opportunity in enumerate(buy_opportunities[:max_new_positions]):
@@ -1030,7 +1291,7 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                         'buy_fee': buy_fee,
                         'entry_time': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                         'high_price': executed_price,
-                        'trailing_stop': executed_price * (1 - target_config.get('trailing_stop', TRAILING_STOP_RATIO)),
+                        'trailing_stop': executed_price * (1 - target_config.get('trailing_stop', trading_config.trailing_stop_ratio)),
                         'target_config': target_config,
                         'buy_analysis': opportunity['analysis']
                     }
@@ -1041,8 +1302,8 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                     msg += f"수량: {executed_amount}주\n"
                     msg += f"투자금액: {executed_price * executed_amount:,.0f}원\n"
                     msg += f"수수료: {buy_fee:,.0f}원\n"
-                    msg += f"목표수익률: {target_config.get('profit_target', TAKE_PROFIT_RATIO)*100:.1f}%\n"
-                    msg += f"손절률: {target_config.get('stop_loss', STOP_LOSS_RATIO)*100:.1f}%"
+                    msg += f"목표수익률: {target_config.get('profit_target', trading_config.take_profit_ratio)*100:.1f}%\n"
+                    msg += f"손절률: {target_config.get('stop_loss', trading_config.stop_loss_ratio)*100:.1f}%"
                     
                     logger.info(msg)
                     discord_alert.SendMessage(msg)
@@ -1059,46 +1320,127 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
         logger.error(f"매수 기회 실행 중 에러: {str(e)}")
         return trading_state
 
-def main():
-    """메인 함수"""
-    global TARGET_STOCKS
-    # 설정 파일 로드
-    config_path = "target_stock_config.json"
+def create_config_file(config_path: str = "target_stock_config.json") -> None:
+    """기본 설정 파일 생성 (Config 클래스 사용)"""
+    try:
+        logger.info("기본 설정 파일 생성 시작...")
+        
+        # 기본 타겟 종목들 정의 (종목코드와 설정만)
+        default_target_stocks = {
+            "006400": {  # 삼성SDI
+                "allocation_ratio": 0.12,
+                "profit_target": 0.055,
+                "stop_loss": -0.025,
+                "trailing_stop": 0.02,
+                "rsi_oversold": 28,
+                "rsi_overbought": 72,
+                "min_score": 70,
+                "enabled": True
+            },
+            "028300": {  # HLB
+                "allocation_ratio": 0.08,
+                "profit_target": 0.04,
+                "stop_loss": -0.02,
+                "trailing_stop": 0.015,
+                "rsi_oversold": 32,
+                "rsi_overbought": 68,
+                "min_score": 65,
+                "enabled": True
+            }
+        }
+        
+        # 종목별 이름과 섹터 정보 자동 업데이트
+        logger.info("기본 종목들의 이름 및 섹터 정보 조회 중...")
+        updated_stocks = _update_stock_info(default_target_stocks)
+        
+        config = {
+            "target_stocks": updated_stocks,
+            
+            # 전략 설정
+            "trade_budget_ratio": 0.90,
+            "max_positions": 8,
+            "min_stock_price": 3000,
+            "max_stock_price": 200000,
+            
+            # 손익 관리 설정
+            "stop_loss_ratio": -0.025,
+            "take_profit_ratio": 0.055,
+            "trailing_stop_ratio": 0.018,
+            "max_daily_loss": -0.04,
+            "max_daily_profit": 0.06,
+            
+            # 기술적 분석 설정
+            "rsi_period": 14,
+            "rsi_oversold": 30,
+            "rsi_overbought": 70,
+            "macd_fast": 12,
+            "macd_slow": 26,
+            "macd_signal": 9,
+            "bb_period": 20,
+            "bb_std": 2.0,
+            
+            # 기타 설정
+            "last_sector_update": datetime.datetime.now().strftime('%Y%m%d'),
+            "bot_name": "TargetStockBot",
+            "use_discord_alert": True,
+            "check_interval_minutes": 30
+        }
+        
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(config, f, ensure_ascii=False, indent=4)
+        
+        logger.info(f"기본 설정 파일 생성 완료: {config_path}")
+        logger.info(f"등록된 종목 수: {len(updated_stocks)}개")
+        
+        # 생성된 종목 정보 로깅
+        for stock_code, stock_info in updated_stocks.items():
+            stock_name = stock_info.get('name', stock_code)
+            sector = stock_info.get('sector', 'Unknown')
+            allocation = stock_info.get('allocation_ratio', 0) * 100
+            logger.info(f"  - {stock_name}({stock_code}): "
+                       f"섹터 {sector}, "
+                       f"배분비율 {allocation:.1f}%")
+        
+    except Exception as e:
+        logger.exception(f"설정 파일 생성 중 오류: {str(e)}")
+        raise
 
+def main():
+    """메인 함수 (Config 적용)"""
+    
+    # 1. 설정 초기화 (가장 먼저!)
+    config_path = "target_stock_config.json"
+    
     # 설정 파일이 없으면 생성
     if not os.path.exists(config_path):
         create_config_file(config_path)
         logger.info(f"기본 설정 파일 생성 완료: {config_path}")
-
-    # 설정 로드
-    config = _load_config(config_path)
-    TARGET_STOCKS = config.get("target_stocks", TARGET_STOCKS)
+    
+    # Config 클래스 초기화
+    config = initialize_config(config_path)
+    
     # 섹터 정보 업데이트 (날짜가 바뀌었거나 처음 실행시)
     today = datetime.datetime.now().strftime('%Y%m%d')
-    last_update = config.get("last_sector_update", "")
     
-    if last_update != today:
+    if config.last_sector_update != today:
         logger.info("섹터 정보 자동 업데이트 시작...")
-        TARGET_STOCKS = _update_stock_info(TARGET_STOCKS)
-        
-        # 업데이트된 설정 저장
-        config["target_stocks"] = TARGET_STOCKS
-        config["last_sector_update"] = today
-        _save_config(config, config_path)
+        updated_stocks = _update_stock_info(config.target_stocks)
+        config.update_target_stocks(updated_stocks)
+        config.update_last_sector_update(today)
 
     msg = "🎯 타겟 종목 매매봇 시작!"
     logger.info(msg)
     discord_alert.SendMessage(msg)
     
-    # 타겟 종목 현황 출력
-    enabled_count = sum(1 for config in TARGET_STOCKS.values() if config.get('enabled', True))
+    # 타겟 종목 현황 출력 (Config 사용)
+    enabled_count = sum(1 for stock_config in config.target_stocks.values() if stock_config.get('enabled', True))
     logger.info(f"활성화된 타겟 종목: {enabled_count}개")
-    for stock_code, config in TARGET_STOCKS.items():
-        if config.get('enabled', True):
-            logger.info(f"  - {config['name']}({stock_code}): "
-                       f"목표수익률 {config.get('profit_target', 0)*100:.1f}%, "
-                       f"손절률 {config.get('stop_loss', 0)*100:.1f}%, "
-                       f"배분비율 {config.get('allocation_ratio', 0)*100:.1f}%")
+    for stock_code, stock_config in config.target_stocks.items():
+        if stock_config.get('enabled', True):
+            logger.info(f"  - {stock_config.get('name', stock_code)}({stock_code}): "
+                       f"목표수익률 {stock_config.get('profit_target', config.take_profit_ratio)*100:.1f}%, "
+                       f"손절률 {stock_config.get('stop_loss', config.stop_loss_ratio)*100:.1f}%, "
+                       f"배분비율 {stock_config.get('allocation_ratio', 0)*100:.1f}%")
     
     # 초기 상태
     daily_report_sent = False
@@ -1132,13 +1474,13 @@ def main():
                 market_open_notified = False
                 save_trading_state(trading_state)
             
-            # 장 시작 알림
+            # 장 시작 알림 (Config 사용)
             if is_market_open and not market_open_notified:
                 balance = KisKR.GetBalance()
                 if balance:
                     total_money = float(balance.get('TotalMoney', 0))
                     msg = f"🔔 장 시작!\n총 자산: {total_money:,.0f}원\n"
-                    msg += f"봇 운용자금: {total_money * TRADE_BUDGET_RATIO:,.0f}원\n"
+                    msg += f"봇 운용자금: {total_money * config.trade_budget_ratio:,.0f}원\n"
                     msg += f"타겟 종목: {enabled_count}개"
                     logger.info(msg)
                     discord_alert.SendMessage(msg)
@@ -1184,91 +1526,6 @@ def main():
             discord_alert.SendMessage(error_msg)
             time.sleep(60)  # 에러 발생 시 1분 대기
 
-def create_config_file(config_path: str = "target_stock_config.json") -> None:
-   """기본 설정 파일 생성"""
-   try:
-       logger.info("기본 설정 파일 생성 시작...")
-       
-       # 기본 타겟 종목들 정의 (종목코드와 설정만)
-       default_target_stocks = {
-           "006400": {  # 삼성SDI
-               "allocation_ratio": 0.12,
-               "profit_target": 0.055,
-               "stop_loss": -0.025,
-               "trailing_stop": 0.02,
-               "rsi_oversold": 28,
-               "rsi_overbought": 72,
-               "min_score": 70,
-               "enabled": True
-           },
-           "028300": {  # HLB
-               "allocation_ratio": 0.08,
-               "profit_target": 0.04,
-               "stop_loss": -0.02,
-               "trailing_stop": 0.015,
-               "rsi_oversold": 32,
-               "rsi_overbought": 68,
-               "min_score": 65,
-               "enabled": True
-           }
-       }
-       
-       # 종목별 이름과 섹터 정보 자동 업데이트
-       logger.info("기본 종목들의 이름 및 섹터 정보 조회 중...")
-       updated_stocks = _update_stock_info(default_target_stocks)
-       
-       config = {
-           "target_stocks": updated_stocks,
-           
-           # 전략 설정 (bb_trading.py 방식 참고)
-           "trade_budget_ratio": 0.90,
-           "max_positions": 8,
-           "min_stock_price": 3000,
-           "max_stock_price": 200000,
-           
-           # 손익 관리 설정
-           "stop_loss_ratio": -0.025,
-           "take_profit_ratio": 0.055,
-           "trailing_stop_ratio": 0.018,
-           "max_daily_loss": -0.04,
-           "max_daily_profit": 0.06,
-           
-           # 기술적 분석 설정 (trend_trading.py 방식 적용)
-           "rsi_period": 14,
-           "rsi_oversold": 30,
-           "rsi_overbought": 70,
-           "macd_fast": 12,
-           "macd_slow": 26,
-           "macd_signal": 9,
-           "bb_period": 20,
-           "bb_std": 2.0,
-           
-           # 기타 설정
-           "last_sector_update": datetime.datetime.now().strftime('%Y%m%d'),
-           "bot_name": "TargetStockBot",
-           "use_discord_alert": True,
-           "check_interval_minutes": 30
-       }
-       
-       with open(config_path, 'w', encoding='utf-8') as f:
-           json.dump(config, f, ensure_ascii=False, indent=4)
-       
-       logger.info(f"기본 설정 파일 생성 완료: {config_path}")
-       logger.info(f"등록된 종목 수: {len(updated_stocks)}개")
-       
-       # 생성된 종목 정보 로깅
-       for stock_code, stock_info in updated_stocks.items():
-           stock_name = stock_info.get('name', stock_code)
-           sector = stock_info.get('sector', 'Unknown')
-           allocation = stock_info.get('allocation_ratio', 0) * 100
-           logger.info(f"  - {stock_name}({stock_code}): "
-                      f"섹터 {sector}, "
-                      f"배분비율 {allocation:.1f}%")
-       
-   except Exception as e:
-       logger.exception(f"설정 파일 생성 중 오류: {str(e)}")
-       raise
-   
 if __name__ == "__main__":
     # 실제 거래 모드로 설정
     Common.SetChangeMode()
