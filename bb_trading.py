@@ -1,62 +1,66 @@
-import json
-import pandas as pd
-import numpy as np
-import discord_alert
-import concurrent.futures
-import threading
-import time
-from datetime import datetime, timedelta
-from pytz import timezone
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+"""
+타겟 종목 매매봇 (Target Stock Trading Bot)
+bb_trading.py의 방식을 참고하여 trend_trading.py의 기술적 분석을 적용
+1. 미리 설정된 타겟 종목들에 대해서만 매매 진행
+2. 종목별 개별 매매 파라미터 적용
+3. trend_trading.py의 고도화된 기술적 분석 활용
+4. bb_trading.py의 체계적인 리스크 관리 적용
+"""
+
 import os
+import sys
+import time
+import json
 import logging
 from logging.handlers import TimedRotatingFileHandler
+import datetime
+import numpy as np
+import pandas as pd
+import concurrent.futures
+import threading
+from typing import List, Dict, Tuple, Optional, Union
 
-# 기존 API 라이브러리 import
+# KIS API 함수 임포트
 import KIS_Common as Common
 import KIS_API_Helper_KR as KisKR
+import discord_alert
+
+# trend_trading.py에서 기술적 분석 클래스들 임포트
+from trend_trading import TechnicalIndicators, AdaptiveMarketStrategy, TrendFilter
 
 ################################### 상수 정의 ##################################
 
-# 전략 설정
-TRADE_BUDGET_RATIO = 0.08           # 전체 계좌의 8%를 이 봇이 사용
-MAX_POSITION_SIZE = 0.25            # 단일 종목 최대 비중 25%
-MAX_POSITIONS = 3                   # 최대 보유 종목 수
-MIN_STOCK_PRICE = 5000              # 최소 주가 5,000원
-MAX_STOCK_PRICE = 100000            # 최대 주가 100,000원
+# 봇 네임 설정
+BOT_NAME = Common.GetNowDist() + "_TargetStockBot"
 
-# 볼린저밴드 설정
-BB_PERIOD = 20                      # 볼린저밴드 기간
-BB_STD = 2                          # 표준편차 배수
-BB_SQUEEZE_THRESHOLD = 0.1          # 볼린저밴드 수축 임계값
-
-# RSI 설정
-RSI_PERIOD = 14                     # RSI 계산 기간
-RSI_OVERSOLD = 30                   # 과매도 구간
-RSI_OVERBOUGHT = 70                 # 과매수 구간
-RSI_BUY_THRESHOLD = 35              # 매수 신호 RSI
-RSI_SELL_THRESHOLD = 65             # 매도 신호 RSI
-
-# 거래량 설정
-VOLUME_MA_PERIOD = 20               # 거래량 이동평균 기간
-VOLUME_SURGE_RATIO = 1.5            # 거래량 급증 비율
+# 전략 설정 (bb_trading.py 방식 참고)
+TRADE_BUDGET_RATIO = 0.90           # 전체 계좌의 90%를 이 봇이 사용
+MAX_POSITIONS = 8                   # 최대 보유 종목 수 (타겟 종목 수와 동일하게)
+MIN_STOCK_PRICE = 3000              # 최소 주가 3,000원
+MAX_STOCK_PRICE = 200000            # 최대 주가 200,000원
 
 # 손익 관리 설정
-STOP_LOSS_RATIO = -0.03             # 손절 비율 (-3%)
-TAKE_PROFIT_RATIO = 0.06            # 익절 비율 (6%)
-TRAILING_STOP_RATIO = 0.02          # 트레일링 스탑 비율 (2%)
-MAX_DAILY_LOSS = -0.05              # 일일 최대 손실 한도 (-5%)
-MAX_DAILY_PROFIT = 0.08             # 일일 최대 수익 한도 (8%)
+STOP_LOSS_RATIO = -0.025            # 손절 비율 (-2.5%)
+TAKE_PROFIT_RATIO = 0.055           # 익절 비율 (5.5%)
+TRAILING_STOP_RATIO = 0.018         # 트레일링 스탑 비율 (1.8%)
+MAX_DAILY_LOSS = -0.04              # 일일 최대 손실 한도 (-4%)
+MAX_DAILY_PROFIT = 0.06             # 일일 최대 수익 한도 (6%)
 
-# 지지/저항선 설정
-SUPPORT_RESISTANCE_PERIOD = 50      # 지지/저항선 계산 기간
-PRICE_TOUCH_THRESHOLD = 0.01        # 가격 접촉 임계값 (1%)
-
-# 봇 네임 설정
-BOT_NAME = Common.GetNowDist() + "_BollingerBandBot"
+# 기술적 분석 설정 (trend_trading.py 방식 적용)
+RSI_PERIOD = 14
+RSI_OVERSOLD = 30
+RSI_OVERBOUGHT = 70
+MACD_FAST = 12
+MACD_SLOW = 26
+MACD_SIGNAL = 9
+BB_PERIOD = 20
+BB_STD = 2.0
 
 ################################### 로깅 처리 ##################################
 
-# 로그 디렉토리 생성
 log_directory = "logs"
 if not os.path.exists(log_directory):
     os.makedirs(log_directory)
@@ -67,11 +71,13 @@ def log_namer(default_name):
     return f"{base_filename}.{date}.{ext}"
 
 # 로거 설정
-logger = logging.getLogger('BollingerBandLogger')
+logger = logging.getLogger('TargetStockTrader')
 logger.setLevel(logging.INFO)
 
-# 파일 핸들러 설정
-log_file = os.path.join(log_directory, 'bollinger_trading.log')
+if logger.handlers:
+    logger.handlers.clear()
+
+log_file = os.path.join(log_directory, 'target_stock_trading.log')
 file_handler = TimedRotatingFileHandler(
     log_file,
     when='midnight',
@@ -82,32 +88,130 @@ file_handler = TimedRotatingFileHandler(
 file_handler.suffix = "%Y%m%d"
 file_handler.namer = log_namer
 
-# 콘솔 핸들러 설정
 console_handler = logging.StreamHandler()
 
-# 포맷터 설정
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 file_handler.setFormatter(formatter)
 console_handler.setFormatter(formatter)
 
-# 핸들러 추가
 logger.addHandler(file_handler)
 logger.addHandler(console_handler)
 
-# KIS API 모듈에 로거 전달
 KisKR.set_logger(logger)
 Common.set_logger(logger)
+
+################################### 타겟 종목 설정 ##################################
+
+# 타겟 종목 리스트 (bb_trading.py의 관심종목 방식)
+TARGET_STOCKS = {
+    "005930": {  # 삼성전자
+        "name": "삼성전자",
+        "sector": "반도체",
+        "allocation_ratio": 0.20,  # 전체 예산의 20%
+        "profit_target": 0.06,     # 6% 수익률 목표
+        "stop_loss": -0.025,       # -2.5% 손절
+        "trailing_stop": 0.018,    # 1.8% 트레일링 스탑
+        "rsi_oversold": 28,        # 개별 RSI 과매도 기준
+        "rsi_overbought": 72,      # 개별 RSI 과매수 기준
+        "min_score": 75,           # 최소 매수 점수
+        "enabled": True
+    },
+    "000660": {  # SK하이닉스
+        "name": "SK하이닉스",
+        "sector": "반도체",
+        "allocation_ratio": 0.15,
+        "profit_target": 0.055,
+        "stop_loss": -0.03,
+        "trailing_stop": 0.02,
+        "rsi_oversold": 30,
+        "rsi_overbought": 70,
+        "min_score": 70,
+        "enabled": True
+    },
+    "035420": {  # NAVER
+        "name": "NAVER",
+        "sector": "인터넷",
+        "allocation_ratio": 0.12,
+        "profit_target": 0.05,
+        "stop_loss": -0.025,
+        "trailing_stop": 0.015,
+        "rsi_oversold": 32,
+        "rsi_overbought": 68,
+        "min_score": 72,
+        "enabled": True
+    },
+    "051910": {  # LG화학
+        "name": "LG화학",
+        "sector": "화학",
+        "allocation_ratio": 0.10,
+        "profit_target": 0.045,
+        "stop_loss": -0.02,
+        "trailing_stop": 0.015,
+        "rsi_oversold": 30,
+        "rsi_overbought": 70,
+        "min_score": 68,
+        "enabled": True
+    },
+    "006400": {  # 삼성SDI
+        "name": "삼성SDI",
+        "sector": "2차전지",
+        "allocation_ratio": 0.12,
+        "profit_target": 0.055,
+        "stop_loss": -0.025,
+        "trailing_stop": 0.02,
+        "rsi_oversold": 28,
+        "rsi_overbought": 72,
+        "min_score": 70,
+        "enabled": True
+    },
+    "035900": {  # JYP Ent.
+        "name": "JYP Ent.",
+        "sector": "엔터테인먼트",
+        "allocation_ratio": 0.08,
+        "profit_target": 0.04,
+        "stop_loss": -0.02,
+        "trailing_stop": 0.015,
+        "rsi_oversold": 35,
+        "rsi_overbought": 65,
+        "min_score": 65,
+        "enabled": True
+    },
+    "028300": {  # HLB
+        "name": "HLB",
+        "sector": "바이오",
+        "allocation_ratio": 0.08,
+        "profit_target": 0.04,
+        "stop_loss": -0.02,
+        "trailing_stop": 0.015,
+        "rsi_oversold": 32,
+        "rsi_overbought": 68,
+        "min_score": 65,
+        "enabled": True
+    },
+    "326030": {  # SK바이오팜
+        "name": "SK바이오팜",
+        "sector": "바이오",
+        "allocation_ratio": 0.15,
+        "profit_target": 0.05,
+        "stop_loss": -0.025,
+        "trailing_stop": 0.018,
+        "rsi_oversold": 30,
+        "rsi_overbought": 70,
+        "min_score": 70,
+        "enabled": True
+    }
+}
 
 ################################### 유틸리티 함수 ##################################
 
 def calculate_trading_fee(price, quantity, is_buy=True):
-    """거래 수수료 및 세금 계산"""
-    commission_rate = 0.0000156  # 수수료 0.00156%
-    tax_rate = 0  # 매도 시 거래세 0%
-    special_tax_rate = 0.0015  # 농어촌특별세 (매도금액의 0.15%)
+    """거래 수수료 및 세금 계산 (bb_trading.py 방식)"""
+    commission_rate = 0.0000156
+    tax_rate = 0
+    special_tax_rate = 0.0015
     
     commission = price * quantity * commission_rate
-    if not is_buy:  # 매도 시에만 세금 부과
+    if not is_buy:
         tax = price * quantity * tax_rate
         special_tax = price * quantity * special_tax_rate
     else:
@@ -117,14 +221,12 @@ def calculate_trading_fee(price, quantity, is_buy=True):
     return commission + tax + special_tax
 
 def check_trading_time():
-    """장중 거래 가능한 시간대인지 체크"""
+    """장중 거래 가능한 시간대인지 체크 (bb_trading.py 방식)"""
     try:
-        # 휴장일 체크
         if KisKR.IsTodayOpenCheck() == 'N':
             logger.info("휴장일 입니다.")
             return False, False
 
-        # 장 상태 확인
         market_status = KisKR.MarketStatus()
         if market_status is None or not isinstance(market_status, dict):
             logger.info("장 상태 확인 실패")
@@ -132,11 +234,8 @@ def check_trading_time():
             
         status_code = market_status.get('Status', '')
         
-        # 장 시작 시점 체크
-        current_time = datetime.now().time()
+        current_time = datetime.datetime.now().time()
         is_market_open = (status_code == '0' and current_time.hour == 8)
-        
-        # 거래 가능 시간 체크
         is_trading_time = (status_code == '2')
         
         status_desc = {
@@ -157,115 +256,11 @@ def check_trading_time():
 
 ################################### 기술적 분석 함수 ##################################
 
-def calculate_bollinger_bands(df, period=BB_PERIOD, std_dev=BB_STD):
-    """볼린저밴드 계산"""
-    try:
-        close_prices = df['close']
-        
-        # 이동평균선 계산
-        sma = close_prices.rolling(window=period).mean()
-        
-        # 표준편차 계산
-        std = close_prices.rolling(window=period).std()
-        
-        # 볼린저밴드 계산
-        upper_band = sma + (std * std_dev)
-        lower_band = sma - (std * std_dev)
-        
-        # 밴드폭 계산 (변동성 측정)
-        band_width = (upper_band - lower_band) / sma
-        
-        return {
-            'upper_band': upper_band.iloc[-1] if not pd.isna(upper_band.iloc[-1]) else 0,
-            'middle_band': sma.iloc[-1] if not pd.isna(sma.iloc[-1]) else 0,
-            'lower_band': lower_band.iloc[-1] if not pd.isna(lower_band.iloc[-1]) else 0,
-            'band_width': band_width.iloc[-1] if not pd.isna(band_width.iloc[-1]) else 0,
-            'upper_series': upper_band,
-            'middle_series': sma,
-            'lower_series': lower_band
-        }
-    except Exception as e:
-        logger.error(f"볼린저밴드 계산 중 에러: {str(e)}")
-        return None
-
-def calculate_rsi(df, period=RSI_PERIOD):
-    """RSI 계산"""
-    try:
-        close_prices = df['close']
-        delta = close_prices.diff()
-        
-        gain = delta.clip(lower=0)
-        loss = -delta.clip(upper=0)
-        
-        avg_gain = gain.rolling(window=period).mean()
-        avg_loss = loss.rolling(window=period).mean()
-        
-        rs = avg_gain / avg_loss.replace(0, 0.00001)
-        rsi = 100 - (100 / (1 + rs))
-        
-        return rsi.iloc[-1] if not pd.isna(rsi.iloc[-1]) else 50
-    except Exception as e:
-        logger.error(f"RSI 계산 중 에러: {str(e)}")
-        return 50
-
-def calculate_volume_analysis(df, period=VOLUME_MA_PERIOD):
-    """거래량 분석"""
-    try:
-        volume = df['volume']
-        volume_ma = volume.rolling(window=period).mean()
-        
-        current_volume = volume.iloc[-1]
-        avg_volume = volume_ma.iloc[-1] if not pd.isna(volume_ma.iloc[-1]) else current_volume
-        
-        volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1
-        is_volume_surge = volume_ratio >= VOLUME_SURGE_RATIO
-        
-        return {
-            'current_volume': current_volume,
-            'average_volume': avg_volume,
-            'volume_ratio': volume_ratio,
-            'is_surge': is_volume_surge
-        }
-    except Exception as e:
-        logger.error(f"거래량 분석 중 에러: {str(e)}")
-        return None
-
-def find_support_resistance(df, period=SUPPORT_RESISTANCE_PERIOD):
-    """지지선과 저항선 찾기"""
-    try:
-        if len(df) < period:
-            return None
-            
-        recent_data = df.tail(period)
-        highs = recent_data['high']
-        lows = recent_data['low']
-        
-        # 최근 기간의 최고가/최저가
-        resistance = highs.max()
-        support = lows.min()
-        
-        # 현재가와의 거리 계산
-        current_price = df['close'].iloc[-1]
-        resistance_distance = (resistance - current_price) / current_price
-        support_distance = (current_price - support) / current_price
-        
-        return {
-            'resistance': resistance,
-            'support': support,
-            'resistance_distance': resistance_distance,
-            'support_distance': support_distance,
-            'near_resistance': resistance_distance <= PRICE_TOUCH_THRESHOLD,
-            'near_support': support_distance <= PRICE_TOUCH_THRESHOLD
-        }
-    except Exception as e:
-        logger.error(f"지지/저항선 계산 중 에러: {str(e)}")
-        return None
-
 def get_stock_data(stock_code):
-    """종목 데이터 조회 및 기술적 분석"""
+    """종목 데이터 조회 및 기술적 분석 (trend_trading.py 방식 적용)"""
     try:
         # 일봉 데이터 조회
-        df = Common.GetOhlcv("KR", stock_code, 60)  # 60일 데이터
+        df = Common.GetOhlcv("KR", stock_code, 60)
         
         if df is None or len(df) < 30:
             logger.error(f"{stock_code}: 데이터 부족")
@@ -277,33 +272,47 @@ def get_stock_data(stock_code):
             logger.error(f"{stock_code}: 현재가 조회 실패")
             return None
         
-        # 기술적 분석 수행
-        bb_data = calculate_bollinger_bands(df)
-        rsi = calculate_rsi(df)
-        volume_data = calculate_volume_analysis(df)
-        sr_data = find_support_resistance(df)
+        # trend_trading.py의 기술적 지표 계산 활용
+        df['RSI'] = TechnicalIndicators.calculate_rsi(df, RSI_PERIOD)
         
-        # 볼린저밴드 위치 계산
-        bb_position = None
-        if bb_data:
-            if current_price <= bb_data['lower_band']:
-                bb_position = 'below_lower'
-            elif current_price >= bb_data['upper_band']:
-                bb_position = 'above_upper'
-            elif current_price <= bb_data['middle_band']:
-                bb_position = 'below_middle'
-            else:
-                bb_position = 'above_middle'
+        macd_data = TechnicalIndicators.calculate_macd(
+            df, MACD_FAST, MACD_SLOW, MACD_SIGNAL
+        )
+        df[['MACD', 'Signal', 'Histogram']] = macd_data
+        
+        bb_data = TechnicalIndicators.calculate_bollinger_bands(
+            df, BB_PERIOD, BB_STD
+        )
+        df[['MiddleBand', 'UpperBand', 'LowerBand']] = bb_data
+        
+        # 이동평균선 계산
+        df['MA5'] = df['close'].rolling(window=5).mean()
+        df['MA20'] = df['close'].rolling(window=20).mean()
+        df['MA60'] = df['close'].rolling(window=60).mean()
+        
+        # ATR 계산
+        df['ATR'] = TechnicalIndicators.calculate_atr(df)
+        
+        # 지지/저항선 분석
+        sr_data = TechnicalIndicators.detect_support_resistance(df)
         
         return {
             'stock_code': stock_code,
             'current_price': current_price,
             'ohlcv_data': df,
-            'bollinger_bands': bb_data,
-            'rsi': rsi,
-            'volume_analysis': volume_data,
-            'support_resistance': sr_data,
-            'bb_position': bb_position
+            'rsi': df['RSI'].iloc[-1] if not pd.isna(df['RSI'].iloc[-1]) else 50,
+            'macd': df['MACD'].iloc[-1] if not pd.isna(df['MACD'].iloc[-1]) else 0,
+            'macd_signal': df['Signal'].iloc[-1] if not pd.isna(df['Signal'].iloc[-1]) else 0,
+            'macd_histogram': df['Histogram'].iloc[-1] if not pd.isna(df['Histogram'].iloc[-1]) else 0,
+            'bb_upper': df['UpperBand'].iloc[-1] if not pd.isna(df['UpperBand'].iloc[-1]) else 0,
+            'bb_middle': df['MiddleBand'].iloc[-1] if not pd.isna(df['MiddleBand'].iloc[-1]) else 0,
+            'bb_lower': df['LowerBand'].iloc[-1] if not pd.isna(df['LowerBand'].iloc[-1]) else 0,
+            'ma5': df['MA5'].iloc[-1] if not pd.isna(df['MA5'].iloc[-1]) else 0,
+            'ma20': df['MA20'].iloc[-1] if not pd.isna(df['MA20'].iloc[-1]) else 0,
+            'ma60': df['MA60'].iloc[-1] if not pd.isna(df['MA60'].iloc[-1]) else 0,
+            'support': sr_data.get("support", 0),
+            'resistance': sr_data.get("resistance", 0),
+            'atr': df['ATR'].iloc[-1] if not pd.isna(df['ATR'].iloc[-1]) else 0
         }
         
     except Exception as e:
@@ -312,74 +321,100 @@ def get_stock_data(stock_code):
 
 ################################### 매매 신호 분석 ##################################
 
-def analyze_buy_signal(stock_data):
-    """매수 신호 분석"""
+def analyze_buy_signal(stock_data, target_config):
+    """매수 신호 분석 (trend_trading.py 방식 + bb_trading.py 점수 시스템)"""
     try:
         signals = []
         score = 0
         
+        stock_code = stock_data['stock_code']
         current_price = stock_data['current_price']
-        bb_data = stock_data['bollinger_bands']
         rsi = stock_data['rsi']
-        volume_data = stock_data['volume_analysis']
-        sr_data = stock_data['support_resistance']
-        bb_position = stock_data['bb_position']
         
-        # 1. 볼린저밴드 신호 (30점)
-        if bb_position == 'below_lower':
+        # 종목별 개별 설정 적용
+        rsi_oversold = target_config.get('rsi_oversold', RSI_OVERSOLD)
+        min_score = target_config.get('min_score', 70)
+        
+        # 1. RSI 과매도 신호 (25점)
+        if rsi <= rsi_oversold:
+            score += 25
+            signals.append(f"RSI 과매도 {rsi:.1f} (+25)")
+        elif rsi <= rsi_oversold + 5:
+            score += 15
+            signals.append(f"RSI 매수권 진입 {rsi:.1f} (+15)")
+        
+        # 2. 볼린저밴드 신호 (20점)
+        bb_position = "middle"
+        if current_price <= stock_data['bb_lower']:
             score += 20
             signals.append("볼린저밴드 하단 터치 (+20)")
-        elif bb_position == 'below_middle':
+            bb_position = "lower"
+        elif current_price <= stock_data['bb_middle']:
             score += 10
             signals.append("볼린저밴드 중간선 하단 (+10)")
+            bb_position = "below_middle"
         
-        # 볼린저밴드 수축 확인 (변동성 축소)
-        if bb_data and bb_data['band_width'] < BB_SQUEEZE_THRESHOLD:
-            score += 10
-            signals.append("볼린저밴드 수축 (+10)")
+        # 3. MACD 신호 (20점)
+        macd = stock_data['macd']
+        macd_signal = stock_data['macd_signal']
+        macd_histogram = stock_data['macd_histogram']
         
-        # 2. RSI 신호 (25점)
-        if rsi <= RSI_OVERSOLD:
+        if macd > macd_signal and macd_histogram > 0:
+            score += 20
+            signals.append("MACD 골든크로스 + 상승 (+20)")
+        elif macd > macd_signal:
             score += 15
-            signals.append(f"RSI 과매도 {rsi:.1f} (+15)")
-        elif rsi <= RSI_BUY_THRESHOLD:
+            signals.append("MACD 골든크로스 (+15)")
+        elif macd_histogram > 0:
             score += 10
-            signals.append(f"RSI 매수신호 {rsi:.1f} (+10)")
+            signals.append("MACD 히스토그램 상승 (+10)")
         
-        # 3. 거래량 신호 (20점)
-        if volume_data and volume_data['is_surge']:
+        # 4. 이동평균선 신호 (15점)
+        ma5 = stock_data['ma5']
+        ma20 = stock_data['ma20']
+        ma60 = stock_data['ma60']
+        
+        if ma5 > ma20 > ma60:  # 정배열
             score += 15
-            signals.append(f"거래량 급증 {volume_data['volume_ratio']:.1f}배 (+15)")
-        elif volume_data and volume_data['volume_ratio'] > 1.2:
+            signals.append("이동평균선 정배열 (+15)")
+        elif ma5 > ma20:  # 단기 상승
             score += 10
-            signals.append(f"거래량 증가 {volume_data['volume_ratio']:.1f}배 (+10)")
+            signals.append("단기 이평선 돌파 (+10)")
         
-        # 4. 지지선 신호 (15점)
-        if sr_data and sr_data['near_support']:
-            score += 15
-            signals.append(f"지지선 근처 {sr_data['support']:,.0f}원 (+15)")
+        # 5. 지지선 근처 신호 (10점)
+        support = stock_data['support']
+        if support > 0 and current_price <= support * 1.02:  # 지지선 2% 이내
+            score += 10
+            signals.append("지지선 근처 (+10)")
         
-        # 5. 추가 확인 신호 (10점)
-        # 가격이 상승 추세인지 확인
+        # 6. 거래량 분석 (trend_trading.py 방식 적용)
         df = stock_data['ohlcv_data']
-        if len(df) >= 5:
-            recent_trend = df['close'].tail(5).iloc[-1] > df['close'].tail(5).iloc[0]
-            if recent_trend:
+        if len(df) >= 20:
+            recent_volume = df['volume'].iloc[-1]
+            avg_volume = df['volume'].rolling(20).mean().iloc[-1]
+            volume_ratio = recent_volume / avg_volume if avg_volume > 0 else 1
+            
+            if volume_ratio >= 1.5:
+                score += 10
+                signals.append(f"거래량 급증 {volume_ratio:.1f}배 (+10)")
+            elif volume_ratio >= 1.2:
                 score += 5
-                signals.append("단기 상승 추세 (+5)")
+                signals.append(f"거래량 증가 {volume_ratio:.1f}배 (+5)")
         
-        # 매수 신호 판정 (70점 이상)
-        is_buy_signal = score >= 70
+        # 매수 신호 판정
+        is_buy_signal = score >= min_score
         
         return {
             'is_buy_signal': is_buy_signal,
             'score': score,
+            'min_score': min_score,
             'signals': signals,
+            'bb_position': bb_position,
             'analysis': {
-                'bb_position': bb_position,
                 'rsi': rsi,
-                'volume_ratio': volume_data['volume_ratio'] if volume_data else 0,
-                'near_support': sr_data['near_support'] if sr_data else False
+                'rsi_threshold': rsi_oversold,
+                'macd_cross': macd > macd_signal,
+                'price_vs_bb_lower': (current_price / stock_data['bb_lower'] - 1) * 100 if stock_data['bb_lower'] > 0 else 0
             }
         }
         
@@ -387,110 +422,113 @@ def analyze_buy_signal(stock_data):
         logger.error(f"매수 신호 분석 중 에러: {str(e)}")
         return {'is_buy_signal': False, 'score': 0, 'signals': []}
 
-def analyze_sell_signal(stock_data, position):
-    """매도 신호 분석"""
+def analyze_sell_signal(stock_data, position, target_config):
+    """매도 신호 분석 (bb_trading.py 방식 + trend_trading.py 기술적 분석)"""
     try:
-        signals = []
-        score = 0
-        
+        stock_code = stock_data['stock_code']
         current_price = stock_data['current_price']
         entry_price = position['entry_price']
-        bb_data = stock_data['bollinger_bands']
-        rsi = stock_data['rsi']
-        volume_data = stock_data['volume_analysis']
-        sr_data = stock_data['support_resistance']
-        bb_position = stock_data['bb_position']
         
         # 수익률 계산
         profit_rate = (current_price - entry_price) / entry_price
         
+        # 종목별 개별 설정 적용
+        profit_target = target_config.get('profit_target', TAKE_PROFIT_RATIO)
+        stop_loss = target_config.get('stop_loss', STOP_LOSS_RATIO)
+        trailing_stop = target_config.get('trailing_stop', TRAILING_STOP_RATIO)
+        rsi_overbought = target_config.get('rsi_overbought', RSI_OVERBOUGHT)
+        
         # 1. 손익 관리 신호 (최우선)
-        if profit_rate <= STOP_LOSS_RATIO:
+        if profit_rate <= stop_loss:
             return {
                 'is_sell_signal': True,
                 'sell_type': 'stop_loss',
-                'score': 100,
-                'signals': [f"손절 실행 {profit_rate*100:.1f}%"],
+                'reason': f"손절 실행 {profit_rate*100:.1f}%",
                 'urgent': True
             }
         
-        if profit_rate >= TAKE_PROFIT_RATIO:
+        if profit_rate >= profit_target:
             return {
                 'is_sell_signal': True,
                 'sell_type': 'take_profit',
-                'score': 100,
-                'signals': [f"익절 실행 {profit_rate*100:.1f}%"],
+                'reason': f"익절 실행 {profit_rate*100:.1f}%",
                 'urgent': True
             }
         
-        # 트레일링 스탑 확인
+        # 2. 트레일링 스탑 확인
         if 'high_price' in position:
             trailing_loss = (position['high_price'] - current_price) / position['high_price']
-            if trailing_loss >= TRAILING_STOP_RATIO:
+            if trailing_loss >= trailing_stop:
                 return {
                     'is_sell_signal': True,
                     'sell_type': 'trailing_stop',
-                    'score': 100,
-                    'signals': [f"트레일링 스탑 {trailing_loss*100:.1f}%"],
+                    'reason': f"트레일링 스탑 {trailing_loss*100:.1f}%",
                     'urgent': True
                 }
         
-        # 2. 볼린저밴드 신호 (30점)
-        if bb_position == 'above_upper':
+        # 3. 기술적 분석 기반 매도 신호
+        signals = []
+        score = 0
+        
+        # RSI 과매수
+        rsi = stock_data['rsi']
+        if rsi >= rsi_overbought:
+            score += 30
+            signals.append(f"RSI 과매수 {rsi:.1f}")
+        
+        # 볼린저밴드 상단
+        if current_price >= stock_data['bb_upper']:
+            score += 25
+            signals.append("볼린저밴드 상단 터치")
+        
+        # MACD 하향 전환
+        macd = stock_data['macd']
+        macd_signal = stock_data['macd_signal']
+        if macd < macd_signal:
             score += 20
-            signals.append("볼린저밴드 상단 터치 (+20)")
-        elif bb_position == 'above_middle':
-            score += 10
-            signals.append("볼린저밴드 중간선 상단 (+10)")
+            signals.append("MACD 하향 전환")
         
-        # 3. RSI 신호 (25점)
-        if rsi >= RSI_OVERBOUGHT:
+        # 저항선 근처
+        resistance = stock_data['resistance']
+        if resistance > 0 and current_price >= resistance * 0.98:
             score += 15
-            signals.append(f"RSI 과매수 {rsi:.1f} (+15)")
-        elif rsi >= RSI_SELL_THRESHOLD:
-            score += 10
-            signals.append(f"RSI 매도신호 {rsi:.1f} (+10)")
+            signals.append("저항선 근처")
         
-        # 4. 거래량 신호 (20점)
-        if volume_data and volume_data['is_surge'] and profit_rate > 0:
-            score += 15
-            signals.append(f"수익 중 거래량 급증 {volume_data['volume_ratio']:.1f}배 (+15)")
+        # 이동평균선 데드크로스
+        if TechnicalIndicators.is_death_cross(stock_data['ohlcv_data']):
+            score += 20
+            signals.append("데드크로스 발생")
         
-        # 5. 저항선 신호 (15점)
-        if sr_data and sr_data['near_resistance']:
-            score += 15
-            signals.append(f"저항선 근처 {sr_data['resistance']:,.0f}원 (+15)")
+        # 기술적 매도 신호 판정 (70점 이상 + 수익 상태일 때)
+        is_sell_signal = score >= 70 and profit_rate > 0.01  # 최소 1% 수익일 때만
         
-        # 6. 하락 추세 신호 (10점)
-        df = stock_data['ohlcv_data']
-        if len(df) >= 5:
-            recent_trend = df['close'].tail(5).iloc[-1] < df['close'].tail(5).iloc[0]
-            if recent_trend:
-                score += 10
-                signals.append("단기 하락 추세 (+10)")
-        
-        # 매도 신호 판정 (65점 이상)
-        is_sell_signal = score >= 65
+        if is_sell_signal:
+            return {
+                'is_sell_signal': True,
+                'sell_type': 'technical',
+                'reason': f"기술적 매도신호 (점수: {score}): {', '.join(signals)}",
+                'urgent': False,
+                'profit_rate': profit_rate
+            }
         
         return {
-            'is_sell_signal': is_sell_signal,
-            'sell_type': 'technical',
-            'score': score,
-            'signals': signals,
+            'is_sell_signal': False,
+            'sell_type': None,
+            'reason': f"보유 지속 (수익률: {profit_rate*100:.1f}%, 기술점수: {score})",
             'urgent': False,
             'profit_rate': profit_rate
         }
         
     except Exception as e:
         logger.error(f"매도 신호 분석 중 에러: {str(e)}")
-        return {'is_sell_signal': False, 'score': 0, 'signals': []}
+        return {'is_sell_signal': False, 'sell_type': None, 'reason': '분석 오류'}
 
 ################################### 상태 관리 ##################################
 
 def load_trading_state():
-    """트레이딩 상태 로드"""
+    """트레이딩 상태 로드 (bb_trading.py 방식)"""
     try:
-        with open(f"BollingerBot_{BOT_NAME}.json", 'r') as f:
+        with open(f"TargetStockBot_{BOT_NAME}.json", 'r') as f:
             return json.load(f)
     except:
         return {
@@ -505,14 +543,14 @@ def load_trading_state():
         }
 
 def save_trading_state(state):
-    """트레이딩 상태 저장"""
-    with open(f"BollingerBot_{BOT_NAME}.json", 'w') as f:
+    """트레이딩 상태 저장 (bb_trading.py 방식)"""
+    with open(f"TargetStockBot_{BOT_NAME}.json", 'w') as f:
         json.dump(state, f, indent=2)
 
 ################################### 매매 실행 ##################################
 
-def calculate_position_size(available_budget, stock_price, current_positions):
-    """포지션 크기 계산"""
+def calculate_position_size(target_config, available_budget, stock_price):
+    """포지션 크기 계산 (bb_trading.py + 종목별 설정)"""
     try:
         # 계좌 잔고 확인
         balance = KisKR.GetBalance()
@@ -520,26 +558,25 @@ def calculate_position_size(available_budget, stock_price, current_positions):
             return 0
             
         actual_balance = float(balance.get('RemainMoney', 0))
-        
-        # 실제 사용 가능한 금액
         usable_budget = min(available_budget, actual_balance)
         
-        # 단일 종목 최대 투자 금액
-        max_single_investment = usable_budget * MAX_POSITION_SIZE
+        # 종목별 할당 비율 적용
+        allocation_ratio = target_config.get('allocation_ratio', 0.125)  # 기본 12.5% (8개 종목 기준)
+        allocated_budget = usable_budget * allocation_ratio
         
         # 매수 가능 수량 계산
-        max_quantity = int(max_single_investment / stock_price)
+        max_quantity = int(allocated_budget / stock_price)
         
-        # 최소 1주는 매수 가능하도록
         return max(1, max_quantity) if max_quantity > 0 else 0
         
     except Exception as e:
         logger.error(f"포지션 크기 계산 중 에러: {str(e)}")
         return 0
 
-def execute_buy_order(stock_code, stock_name, quantity, price):
-    """매수 주문 실행"""
+def execute_buy_order(stock_code, target_config, quantity, price):
+    """매수 주문 실행 (bb_trading.py 방식)"""
     try:
+        stock_name = target_config.get('name', stock_code)
         logger.info(f"{stock_name}({stock_code}) 매수 주문: {quantity}주 @ {price:,.0f}원")
         
         # 지정가 매수 주문
@@ -552,7 +589,6 @@ def execute_buy_order(stock_code, stock_name, quantity, price):
         # 체결 확인 (최대 30초 대기)
         start_time = time.time()
         while time.time() - start_time < 30:
-            # 보유 종목 확인
             my_stocks = KisKR.GetMyStockList()
             for stock in my_stocks:
                 if stock['StockCode'] == stock_code:
@@ -570,9 +606,10 @@ def execute_buy_order(stock_code, stock_name, quantity, price):
         logger.error(f"매수 주문 실행 중 에러: {str(e)}")
         return None, None
 
-def execute_sell_order(stock_code, stock_name, quantity):
-    """매도 주문 실행"""
+def execute_sell_order(stock_code, target_config, quantity):
+    """매도 주문 실행 (bb_trading.py 방식)"""
     try:
+        stock_name = target_config.get('name', stock_code)
         logger.info(f"{stock_name}({stock_code}) 매도 주문: {quantity}주")
         
         # 시장가 매도 주문
@@ -587,7 +624,6 @@ def execute_sell_order(stock_code, stock_name, quantity):
         initial_amount = quantity
         
         while time.time() - start_time < 30:
-            # 보유 종목 확인
             my_stocks = KisKR.GetMyStockList()
             current_amount = 0
             
@@ -596,7 +632,6 @@ def execute_sell_order(stock_code, stock_name, quantity):
                     current_amount = int(stock.get('StockAmt', 0))
                     break
             
-            # 수량이 줄어들었으면 매도 체결
             if current_amount < initial_amount:
                 executed_amount = initial_amount - current_amount
                 current_price = KisKR.GetCurrentPrice(stock_code)
@@ -615,7 +650,7 @@ def execute_sell_order(stock_code, stock_name, quantity):
 ################################### 보고서 생성 ##################################
 
 def send_daily_report(trading_state):
-    """일일 거래 성과 보고서"""
+    """일일 거래 성과 보고서 (bb_trading.py 방식)"""
     try:
         balance = KisKR.GetBalance()
         my_stocks = KisKR.GetMyStockList()
@@ -624,8 +659,8 @@ def send_daily_report(trading_state):
         total_money = float(balance.get('TotalMoney', 0))
         stock_revenue = float(balance.get('StockRevenue', 0))
         
-        msg = "📊 볼린저밴드 봇 일일 성과 보고서 📊\n"
-        msg += f"========== {datetime.now().strftime('%Y-%m-%d %H:%M')} ==========\n"
+        msg = "📊 타겟 종목 매매봇 일일 성과 보고서 📊\n"
+        msg += f"========== {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')} ==========\n"
         msg += f"[전체 계좌 현황]\n"
         msg += f"총 평가금액: {total_money:,.0f}원\n"
         msg += f"누적 손익: {stock_revenue:,.0f}원\n"
@@ -633,8 +668,10 @@ def send_daily_report(trading_state):
         if my_stocks:
             msg += "\n[보유 종목 현황]\n"
             for stock in my_stocks:
-                if stock['StockCode'] in trading_state['positions']:
-                    msg += f"- {stock['StockName']}({stock['StockCode']}): "
+                stock_code = stock['StockCode']
+                if stock_code in trading_state['positions'] and stock_code in TARGET_STOCKS:
+                    target_config = TARGET_STOCKS[stock_code]
+                    msg += f"- {target_config['name']}({stock_code}): "
                     msg += f"{stock['StockAmt']}주, {float(stock['StockRevenueMoney']):,.0f}원 "
                     msg += f"({stock['StockRevenueRate']}%)\n"
         else:
@@ -652,37 +689,43 @@ def send_daily_report(trading_state):
     except Exception as e:
         logger.error(f"일일 보고서 생성 중 에러: {str(e)}")
 
-################################### 메인 로직 ##################################
-
-def get_candidate_stocks():
-    """매수 후보 종목 조회"""
+def send_target_stock_status():
+    """타겟 종목 현황 보고서"""
     try:
-        # 시가총액 상위 종목들 중에서 선별
-        stock_list = KisKR.GetMarketCodeList(
-            price_limit=MAX_STOCK_PRICE,
-            min_market_cap=500000000000,  # 5천억원 이상
-            min_volume=50000,             # 최소 거래량
-            max_stocks=50
-        )
+        msg = "📋 타겟 종목 현황 📋\n"
+        msg += f"========== {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')} ==========\n"
         
-        if not stock_list:
-            logger.info("후보 종목 리스트가 비어있습니다.")
-            return []
+        for stock_code, config in TARGET_STOCKS.items():
+            if not config.get('enabled', True):
+                continue
+                
+            current_price = KisKR.GetCurrentPrice(stock_code)
+            if current_price:
+                stock_data = get_stock_data(stock_code)
+                if stock_data:
+                    buy_analysis = analyze_buy_signal(stock_data, config)
+                    
+                    msg += f"\n[{config['name']}({stock_code})]\n"
+                    msg += f"현재가: {current_price:,}원\n"
+                    msg += f"RSI: {stock_data['rsi']:.1f} (기준: {config['rsi_oversold']})\n"
+                    msg += f"매수점수: {buy_analysis['score']}/{config['min_score']}\n"
+                    
+                    if buy_analysis['is_buy_signal']:
+                        msg += "✅ 매수 신호 발생!\n"
+                    else:
+                        msg += "⏳ 매수 대기 중\n"
         
-        logger.info(f"총 {len(stock_list)}개 후보 종목 조회 완료")
-        return stock_list
+        logger.info(msg)
+        discord_alert.SendMessage(msg)
         
     except Exception as e:
-        logger.error(f"후보 종목 조회 중 에러: {str(e)}")
-        return []
+        logger.error(f"타겟 종목 현황 보고서 생성 중 에러: {str(e)}")
 
-def scan_buy_opportunities(trading_state):
-    """매수 기회 스캔"""
+################################### 메인 로직 ##################################
+
+def scan_target_stocks(trading_state):
+    """타겟 종목 매수 기회 스캔 (bb_trading.py 방식 + trend_trading.py 분석)"""
     try:
-        candidate_stocks = get_candidate_stocks()
-        if not candidate_stocks:
-            return []
-        
         buy_opportunities = []
         current_positions = len(trading_state['positions'])
         
@@ -691,20 +734,21 @@ def scan_buy_opportunities(trading_state):
             logger.info(f"최대 보유 종목 수({MAX_POSITIONS}개) 도달")
             return []
         
-        logger.info(f"매수 기회 스캔 시작: {len(candidate_stocks)}개 종목 분석")
+        logger.info(f"타겟 종목 매수 기회 스캔 시작: {len(TARGET_STOCKS)}개 종목 분석")
         
-        for stock in candidate_stocks:
+        for stock_code, target_config in TARGET_STOCKS.items():
             try:
-                stock_code = stock['code']
-                stock_name = stock['name']
-                
+                # 비활성화된 종목 제외
+                if not target_config.get('enabled', True):
+                    continue
+                    
                 # 이미 보유 중인 종목은 제외
                 if stock_code in trading_state['positions']:
                     continue
                 
                 # 가격 필터링
                 current_price = KisKR.GetCurrentPrice(stock_code)
-                if not current_price or current_price < MIN_STOCK_PRICE:
+                if not current_price or current_price < MIN_STOCK_PRICE or current_price > MAX_STOCK_PRICE:
                     continue
                 
                 # 종목 데이터 분석
@@ -712,21 +756,23 @@ def scan_buy_opportunities(trading_state):
                 if not stock_data:
                     continue
                 
-                # 매수 신호 분석
-                buy_analysis = analyze_buy_signal(stock_data)
+                # 매수 신호 분석 (종목별 설정 적용)
+                buy_analysis = analyze_buy_signal(stock_data, target_config)
                 
                 if buy_analysis['is_buy_signal']:
                     buy_opportunities.append({
                         'stock_code': stock_code,
-                        'stock_name': stock_name,
+                        'stock_name': target_config['name'],
                         'price': current_price,
                         'score': buy_analysis['score'],
+                        'min_score': buy_analysis['min_score'],
                         'signals': buy_analysis['signals'],
-                        'analysis': buy_analysis['analysis']
+                        'analysis': buy_analysis['analysis'],
+                        'target_config': target_config
                     })
                     
-                    logger.info(f"✅ 매수 기회 발견: {stock_name}({stock_code})")
-                    logger.info(f"   점수: {buy_analysis['score']}점")
+                    logger.info(f"✅ 매수 기회 발견: {target_config['name']}({stock_code})")
+                    logger.info(f"   점수: {buy_analysis['score']}/{buy_analysis['min_score']}점")
                     for signal in buy_analysis['signals']:
                         logger.info(f"   - {signal}")
             
@@ -744,13 +790,15 @@ def scan_buy_opportunities(trading_state):
         logger.error(f"매수 기회 스캔 중 에러: {str(e)}")
         return []
 
-def update_trailing_stop(position, current_price):
-    """트레일링 스탑 업데이트"""
+def update_trailing_stop(position, current_price, target_config):
+    """트레일링 스탑 업데이트 (bb_trading.py 방식 + 종목별 설정)"""
     try:
+        trailing_stop_ratio = target_config.get('trailing_stop', TRAILING_STOP_RATIO)
+        
         # 고점 업데이트
         if 'high_price' not in position or current_price > position['high_price']:
             position['high_price'] = current_price
-            position['trailing_stop'] = current_price * (1 - TRAILING_STOP_RATIO)
+            position['trailing_stop'] = current_price * (1 - trailing_stop_ratio)
             logger.info(f"트레일링 스탑 업데이트: 고점 {current_price:,.0f}원, 스탑 {position['trailing_stop']:,.0f}원")
         
         return position
@@ -760,13 +808,17 @@ def update_trailing_stop(position, current_price):
         return position
 
 def process_positions(trading_state):
-    """보유 포지션 관리"""
+    """보유 포지션 관리 (bb_trading.py 방식 + trend_trading.py 분석)"""
     try:
         my_stocks = KisKR.GetMyStockList()
         positions_to_remove = []
         
         for stock_code, position in trading_state['positions'].items():
             try:
+                # 타겟 종목이 아닌 경우 스킵
+                if stock_code not in TARGET_STOCKS:
+                    continue
+                
                 # 실제 보유 여부 확인
                 actual_holding = None
                 for stock in my_stocks:
@@ -779,7 +831,7 @@ def process_positions(trading_state):
                     positions_to_remove.append(stock_code)
                     continue
                 
-                stock_name = KisKR.GetStockName(stock_code)
+                target_config = TARGET_STOCKS[stock_code]
                 current_amount = int(actual_holding.get('StockAmt', 0))
                 
                 if current_amount <= 0:
@@ -794,22 +846,20 @@ def process_positions(trading_state):
                 current_price = stock_data['current_price']
                 
                 # 트레일링 스탑 업데이트
-                position = update_trailing_stop(position, current_price)
+                position = update_trailing_stop(position, current_price, target_config)
                 trading_state['positions'][stock_code] = position
                 
                 # 매도 신호 분석
-                sell_analysis = analyze_sell_signal(stock_data, position)
+                sell_analysis = analyze_sell_signal(stock_data, position, target_config)
                 
                 if sell_analysis['is_sell_signal']:
-                    logger.info(f"🔴 매도 신호 감지: {stock_name}({stock_code})")
+                    logger.info(f"🔴 매도 신호 감지: {target_config['name']}({stock_code})")
                     logger.info(f"   유형: {sell_analysis['sell_type']}")
-                    logger.info(f"   점수: {sell_analysis['score']}점")
-                    for signal in sell_analysis['signals']:
-                        logger.info(f"   - {signal}")
+                    logger.info(f"   이유: {sell_analysis['reason']}")
                     
                     # 매도 주문 실행
                     executed_price, executed_amount = execute_sell_order(
-                        stock_code, stock_name, current_amount
+                        stock_code, target_config, current_amount
                     )
                     
                     if executed_price and executed_amount:
@@ -829,11 +879,11 @@ def process_positions(trading_state):
                             trading_state['daily_stats']['winning_trades'] += 1
                         
                         # 매도 완료 알림
-                        msg = f"💰 매도 완료: {stock_name}({stock_code})\n"
+                        msg = f"💰 매도 완료: {target_config['name']}({stock_code})\n"
                         msg += f"매도가: {executed_price:,.0f}원\n"
                         msg += f"수량: {executed_amount}주\n"
                         msg += f"순손익: {net_profit:,.0f}원 ({profit_rate:.2f}%)\n"
-                        msg += f"매도사유: {sell_analysis['sell_type']}"
+                        msg += f"매도사유: {sell_analysis['reason']}"
                         
                         logger.info(msg)
                         discord_alert.SendMessage(msg)
@@ -841,7 +891,7 @@ def process_positions(trading_state):
                         # 포지션 제거
                         positions_to_remove.append(stock_code)
                     else:
-                        logger.error(f"매도 주문 실패: {stock_name}({stock_code})")
+                        logger.error(f"매도 주문 실패: {target_config['name']}({stock_code})")
                 
             except Exception as e:
                 logger.error(f"포지션 처리 중 에러 ({stock_code}): {str(e)}")
@@ -860,7 +910,7 @@ def process_positions(trading_state):
         return trading_state
 
 def execute_buy_opportunities(buy_opportunities, trading_state):
-    """매수 기회 실행"""
+    """매수 기회 실행 (bb_trading.py 방식 + 종목별 설정)"""
     try:
         if not buy_opportunities:
             return trading_state
@@ -874,17 +924,18 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
         total_money = float(balance.get('TotalMoney', 0))
         available_budget = total_money * TRADE_BUDGET_RATIO
         
-        # 일일 손실 한도 확인
-        daily_loss_rate = trading_state['daily_stats']['total_profit'] / trading_state['daily_stats']['start_balance'] if trading_state['daily_stats']['start_balance'] > 0 else 0
-        
-        if daily_loss_rate <= MAX_DAILY_LOSS:
-            logger.info(f"일일 손실 한도 도달: {daily_loss_rate*100:.1f}%")
-            return trading_state
-        
-        # 일일 수익 한도 확인
-        if daily_loss_rate >= MAX_DAILY_PROFIT:
-            logger.info(f"일일 수익 한도 도달: {daily_loss_rate*100:.1f}%")
-            return trading_state
+        # 일일 손실/수익 한도 확인
+        daily_stats = trading_state['daily_stats']
+        if daily_stats['start_balance'] > 0:
+            daily_profit_rate = daily_stats['total_profit'] / daily_stats['start_balance']
+            
+            if daily_profit_rate <= MAX_DAILY_LOSS:
+                logger.info(f"일일 손실 한도 도달: {daily_profit_rate*100:.1f}%")
+                return trading_state
+            
+            if daily_profit_rate >= MAX_DAILY_PROFIT:
+                logger.info(f"일일 수익 한도 도달: {daily_profit_rate*100:.1f}%")
+                return trading_state
         
         current_positions = len(trading_state['positions'])
         max_new_positions = MAX_POSITIONS - current_positions
@@ -895,13 +946,10 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                 stock_code = opportunity['stock_code']
                 stock_name = opportunity['stock_name']
                 stock_price = opportunity['price']
+                target_config = opportunity['target_config']
                 
-                # 포지션 크기 계산
-                quantity = calculate_position_size(
-                    available_budget / max_new_positions,
-                    stock_price,
-                    trading_state['positions']
-                )
+                # 포지션 크기 계산 (종목별 설정 적용)
+                quantity = calculate_position_size(target_config, available_budget, stock_price)
                 
                 if quantity < 1:
                     logger.info(f"매수 수량 부족: {stock_name}({stock_code})")
@@ -909,26 +957,28 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                 
                 logger.info(f"🔵 매수 시도: {stock_name}({stock_code})")
                 logger.info(f"   수량: {quantity}주, 가격: {stock_price:,.0f}원")
+                logger.info(f"   점수: {opportunity['score']}/{opportunity['min_score']}점")
                 
                 # 매수 주문 실행
                 executed_price, executed_amount = execute_buy_order(
-                    stock_code, stock_name, quantity, stock_price
+                    stock_code, target_config, quantity, stock_price
                 )
                 
                 if executed_price and executed_amount:
                     # 매수 수수료 계산
                     buy_fee = calculate_trading_fee(executed_price, executed_amount, True)
                     
-                    # 포지션 정보 저장
+                    # 포지션 정보 저장 (종목별 설정 포함)
                     trading_state['positions'][stock_code] = {
                         'stock_code': stock_code,
                         'stock_name': stock_name,
                         'entry_price': executed_price,
                         'amount': executed_amount,
                         'buy_fee': buy_fee,
-                        'entry_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        'entry_time': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                         'high_price': executed_price,
-                        'trailing_stop': executed_price * (1 - TRAILING_STOP_RATIO),
+                        'trailing_stop': executed_price * (1 - target_config.get('trailing_stop', TRAILING_STOP_RATIO)),
+                        'target_config': target_config,
                         'buy_analysis': opportunity['analysis']
                     }
                     
@@ -937,7 +987,9 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                     msg += f"매수가: {executed_price:,.0f}원\n"
                     msg += f"수량: {executed_amount}주\n"
                     msg += f"투자금액: {executed_price * executed_amount:,.0f}원\n"
-                    msg += f"수수료: {buy_fee:,.0f}원"
+                    msg += f"수수료: {buy_fee:,.0f}원\n"
+                    msg += f"목표수익률: {target_config.get('profit_target', TAKE_PROFIT_RATIO)*100:.1f}%\n"
+                    msg += f"손절률: {target_config.get('stop_loss', STOP_LOSS_RATIO)*100:.1f}%"
                     
                     logger.info(msg)
                     discord_alert.SendMessage(msg)
@@ -956,17 +1008,28 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
 
 def main():
     """메인 함수"""
-    msg = "🤖 볼린저밴드 매매 봇 시작!"
+    msg = "🎯 타겟 종목 매매봇 시작!"
     logger.info(msg)
     discord_alert.SendMessage(msg)
+    
+    # 타겟 종목 현황 출력
+    enabled_count = sum(1 for config in TARGET_STOCKS.values() if config.get('enabled', True))
+    logger.info(f"활성화된 타겟 종목: {enabled_count}개")
+    for stock_code, config in TARGET_STOCKS.items():
+        if config.get('enabled', True):
+            logger.info(f"  - {config['name']}({stock_code}): "
+                       f"목표수익률 {config.get('profit_target', 0)*100:.1f}%, "
+                       f"손절률 {config.get('stop_loss', 0)*100:.1f}%, "
+                       f"배분비율 {config.get('allocation_ratio', 0)*100:.1f}%")
     
     # 초기 상태
     daily_report_sent = False
     market_open_notified = False
+    last_status_report = datetime.datetime.now()
     
     while True:
         try:
-            now = datetime.now()
+            now = datetime.datetime.now()
             today = now.strftime('%Y-%m-%d')
             
             # 거래 시간 체크
@@ -997,7 +1060,8 @@ def main():
                 if balance:
                     total_money = float(balance.get('TotalMoney', 0))
                     msg = f"🔔 장 시작!\n총 자산: {total_money:,.0f}원\n"
-                    msg += f"봇 운용자금: {total_money * TRADE_BUDGET_RATIO:,.0f}원"
+                    msg += f"봇 운용자금: {total_money * TRADE_BUDGET_RATIO:,.0f}원\n"
+                    msg += f"타겟 종목: {enabled_count}개"
                     logger.info(msg)
                     discord_alert.SendMessage(msg)
                 market_open_notified = True
@@ -1009,19 +1073,24 @@ def main():
                 continue
             
             # 포지션 관리 (매도 신호 체크)
-            logger.info("=== 보유 포지션 관리 ===")
+            logger.info("=== 타겟 종목 포지션 관리 ===")
             trading_state = process_positions(trading_state)
             save_trading_state(trading_state)
             
             # 새로운 매수 기회 스캔 (15시 이전까지만)
             if now.hour < 15:
-                logger.info("=== 매수 기회 스캔 ===")
-                buy_opportunities = scan_buy_opportunities(trading_state)
+                logger.info("=== 타겟 종목 매수 기회 스캔 ===")
+                buy_opportunities = scan_target_stocks(trading_state)
                 
                 if buy_opportunities:
                     # 매수 실행
                     trading_state = execute_buy_opportunities(buy_opportunities, trading_state)
                     save_trading_state(trading_state)
+            
+            # 1시간마다 타겟 종목 현황 보고
+            if (now - last_status_report).seconds >= 3600:  # 1시간마다
+                send_target_stock_status()
+                last_status_report = now
             
             # 장 마감 후 일일 보고서 (15:30 이후)
             if now.hour >= 15 and now.minute >= 30 and not daily_report_sent:
@@ -1038,8 +1107,7 @@ def main():
             time.sleep(60)  # 에러 발생 시 1분 대기
 
 if __name__ == "__main__":
-    # 실제 거래 모드로 설정 (테스트 시에는 주석 해제)
-    # Common.SetChangeMode("VIRTUAL")
+    # 실제 거래 모드로 설정
     Common.SetChangeMode()
     
     main()
