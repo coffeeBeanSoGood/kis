@@ -266,6 +266,27 @@ class TradingConfig:
         """설정 파일 다시 로드"""
         self.load_config()
 
+    # 기존 속성들 다음에 추가
+    @property
+    def use_absolute_budget(self):
+        """절대 예산 사용 여부"""
+        return self.config.get("use_absolute_budget", False)
+
+    @property
+    def absolute_budget(self):
+        """절대 예산 금액 (원)"""
+        return self.config.get("absolute_budget", 5000000)
+
+    @property
+    def use_adaptive_strategy(self):
+        """적응형 전략 사용 여부"""
+        return self.config.get("use_adaptive_strategy", True)
+
+    @property
+    def use_trend_filter(self):
+        """트렌드 필터 사용 여부"""
+        return self.config.get("use_trend_filter", True)
+
 ################################### 로깅 처리 ##################################
 
 log_directory = "logs"
@@ -306,6 +327,9 @@ logger.addHandler(console_handler)
 
 KisKR.set_logger(logger)
 Common.set_logger(logger)
+
+import technical_analysis
+technical_analysis.set_logger(logger)
 
 # =========================== 전역 설정 인스턴스 ===========================
 trading_config = None
@@ -485,6 +509,263 @@ def check_trading_time():
         logger.error(f"거래 시간 체크 중 에러 발생: {str(e)}")
         return False, False
 
+def detect_stock_environment(stock_code):
+    """개별 종목의 환경 감지 - 시장 환경 감지 로직 적용"""
+    try:
+        # 개별 종목 데이터 조회
+        stock_data = KisKR.GetOhlcvNew(stock_code, 'D', 60, adj_ok=1)
+        
+        if stock_data is None or stock_data.empty:
+            return "sideways"  # 기본값
+        
+        # 이동평균선 계산
+        stock_data['MA5'] = stock_data['close'].rolling(window=5).mean()
+        stock_data['MA20'] = stock_data['close'].rolling(window=20).mean()
+        stock_data['MA60'] = stock_data['close'].rolling(window=60).mean()
+        
+        # RSI 계산 추가
+        stock_data['RSI'] = TechnicalIndicators.calculate_rsi(stock_data)
+        
+        # MACD 계산 추가
+        stock_data[['MACD', 'Signal', 'Histogram']] = TechnicalIndicators.calculate_macd(
+            stock_data, 
+            fast_period=12, 
+            slow_period=26, 
+            signal_period=9
+        )
+        
+        # 볼린저 밴드 계산 추가
+        stock_data[['MiddleBand', 'UpperBand', 'LowerBand']] = TechnicalIndicators.calculate_bollinger_bands(
+            stock_data,
+            period=20,
+            num_std=2.0
+        )
+        
+        # 추세 강도 계산 (ADX 대용)
+        trend_strength = abs((stock_data['MA20'].iloc[-1] / stock_data['MA20'].iloc[-21] - 1) * 100)
+        
+        # 이동평균선 방향성
+        ma5_slope = (stock_data['MA5'].iloc[-1] / stock_data['MA5'].iloc[-6] - 1) * 100
+        ma20_slope = (stock_data['MA20'].iloc[-1] / stock_data['MA20'].iloc[-21] - 1) * 100
+        
+        # 변동성 측정 (볼린저 밴드 폭)
+        recent_bandwidth = (stock_data['UpperBand'].iloc[-1] - stock_data['LowerBand'].iloc[-1]) / stock_data['MiddleBand'].iloc[-1] * 100
+        avg_bandwidth = ((stock_data['UpperBand'] - stock_data['LowerBand']) / stock_data['MiddleBand']).rolling(window=20).mean().iloc[-1] * 100
+        
+        # 볼륨 트렌드 (거래량 증가 여부)
+        volume_trend = (stock_data['volume'].iloc[-5:].mean() / stock_data['volume'].iloc[-20:-5].mean()) > 1.0
+        
+        # MACD 히스토그램 방향
+        histogram_direction = stock_data['Histogram'].diff().iloc[-1] > 0
+        
+        # 최근 연속 상승/하락 일수 계산
+        price_changes = stock_data['close'].pct_change().iloc[-10:]
+        consecutive_up = 0
+        consecutive_down = 0
+        current_consecutive_up = 0
+        current_consecutive_down = 0
+        
+        for change in price_changes:
+            if change > 0:
+                current_consecutive_up += 1
+                current_consecutive_down = 0
+            elif change < 0:
+                current_consecutive_down += 1
+                current_consecutive_up = 0
+            else:
+                current_consecutive_up = 0
+                current_consecutive_down = 0
+                
+            consecutive_up = max(consecutive_up, current_consecutive_up)
+            consecutive_down = max(consecutive_down, current_consecutive_down)
+        
+        # 상승장 지표 점수
+        uptrend_score = 0
+        if ma5_slope > 0.8: uptrend_score += 2
+        if ma20_slope > 0.3: uptrend_score += 2
+        if stock_data['MA5'].iloc[-1] > stock_data['MA20'].iloc[-1]: uptrend_score += 1
+        if stock_data['close'].iloc[-1] > stock_data['MA20'].iloc[-1]: uptrend_score += 1
+        if stock_data['RSI'].iloc[-1] > 55: uptrend_score += 1
+        if histogram_direction: uptrend_score += 1
+        if volume_trend: uptrend_score += 1
+        if consecutive_up >= 3: uptrend_score += 1
+        
+        # 하락장 지표 점수
+        downtrend_score = 0
+        if ma5_slope < -0.8: downtrend_score += 2
+        if ma20_slope < -0.3: downtrend_score += 2
+        if stock_data['MA5'].iloc[-1] < stock_data['MA20'].iloc[-1]: downtrend_score += 1
+        if stock_data['close'].iloc[-1] < stock_data['MA20'].iloc[-1]: downtrend_score += 1
+        if stock_data['RSI'].iloc[-1] < 45: downtrend_score += 1
+        if not histogram_direction: downtrend_score += 1
+        if not volume_trend: downtrend_score += 1
+        if consecutive_down >= 3: downtrend_score += 1
+        
+        # 횡보장 지표 - 변동성 관련
+        sideways_score = 0
+        if abs(ma5_slope) < 0.5: sideways_score += 2  # 단기 이동평균 기울기가 완만함
+        if abs(ma20_slope) < 0.3: sideways_score += 2  # 중기 이동평균 기울기가 완만함
+        if recent_bandwidth < avg_bandwidth: sideways_score += 2  # 최근 변동성이 평균보다 낮음
+        if stock_data['RSI'].iloc[-1] > 40 and stock_data['RSI'].iloc[-1] < 60: sideways_score += 2  # RSI가 중간 영역
+        if abs(stock_data['close'].iloc[-1] - stock_data['MA20'].iloc[-1]) / stock_data['MA20'].iloc[-1] < 0.02: sideways_score += 2  # 종가가 20일선 근처
+        
+        # 점수 기반 종목 환경 판단
+        logger.debug(f"종목 {stock_code} 환경 점수 - 상승: {uptrend_score}, 하락: {downtrend_score}, 횡보: {sideways_score}")
+        
+        # 명확한 상승장/하락장 조건
+        if uptrend_score >= 7 and uptrend_score > downtrend_score + 3 and uptrend_score > sideways_score + 2:
+            result = "uptrend"
+        elif downtrend_score >= 7 and downtrend_score > uptrend_score + 3 and downtrend_score > sideways_score + 2:
+            result = "downtrend"
+        # 횡보장 조건 강화
+        elif sideways_score >= 6 and abs(uptrend_score - downtrend_score) <= 2:
+            result = "sideways"
+        # 약한 상승/하락 추세
+        elif uptrend_score > downtrend_score + 2:
+            result = "uptrend"
+        elif downtrend_score > uptrend_score + 2:
+            result = "downtrend"
+        # 그 외는 횡보장으로 판단
+        else:
+            result = "sideways"
+        
+        logger.debug(f"종목 {stock_code} 환경 판정: {result}")
+        return result
+        
+    except Exception as e:
+        logger.warning(f"종목 {stock_code} 환경 감지 중 오류: {str(e)}")
+        return "sideways"  # 기본값
+
+
+def detect_market_environment():
+    """현재 시장 환경 감지 - 개선된 로직"""
+    try:
+        # 코스피 지수 데이터 조회 (KODEX 200 ETF)
+        market_index_code = "069500"
+        market_data = KisKR.GetOhlcvNew(market_index_code, 'D', 60, adj_ok=1)
+        
+        if market_data is None or market_data.empty:
+            return "sideways"  # 기본값
+        
+        # 이동평균선 계산
+        market_data['MA5'] = market_data['close'].rolling(window=5).mean()
+        market_data['MA20'] = market_data['close'].rolling(window=20).mean()
+        market_data['MA60'] = market_data['close'].rolling(window=60).mean()
+        
+        # RSI 계산 추가
+        market_data['RSI'] = TechnicalIndicators.calculate_rsi(market_data)
+        
+        # MACD 계산 추가
+        market_data[['MACD', 'Signal', 'Histogram']] = TechnicalIndicators.calculate_macd(
+            market_data, 
+            fast_period=12, 
+            slow_period=26, 
+            signal_period=9
+        )
+        
+        # 볼린저 밴드 계산 추가
+        market_data[['MiddleBand', 'UpperBand', 'LowerBand']] = TechnicalIndicators.calculate_bollinger_bands(
+            market_data,
+            period=20,
+            num_std=2.0
+        )
+        
+        # 추세 강도 계산 (ADX 대용)
+        trend_strength = abs((market_data['MA20'].iloc[-1] / market_data['MA20'].iloc[-21] - 1) * 100)
+        
+        # 이동평균선 방향성
+        ma5_slope = (market_data['MA5'].iloc[-1] / market_data['MA5'].iloc[-6] - 1) * 100
+        ma20_slope = (market_data['MA20'].iloc[-1] / market_data['MA20'].iloc[-21] - 1) * 100
+        
+        # 변동성 측정 (볼린저 밴드 폭)
+        recent_bandwidth = (market_data['UpperBand'].iloc[-1] - market_data['LowerBand'].iloc[-1]) / market_data['MiddleBand'].iloc[-1] * 100
+        avg_bandwidth = ((market_data['UpperBand'] - market_data['LowerBand']) / market_data['MiddleBand']).rolling(window=20).mean().iloc[-1] * 100
+        
+        # 볼륨 트렌드 (거래량 증가 여부)
+        volume_trend = (market_data['volume'].iloc[-5:].mean() / market_data['volume'].iloc[-20:-5].mean()) > 1.0
+        
+        # MACD 히스토그램 방향
+        histogram_direction = market_data['Histogram'].diff().iloc[-1] > 0
+        
+        # 최근 연속 상승/하락 일수 계산
+        price_changes = market_data['close'].pct_change().iloc[-10:]
+        consecutive_up = 0
+        consecutive_down = 0
+        current_consecutive_up = 0
+        current_consecutive_down = 0
+        
+        for change in price_changes:
+            if change > 0:
+                current_consecutive_up += 1
+                current_consecutive_down = 0
+            elif change < 0:
+                current_consecutive_down += 1
+                current_consecutive_up = 0
+            else:
+                current_consecutive_up = 0
+                current_consecutive_down = 0
+                
+            consecutive_up = max(consecutive_up, current_consecutive_up)
+            consecutive_down = max(consecutive_down, current_consecutive_down)
+        
+        # 상승장 지표 점수
+        uptrend_score = 0
+        if ma5_slope > 0.8: uptrend_score += 2
+        if ma20_slope > 0.3: uptrend_score += 2
+        if market_data['MA5'].iloc[-1] > market_data['MA20'].iloc[-1]: uptrend_score += 1
+        if market_data['close'].iloc[-1] > market_data['MA20'].iloc[-1]: uptrend_score += 1
+        if market_data['RSI'].iloc[-1] > 55: uptrend_score += 1
+        if histogram_direction: uptrend_score += 1
+        if volume_trend: uptrend_score += 1
+        if consecutive_up >= 3: uptrend_score += 1
+        
+        # 하락장 지표 점수
+        downtrend_score = 0
+        if ma5_slope < -0.8: downtrend_score += 2
+        if ma20_slope < -0.3: downtrend_score += 2
+        if market_data['MA5'].iloc[-1] < market_data['MA20'].iloc[-1]: downtrend_score += 1
+        if market_data['close'].iloc[-1] < market_data['MA20'].iloc[-1]: downtrend_score += 1
+        if market_data['RSI'].iloc[-1] < 45: downtrend_score += 1
+        if not histogram_direction: downtrend_score += 1
+        if not volume_trend: downtrend_score += 1
+        if consecutive_down >= 3: downtrend_score += 1
+        
+        # 횡보장 지표 - 변동성 관련
+        sideways_score = 0
+        if abs(ma5_slope) < 0.5: sideways_score += 2  # 단기 이동평균 기울기가 완만함
+        if abs(ma20_slope) < 0.3: sideways_score += 2  # 중기 이동평균 기울기가 완만함
+        if recent_bandwidth < avg_bandwidth: sideways_score += 2  # 최근 변동성이 평균보다 낮음
+        if market_data['RSI'].iloc[-1] > 40 and market_data['RSI'].iloc[-1] < 60: sideways_score += 2  # RSI가 중간 영역
+        if abs(market_data['close'].iloc[-1] - market_data['MA20'].iloc[-1]) / market_data['MA20'].iloc[-1] < 0.02: sideways_score += 2  # 종가가 20일선 근처
+        
+        # 점수 기반 시장 환경 판단 (개선된 알고리즘)
+        logger.info(f"시장 환경 점수 - 상승: {uptrend_score}, 하락: {downtrend_score}, 횡보: {sideways_score}")
+        
+        # 명확한 상승장/하락장 조건
+        if uptrend_score >= 7 and uptrend_score > downtrend_score + 3 and uptrend_score > sideways_score + 2:
+            result = "uptrend"
+        elif downtrend_score >= 7 and downtrend_score > uptrend_score + 3 and downtrend_score > sideways_score + 2:
+            result = "downtrend"
+        # 횡보장 조건 강화
+        elif sideways_score >= 6 and abs(uptrend_score - downtrend_score) <= 2:  # 상승/하락 점수 차이가 작고 횡보 점수가 높은 경우
+            result = "sideways"
+        # 약한 상승/하락 추세
+        elif uptrend_score > downtrend_score + 2:
+            result = "uptrend"
+        elif downtrend_score > uptrend_score + 2:
+            result = "downtrend"
+        # 그 외는 횡보장으로 판단
+        else:
+            result = "sideways"
+        
+        logger.info(f"시장 환경 판정: {result}")
+        return result
+        
+    except Exception as e:
+        logger.warning(f"시장 환경 감지 중 오류: {str(e)}")
+        return "sideways"  # 기본값
+
+
 ################################### 기술적 분석 함수 ##################################
 
 def get_stock_data(stock_code):
@@ -553,108 +834,166 @@ def get_stock_data(stock_code):
 ################################### 매매 신호 분석 ##################################
 
 def analyze_buy_signal(stock_data, target_config):
-    """매수 신호 분석 (Config 적용)"""
-    try:
-        signals = []
-        score = 0
-        
-        stock_code = stock_data['stock_code']
-        current_price = stock_data['current_price']
-        rsi = stock_data['rsi']
-        
-        # 종목별 개별 설정 적용 (없으면 전역 설정 사용)
-        rsi_oversold = target_config.get('rsi_oversold', trading_config.rsi_oversold)
-        min_score = target_config.get('min_score', 70)
-        
-        # 1. RSI 과매도 신호 (25점)
-        if rsi <= rsi_oversold:
-            score += 25
-            signals.append(f"RSI 과매도 {rsi:.1f} (+25)")
-        elif rsi <= rsi_oversold + 5:
-            score += 15
-            signals.append(f"RSI 매수권 진입 {rsi:.1f} (+15)")
-        
-        # 2. 볼린저밴드 신호 (20점)
-        bb_position = "middle"
-        if current_price <= stock_data['bb_lower']:
-            score += 20
-            signals.append("볼린저밴드 하단 터치 (+20)")
-            bb_position = "lower"
-        elif current_price <= stock_data['bb_middle']:
-            score += 10
-            signals.append("볼린저밴드 중간선 하단 (+10)")
-            bb_position = "below_middle"
-        
-        # 3. MACD 신호 (20점)
-        macd = stock_data['macd']
-        macd_signal = stock_data['macd_signal']
-        macd_histogram = stock_data['macd_histogram']
-        
-        if macd > macd_signal and macd_histogram > 0:
-            score += 20
-            signals.append("MACD 골든크로스 + 상승 (+20)")
-        elif macd > macd_signal:
-            score += 15
-            signals.append("MACD 골든크로스 (+15)")
-        elif macd_histogram > 0:
-            score += 10
-            signals.append("MACD 히스토그램 상승 (+10)")
-        
-        # 4. 이동평균선 신호 (15점)
-        ma5 = stock_data['ma5']
-        ma20 = stock_data['ma20']
-        ma60 = stock_data['ma60']
-        
-        if ma5 > ma20 > ma60:  # 정배열
-            score += 15
-            signals.append("이동평균선 정배열 (+15)")
-        elif ma5 > ma20:  # 단기 상승
-            score += 10
-            signals.append("단기 이평선 돌파 (+10)")
-        
-        # 5. 지지선 근처 신호 (10점)
-        support = stock_data['support']
-        if support > 0 and current_price <= support * 1.02:  # 지지선 2% 이내
-            score += 10
-            signals.append("지지선 근처 (+10)")
-        
-        # 6. 거래량 분석
-        df = stock_data['ohlcv_data']
-        if len(df) >= 20:
-            recent_volume = df['volume'].iloc[-1]
-            avg_volume = df['volume'].rolling(20).mean().iloc[-1]
-            volume_ratio = recent_volume / avg_volume if avg_volume > 0 else 1
-            
-            if volume_ratio >= 1.5:
-                score += 10
-                signals.append(f"거래량 급증 {volume_ratio:.1f}배 (+10)")
-            elif volume_ratio >= 1.2:
-                score += 5
-                signals.append(f"거래량 증가 {volume_ratio:.1f}배 (+5)")
-        
-        # 매수 신호 판정
-        is_buy_signal = score >= min_score
-        
-        return {
-            'is_buy_signal': is_buy_signal,
-            'score': score,
-            'min_score': min_score,
-            'signals': signals,
-            'bb_position': bb_position,
-            'analysis': {
-                'rsi': rsi,
-                'rsi_threshold': rsi_oversold,
-                'macd_cross': macd > macd_signal,
-                'price_vs_bb_lower': (current_price / stock_data['bb_lower'] - 1) * 100 if stock_data['bb_lower'] > 0 else 0
-            }
-        }
-        
-    except Exception as e:
-        logger.error(f"매수 신호 분석 중 에러: {str(e)}")
-        return {'is_buy_signal': False, 'score': 0, 'signals': []}
-
+   """매수 신호 분석 (적응형 전략 적용)"""
+   try:
+       # 적응형 전략 적용
+       if trading_config.use_adaptive_strategy:
+           # 종목 환경만 사용 (더 정확)
+           stock_env = detect_stock_environment(stock_data['stock_code'])
+           
+           # 적응형 전략 인스턴스 생성
+           adaptive_strategy = AdaptiveMarketStrategy("bb_adaptive_strategy.json")
+           
+           # 종목별 맞춤 전략 가져오기
+           stock_strategy = adaptive_strategy.get_stock_strategy(stock_data['stock_code'], stock_env)
+           
+           # 전략에 따른 파라미터 조정
+           rsi_oversold = target_config.get('rsi_oversold', trading_config.rsi_oversold) + stock_strategy.get("rsi_threshold_adjustment", 0)
+           min_score = target_config.get('min_score', 70) - stock_strategy.get("required_signals", 2) * 5
+       else:
+           # 기존 방식 사용
+           rsi_oversold = target_config.get('rsi_oversold', trading_config.rsi_oversold)
+           min_score = target_config.get('min_score', 70)
+       
+       signals = []
+       score = 0
+       
+       stock_code = stock_data['stock_code']
+       current_price = stock_data['current_price']
+       rsi = stock_data['rsi']
+       
+       # 1. RSI 과매도 신호 (조정된 임계값 사용)
+       if rsi <= rsi_oversold:
+           score += 25
+           signals.append(f"RSI 과매도 {rsi:.1f} (+25)")
+       elif rsi <= rsi_oversold + 5:
+           score += 15
+           signals.append(f"RSI 매수권 진입 {rsi:.1f} (+15)")
+       
+       # 2. 볼린저밴드 신호 (20점)
+       bb_position = "middle"
+       if current_price <= stock_data['bb_lower']:
+           score += 20
+           signals.append("볼린저밴드 하단 터치 (+20)")
+           bb_position = "lower"
+       elif current_price <= stock_data['bb_middle']:
+           score += 10
+           signals.append("볼린저밴드 중간선 하단 (+10)")
+           bb_position = "below_middle"
+       
+       # 3. MACD 신호 (20점)
+       macd = stock_data['macd']
+       macd_signal = stock_data['macd_signal']
+       macd_histogram = stock_data['macd_histogram']
+       
+       if macd > macd_signal and macd_histogram > 0:
+           score += 20
+           signals.append("MACD 골든크로스 + 상승 (+20)")
+       elif macd > macd_signal:
+           score += 15
+           signals.append("MACD 골든크로스 (+15)")
+       elif macd_histogram > 0:
+           score += 10
+           signals.append("MACD 히스토그램 상승 (+10)")
+       
+       # 4. 이동평균선 신호 (15점)
+       ma5 = stock_data['ma5']
+       ma20 = stock_data['ma20']
+       ma60 = stock_data['ma60']
+       
+       if ma5 > ma20 > ma60:  # 정배열
+           score += 15
+           signals.append("이동평균선 정배열 (+15)")
+       elif ma5 > ma20:  # 단기 상승
+           score += 10
+           signals.append("단기 이평선 돌파 (+10)")
+       
+       # 5. 지지선 근처 신호 (10점)
+       support = stock_data['support']
+       if support > 0 and current_price <= support * 1.02:  # 지지선 2% 이내
+           score += 10
+           signals.append("지지선 근처 (+10)")
+       
+       # 6. 거래량 분석
+       df = stock_data['ohlcv_data']
+       if len(df) >= 20:
+           recent_volume = df['volume'].iloc[-1]
+           avg_volume = df['volume'].rolling(20).mean().iloc[-1]
+           volume_ratio = recent_volume / avg_volume if avg_volume > 0 else 1
+           
+           if volume_ratio >= 1.5:
+               score += 10
+               signals.append(f"거래량 급증 {volume_ratio:.1f}배 (+10)")
+           elif volume_ratio >= 1.2:
+               score += 5
+               signals.append(f"거래량 증가 {volume_ratio:.1f}배 (+5)")
+       
+       # 7. 적응형 전략 추가 신호 (시장 환경별)
+       if trading_config.use_adaptive_strategy:
+           # 상승장에서의 추가 매수 신호
+           if stock_env == "uptrend":
+               # 골든크로스 직후 매수 신호
+               if ma5 > ma20 and abs((ma5 / ma20) - 1) < 0.01:  # 5일선이 20일선을 막 돌파
+                   score += 15
+                   signals.append("골든크로스 직후 (+15)")
+               
+               # 상승 추세에서 일시적 조정 후 반등
+               if current_price > ma20 and current_price < ma5:
+                   score += 10
+                   signals.append("상승 추세 중 조정 후 반등 기대 (+10)")
+           
+           # 하락장에서의 안전 매수 신호
+           elif stock_env == "downtrend":
+               # 극도의 과매도에서만 매수
+               if rsi <= 20:
+                   score += 15
+                   signals.append("극도 과매도 (+15)")
+               else:
+                   score -= 10  # 하락장에서는 점수 감점
+                   signals.append("하락장 위험 (-10)")
+           
+           # 횡보장에서의 매수 신호
+           else:  # sideways
+               # 볼린저밴드 활용 강화
+               if bb_position == "lower":
+                   score += 10
+                   signals.append("횡보장 밴드 하단 매수 (+10)")
+       
+       # 매수 신호 판정 (적응형 전략 고려)
+       is_buy_signal = score >= min_score
+       
+       # 추가 필터링 (적응형 전략)
+       if trading_config.use_adaptive_strategy and is_buy_signal:
+           required_signals = stock_strategy.get("required_signals", 2)
+           signal_count = len(signals)
+           
+           if signal_count < required_signals:
+               is_buy_signal = False
+               signals.append(f"신호 부족 ({signal_count}/{required_signals})")
+       
+       return {
+           'is_buy_signal': is_buy_signal,
+           'score': score,
+           'min_score': min_score,
+           'signals': signals,
+           'bb_position': bb_position,
+           'market_environment': stock_env if trading_config.use_adaptive_strategy else "unknown",
+           'analysis': {
+               'rsi': rsi,
+               'rsi_threshold': rsi_oversold,
+               'macd_cross': macd > macd_signal,
+               'price_vs_bb_lower': (current_price / stock_data['bb_lower'] - 1) * 100 if stock_data['bb_lower'] > 0 else 0,
+               'adaptive_strategy_applied': trading_config.use_adaptive_strategy,
+               'trend_filter_applied': trading_config.use_trend_filter
+           }
+       }
+       
+   except Exception as e:
+       logger.error(f"매수 신호 분석 중 에러: {str(e)}")
+       return {'is_buy_signal': False, 'score': 0, 'signals': [f"분석 오류: {str(e)}"]}
+   
 def analyze_sell_signal(stock_data, position, target_config):
-    """매도 신호 분석 (Config 적용)"""
+    """매도 신호 분석 (적응형 전략 적용)"""
     try:
         stock_code = stock_data['stock_code']
         current_price = stock_data['current_price']
@@ -663,45 +1002,65 @@ def analyze_sell_signal(stock_data, position, target_config):
         # 수익률 계산
         profit_rate = (current_price - entry_price) / entry_price
         
-        # 종목별 개별 설정 적용 (없으면 전역 설정 사용)
-        profit_target = target_config.get('profit_target', trading_config.take_profit_ratio)
-        stop_loss = target_config.get('stop_loss', trading_config.stop_loss_ratio)
-        trailing_stop = target_config.get('trailing_stop', trading_config.trailing_stop_ratio)
-        rsi_overbought = target_config.get('rsi_overbought', trading_config.rsi_overbought)
+        # 적응형 전략 적용
+        if trading_config.use_adaptive_strategy:
+            # 시장 환경 감지
+            market_env = detect_market_environment()
+            
+            # 적응형 전략 인스턴스 생성
+            adaptive_strategy = AdaptiveMarketStrategy("bb_adaptive_strategy.json")
+            
+            # 종목별 맞춤 전략 가져오기
+            stock_strategy = adaptive_strategy.get_stock_strategy(stock_code, market_env)
+            
+            # 전략에 따른 파라미터 조정
+            profit_target = target_config.get('profit_target', trading_config.take_profit_ratio) * stock_strategy.get("profit_target_multiplier", 1.0)
+            stop_loss = target_config.get('stop_loss', trading_config.stop_loss_ratio) * stock_strategy.get("stop_loss_multiplier", 1.0)
+            trailing_stop = target_config.get('trailing_stop', trading_config.trailing_stop_ratio) * stock_strategy.get("trailing_stop_multiplier", 1.0)
+            rsi_overbought = target_config.get('rsi_overbought', trading_config.rsi_overbought) + stock_strategy.get("rsi_threshold_adjustment", 0)
+        else:
+            # 기존 방식 사용
+            profit_target = target_config.get('profit_target', trading_config.take_profit_ratio)
+            stop_loss = target_config.get('stop_loss', trading_config.stop_loss_ratio)
+            trailing_stop = target_config.get('trailing_stop', trading_config.trailing_stop_ratio)
+            rsi_overbought = target_config.get('rsi_overbought', trading_config.rsi_overbought)
         
-        # 1. 손익 관리 신호 (최우선)
+        # 1. 손익 관리 신호 (최우선 - 조정된 파라미터 사용)
         if profit_rate <= stop_loss:
             return {
                 'is_sell_signal': True,
                 'sell_type': 'stop_loss',
-                'reason': f"손절 실행 {profit_rate*100:.1f}%",
-                'urgent': True
+                'reason': f"손절 실행 {profit_rate*100:.1f}% (기준: {stop_loss*100:.1f}%)",
+                'urgent': True,
+                'market_environment': market_env if trading_config.use_adaptive_strategy else "unknown"
             }
         
         if profit_rate >= profit_target:
             return {
                 'is_sell_signal': True,
                 'sell_type': 'take_profit',
-                'reason': f"익절 실행 {profit_rate*100:.1f}%",
-                'urgent': True
+                'reason': f"익절 실행 {profit_rate*100:.1f}% (기준: {profit_target*100:.1f}%)",
+                'urgent': True,
+                'market_environment': market_env if trading_config.use_adaptive_strategy else "unknown"
             }
         
-        # 2. 트레일링 스탑 확인
+        # 2. 트레일링 스탑 확인 (조정된 파라미터 사용)
         if 'high_price' in position:
             trailing_loss = (position['high_price'] - current_price) / position['high_price']
             if trailing_loss >= trailing_stop:
                 return {
                     'is_sell_signal': True,
                     'sell_type': 'trailing_stop',
-                    'reason': f"트레일링 스탑 {trailing_loss*100:.1f}%",
-                    'urgent': True
+                    'reason': f"트레일링 스탑 {trailing_loss*100:.1f}% (기준: {trailing_stop*100:.1f}%)",
+                    'urgent': True,
+                    'market_environment': market_env if trading_config.use_adaptive_strategy else "unknown"
                 }
         
         # 3. 기술적 분석 기반 매도 신호
         signals = []
         score = 0
         
-        # RSI 과매수
+        # RSI 과매수 (조정된 임계값 사용)
         rsi = stock_data['rsi']
         if rsi >= rsi_overbought:
             score += 30
@@ -730,11 +1089,62 @@ def analyze_sell_signal(stock_data, position, target_config):
             score += 20
             signals.append("데드크로스 발생")
         
-        # 기술적 매도 신호 판정
-        if profit_rate > 0.01:  # 수익 상태에서는 낮은 점수로도 매도
-            is_sell_signal = score >= 70
-        else:  # 손실 상태에서는 더 높은 점수 요구
-            is_sell_signal = score >= 85
+        # 4. 적응형 전략 추가 매도 신호 (시장 환경별)
+        if trading_config.use_adaptive_strategy:
+            # 상승장에서의 매도 신호 (더 관대하게)
+            if market_env == "uptrend":
+                # 상승장에서는 매도를 늦춰서 더 많은 수익 추구
+                if profit_rate > profit_target * 0.7:  # 목표의 70% 달성시에만 기술적 매도 고려
+                    score *= 0.8  # 매도 점수 20% 감소
+                    signals.append("상승장 매도 신호 완화")
+                else:
+                    score *= 0.5  # 수익이 충분하지 않으면 매도 점수 50% 감소
+                    signals.append("상승장 수익 부족으로 매도 신호 억제")
+            
+            # 하락장에서의 매도 신호 (더 빠르게)
+            elif market_env == "downtrend":
+                # 하락장에서는 빠른 매도로 손실 최소화
+                if profit_rate > 0:  # 수익이 있으면 빠른 매도
+                    score += 20
+                    signals.append("하락장 수익 보존 매도")
+                elif profit_rate > stop_loss * 0.5:  # 손실이 작으면 조기 매도
+                    score += 15
+                    signals.append("하락장 손실 확대 방지 매도")
+            
+            # 횡보장에서의 매도 신호 (밴드 활용)
+            else:  # sideways
+                # 볼린저밴드 상단에서 적극적 매도
+                if current_price >= stock_data['bb_upper'] * 0.98:
+                    score += 10
+                    signals.append("횡보장 밴드 상단 매도")
+        
+        # 기술적 매도 신호 판정 (적응형 전략 고려)
+        if trading_config.use_adaptive_strategy:
+            # 시장 환경에 따른 매도 기준 조정
+            if market_env == "uptrend":
+                # 상승장: 수익 상태에서만 낮은 점수로 매도, 손실에서는 높은 점수 요구
+                if profit_rate > 0.01:
+                    is_sell_signal = score >= 60  # 기존 70에서 낮춤
+                else:
+                    is_sell_signal = score >= 90  # 기존 85에서 높임
+            elif market_env == "downtrend":
+                # 하락장: 더 빠른 매도
+                if profit_rate > 0:
+                    is_sell_signal = score >= 50  # 수익시 더 빨리 매도
+                else:
+                    is_sell_signal = score >= 70  # 손실시에도 빨리 매도
+            else:  # sideways
+                # 횡보장: 기본 기준 사용
+                if profit_rate > 0.01:
+                    is_sell_signal = score >= 70
+                else:
+                    is_sell_signal = score >= 85
+        else:
+            # 기존 방식 사용
+            if profit_rate > 0.01:
+                is_sell_signal = score >= 70
+            else:
+                is_sell_signal = score >= 85
         
         if is_sell_signal:
             return {
@@ -742,7 +1152,9 @@ def analyze_sell_signal(stock_data, position, target_config):
                 'sell_type': 'technical',
                 'reason': f"기술적 매도신호 (점수: {score}): {', '.join(signals)}",
                 'urgent': False,
-                'profit_rate': profit_rate
+                'profit_rate': profit_rate,
+                'market_environment': market_env if trading_config.use_adaptive_strategy else "unknown",
+                'adaptive_strategy_applied': trading_config.use_adaptive_strategy
             }
         
         return {
@@ -750,12 +1162,14 @@ def analyze_sell_signal(stock_data, position, target_config):
             'sell_type': None,
             'reason': f"보유 지속 (수익률: {profit_rate*100:.1f}%, 기술점수: {score})",
             'urgent': False,
-            'profit_rate': profit_rate
+            'profit_rate': profit_rate,
+            'market_environment': market_env if trading_config.use_adaptive_strategy else "unknown",
+            'adaptive_strategy_applied': trading_config.use_adaptive_strategy
         }
         
     except Exception as e:
         logger.error(f"매도 신호 분석 중 에러: {str(e)}")
-        return {'is_sell_signal': False, 'sell_type': None, 'reason': '분석 오류'}
+        return {'is_sell_signal': False, 'sell_type': None, 'reason': f'분석 오류: {str(e)}'}
 
 ################################### 상태 관리 ##################################
 
@@ -1319,44 +1733,99 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
     except Exception as e:
         logger.error(f"매수 기회 실행 중 에러: {str(e)}")
         return trading_state
-
 def create_config_file(config_path: str = "target_stock_config.json") -> None:
-    """기본 설정 파일 생성 (Config 클래스 사용)"""
+    """기본 설정 파일 생성 (종목 특성 기반)"""
     try:
-        logger.info("기본 설정 파일 생성 시작...")
+        logger.info("종목 특성 기반 설정 파일 생성 시작...")
         
-        # 기본 타겟 종목들 정의 (종목코드와 설정만)
-        default_target_stocks = {
-            "006400": {  # 삼성SDI
+        # 기본 타겟 종목들 정의
+        sample_codes = ["006400", "028300", "005930", "000660"]  # 삼성SDI, HLB, 삼성전자, SK하이닉스
+        
+        # 특성별 파라미터 매핑
+        characteristic_params = {
+            "growth": {
+                "allocation_ratio": 0.15,
+                "profit_target": 0.07,
+                "stop_loss": -0.035,
+                "rsi_oversold": 25,
+                "rsi_overbought": 75,
+                "min_score": 65,
+                "trailing_stop": 0.025
+            },
+            "value": {
                 "allocation_ratio": 0.12,
+                "profit_target": 0.045,
+                "stop_loss": -0.02,
+                "rsi_oversold": 35,
+                "rsi_overbought": 65,
+                "min_score": 70,
+                "trailing_stop": 0.015
+            },
+            "balanced": {
+                "allocation_ratio": 0.10,
                 "profit_target": 0.055,
                 "stop_loss": -0.025,
-                "trailing_stop": 0.02,
-                "rsi_oversold": 28,
-                "rsi_overbought": 72,
+                "rsi_oversold": 30,
+                "rsi_overbought": 70,
                 "min_score": 70,
-                "enabled": True
-            },
-            "028300": {  # HLB
-                "allocation_ratio": 0.08,
-                "profit_target": 0.04,
-                "stop_loss": -0.02,
-                "trailing_stop": 0.015,
-                "rsi_oversold": 32,
-                "rsi_overbought": 68,
-                "min_score": 65,
-                "enabled": True
+                "trailing_stop": 0.018
             }
         }
         
-        # 종목별 이름과 섹터 정보 자동 업데이트
-        logger.info("기본 종목들의 이름 및 섹터 정보 조회 중...")
-        updated_stocks = _update_stock_info(default_target_stocks)
+        # 임시 종목 특성 분석 (간단화 버전)
+        target_stocks = {}
+        for i, stock_code in enumerate(sample_codes):
+            try:
+                # 종목명 조회
+                stock_status = KisKR.GetCurrentStatus(stock_code)
+                if stock_status and isinstance(stock_status, dict):
+                    stock_name = stock_status.get("StockName", f"종목{stock_code}")
+                else:
+                    stock_name = f"종목{stock_code}"
+                
+                # 섹터 정보 조회
+                sector_info = get_sector_info(stock_code)
+                
+                # 간단한 특성 할당 (실제로는 더 복잡한 분석 필요)
+                if i == 0:  # 첫 번째 종목은 성장주로
+                    char_type = "growth"
+                elif i == len(sample_codes) - 1:  # 마지막 종목은 가치주로
+                    char_type = "value"
+                else:
+                    char_type = "balanced"
+                
+                # 특성별 파라미터 적용
+                params = characteristic_params[char_type].copy()
+                params.update({
+                    "name": stock_name,
+                    "sector": sector_info.get('sector', 'Unknown'),
+                    "enabled": True,
+                    "characteristic_type": char_type
+                })
+                
+                target_stocks[stock_code] = params
+                logger.info(f"종목 설정: {stock_code}({stock_name}) - {char_type}")
+                
+                time.sleep(0.5)  # API 호출 간격
+                
+            except Exception as e:
+                logger.warning(f"종목 {stock_code} 정보 수집 중 오류: {str(e)}")
+                # 기본값으로 설정
+                target_stocks[stock_code] = characteristic_params["balanced"].copy()
+                target_stocks[stock_code].update({
+                    "name": f"종목{stock_code}",
+                    "sector": "Unknown",
+                    "enabled": True,
+                    "characteristic_type": "balanced"
+                })
         
+        # 전체 설정 구성
         config = {
-            "target_stocks": updated_stocks,
+            "target_stocks": target_stocks,
             
-            # 전략 설정
+            # 예산 설정
+            "use_absolute_budget": True,
+            "absolute_budget": 10000000,
             "trade_budget_ratio": 0.90,
             "max_positions": 8,
             "min_stock_price": 3000,
@@ -1379,6 +1848,10 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
             "bb_period": 20,
             "bb_std": 2.0,
             
+            # 적응형 전략 사용 설정
+            "use_adaptive_strategy": True,
+            "use_trend_filter": True,
+            
             # 기타 설정
             "last_sector_update": datetime.datetime.now().strftime('%Y%m%d'),
             "bot_name": "TargetStockBot",
@@ -1386,20 +1859,16 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
             "check_interval_minutes": 30
         }
         
+        # 파일 저장
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, ensure_ascii=False, indent=4)
         
-        logger.info(f"기본 설정 파일 생성 완료: {config_path}")
-        logger.info(f"등록된 종목 수: {len(updated_stocks)}개")
+        logger.info(f"종목 특성 기반 설정 파일 생성 완료: {config_path}")
+        logger.info(f"등록된 종목 수: {len(target_stocks)}개")
         
-        # 생성된 종목 정보 로깅
-        for stock_code, stock_info in updated_stocks.items():
-            stock_name = stock_info.get('name', stock_code)
-            sector = stock_info.get('sector', 'Unknown')
-            allocation = stock_info.get('allocation_ratio', 0) * 100
-            logger.info(f"  - {stock_name}({stock_code}): "
-                       f"섹터 {sector}, "
-                       f"배분비율 {allocation:.1f}%")
+        # 적응형 전략 파일 초기화
+        adaptive_strategy = AdaptiveMarketStrategy("bb_adaptive_strategy.json")
+        adaptive_strategy.save_strategy()
         
     except Exception as e:
         logger.exception(f"설정 파일 생성 중 오류: {str(e)}")
