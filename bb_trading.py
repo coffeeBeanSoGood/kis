@@ -31,6 +31,9 @@ import discord_alert
 # trend_trading.py에서 기술적 분석 클래스들 임포트
 from trend_trading import TechnicalIndicators, AdaptiveMarketStrategy, TrendFilter
 
+import requests
+from bs4 import BeautifulSoup
+
 ################################### 상수 정의 ##################################
 
 # 봇 네임 설정
@@ -101,109 +104,159 @@ KisKR.set_logger(logger)
 Common.set_logger(logger)
 
 ################################### 타겟 종목 설정 ##################################
+TARGET_STOCKS = {}
+################################### 설정 파일 관리 ##################################
 
-# 타겟 종목 리스트 (bb_trading.py의 관심종목 방식)
-TARGET_STOCKS = {
-    "005930": {  # 삼성전자
-        "name": "삼성전자",
-        "sector": "반도체",
-        "allocation_ratio": 0.20,  # 전체 예산의 20%
-        "profit_target": 0.06,     # 6% 수익률 목표
-        "stop_loss": -0.025,       # -2.5% 손절
-        "trailing_stop": 0.018,    # 1.8% 트레일링 스탑
-        "rsi_oversold": 28,        # 개별 RSI 과매도 기준
-        "rsi_overbought": 72,      # 개별 RSI 과매수 기준
-        "min_score": 75,           # 최소 매수 점수
-        "enabled": True
-    },
-    "000660": {  # SK하이닉스
-        "name": "SK하이닉스",
-        "sector": "반도체",
-        "allocation_ratio": 0.15,
-        "profit_target": 0.055,
-        "stop_loss": -0.03,
-        "trailing_stop": 0.02,
+def _load_config(config_path: str = "target_stock_config.json") -> Dict[str, any]:
+    """설정 파일 로드"""
+    default_config = {
+        "target_stocks": TARGET_STOCKS,
+        "total_budget": 50000000,
+        "max_positions": 8,
+        "min_stock_price": 3000,
+        "max_stock_price": 200000,
+        "stop_loss_ratio": -0.025,
+        "take_profit_ratio": 0.055,
+        "trailing_stop_ratio": 0.018,
+        "max_daily_loss": -0.04,
+        "max_daily_profit": 0.06,
         "rsi_oversold": 30,
         "rsi_overbought": 70,
-        "min_score": 70,
-        "enabled": True
-    },
-    "035420": {  # NAVER
-        "name": "NAVER",
-        "sector": "인터넷",
-        "allocation_ratio": 0.12,
-        "profit_target": 0.05,
-        "stop_loss": -0.025,
-        "trailing_stop": 0.015,
-        "rsi_oversold": 32,
-        "rsi_overbought": 68,
-        "min_score": 72,
-        "enabled": True
-    },
-    "051910": {  # LG화학
-        "name": "LG화학",
-        "sector": "화학",
-        "allocation_ratio": 0.10,
-        "profit_target": 0.045,
-        "stop_loss": -0.02,
-        "trailing_stop": 0.015,
-        "rsi_oversold": 30,
-        "rsi_overbought": 70,
-        "min_score": 68,
-        "enabled": True
-    },
-    "006400": {  # 삼성SDI
-        "name": "삼성SDI",
-        "sector": "2차전지",
-        "allocation_ratio": 0.12,
-        "profit_target": 0.055,
-        "stop_loss": -0.025,
-        "trailing_stop": 0.02,
-        "rsi_oversold": 28,
-        "rsi_overbought": 72,
-        "min_score": 70,
-        "enabled": True
-    },
-    "035900": {  # JYP Ent.
-        "name": "JYP Ent.",
-        "sector": "엔터테인먼트",
-        "allocation_ratio": 0.08,
-        "profit_target": 0.04,
-        "stop_loss": -0.02,
-        "trailing_stop": 0.015,
-        "rsi_oversold": 35,
-        "rsi_overbought": 65,
-        "min_score": 65,
-        "enabled": True
-    },
-    "028300": {  # HLB
-        "name": "HLB",
-        "sector": "바이오",
-        "allocation_ratio": 0.08,
-        "profit_target": 0.04,
-        "stop_loss": -0.02,
-        "trailing_stop": 0.015,
-        "rsi_oversold": 32,
-        "rsi_overbought": 68,
-        "min_score": 65,
-        "enabled": True
-    },
-    "326030": {  # SK바이오팜
-        "name": "SK바이오팜",
-        "sector": "바이오",
-        "allocation_ratio": 0.15,
-        "profit_target": 0.05,
-        "stop_loss": -0.025,
-        "trailing_stop": 0.018,
-        "rsi_oversold": 30,
-        "rsi_overbought": 70,
-        "min_score": 70,
-        "enabled": True
+        "last_sector_update": ""
     }
-}
+    
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            loaded_config = json.load(f)
+        
+        # 기본 설정과 로드된 설정 병합
+        def merge_config(default, loaded):
+            result = default.copy()
+            for key, value in loaded.items():
+                if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+                    result[key] = merge_config(result[key], value)
+                else:
+                    result[key] = value
+            return result
+        
+        merged_config = merge_config(default_config, loaded_config)
+        logger.info(f"설정 파일 로드 완료: {config_path}")
+        return merged_config
+    
+    except FileNotFoundError:
+        logger.warning(f"설정 파일 {config_path}을 찾을 수 없습니다. 기본값을 사용합니다.")
+        return default_config
+    
+    except json.JSONDecodeError:
+        logger.error(f"설정 파일 {config_path}의 형식이 올바르지 않습니다. 기본값을 사용합니다.")
+        return default_config
+    
+    except Exception as e:
+        logger.exception(f"설정 파일 로드 중 오류: {str(e)}")
+        return default_config
+
+def _save_config(config: dict, config_path: str = "target_stock_config.json") -> None:
+    """설정 파일 저장"""
+    try:
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(config, f, ensure_ascii=False, indent=4)
+        logger.info(f"설정 파일 저장 완료: {config_path}")
+    except Exception as e:
+        logger.exception(f"설정 파일 저장 중 오류: {str(e)}")
+
 
 ################################### 유틸리티 함수 ##################################
 
+def get_sector_info(stock_code):
+    """네이버 금융을 통한 섹터 정보 조회"""
+    try:
+        logger.info(f"네이버 금융 조회 시작 (종목코드: {stock_code})...")
+        
+        # 네이버 금융 종목 페이지
+        url = f"https://finance.naver.com/item/main.naver?code={stock_code}"
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            response.encoding = 'euc-kr'
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # 업종 정보 찾기
+            industry_element = soup.select_one('#content > div.section.trade_compare > h4 > em > a')
+            if industry_element:
+                sector = industry_element.get_text(strip=True)
+                logger.info(f"네이버 금융에서 업종 정보를 찾았습니다: {sector}")
+                
+                return {
+                    'sector': sector,
+                    'industry': sector
+                }
+            else:
+                logger.info("업종 정보를 찾을 수 없습니다.")
+        else:
+            logger.info(f"네이버 금융 접속 실패. 상태 코드: {response.status_code}")
+            
+        return {
+            'sector': 'Unknown',
+            'industry': 'Unknown'
+        }
+        
+    except Exception as e:
+        logger.info(f"섹터 정보 조회 중 에러: {str(e)}")
+        return {
+            'sector': 'Unknown',
+            'industry': 'Unknown'
+        }
+
+################################### 유틸리티 함수 ##################################
+
+def _update_stock_info(target_stocks):
+    """종목별 이름과 섹터 정보 자동 업데이트 (신규 함수)"""
+    try:
+        updated_count = 0
+        
+        for stock_code, stock_info in target_stocks.items():
+            try:
+                # 1. 종목명 조회 (KIS API)
+                if "name" not in stock_info or not stock_info.get("name"):
+                    stock_status = KisKR.GetCurrentStatus(stock_code)
+                    if stock_status and isinstance(stock_status, dict):
+                        stock_name = stock_status.get("StockName", f"종목{stock_code}")
+                        target_stocks[stock_code]["name"] = stock_name
+                        logger.info(f"종목명 업데이트: {stock_code} -> {stock_name}")
+                
+                # 2. 섹터 정보 조회 (네이버 금융)
+                if stock_info.get("sector") == "Unknown" or not stock_info.get("sector"):
+                    sector_info = get_sector_info(stock_code)
+                    
+                    if sector_info['sector'] != 'Unknown':
+                        target_stocks[stock_code]["sector"] = sector_info['sector']
+                        updated_count += 1
+                        logger.info(f"섹터 정보 업데이트: {stock_code}({target_stocks[stock_code]['name']}) -> {sector_info['sector']}")
+                    
+                    # 연속 요청 방지
+                    time.sleep(0.5)
+                    
+            except Exception as e:
+                logger.warning(f"종목 {stock_code} 정보 업데이트 중 오류: {str(e)}")
+                # 기본값 설정
+                if "name" not in target_stocks[stock_code]:
+                    target_stocks[stock_code]["name"] = f"종목{stock_code}"
+                if "sector" not in target_stocks[stock_code]:
+                    target_stocks[stock_code]["sector"] = "Unknown"
+        
+        if updated_count > 0:
+            logger.info(f"{updated_count}개 종목의 정보를 업데이트했습니다.")
+        
+        return target_stocks
+        
+    except Exception as e:
+        logger.exception(f"종목 정보 업데이트 중 오류: {str(e)}")
+        return target_stocks
+        
 def calculate_trading_fee(price, quantity, is_buy=True):
     """거래 수수료 및 세금 계산 (bb_trading.py 방식)"""
     commission_rate = 0.0000156
@@ -1008,6 +1061,31 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
 
 def main():
     """메인 함수"""
+    global TARGET_STOCKS
+    # 설정 파일 로드
+    config_path = "target_stock_config.json"
+
+    # 설정 파일이 없으면 생성
+    if not os.path.exists(config_path):
+        create_config_file(config_path)
+        logger.info(f"기본 설정 파일 생성 완료: {config_path}")
+
+    # 설정 로드
+    config = _load_config(config_path)
+    TARGET_STOCKS = config.get("target_stocks", TARGET_STOCKS)
+    # 섹터 정보 업데이트 (날짜가 바뀌었거나 처음 실행시)
+    today = datetime.datetime.now().strftime('%Y%m%d')
+    last_update = config.get("last_sector_update", "")
+    
+    if last_update != today:
+        logger.info("섹터 정보 자동 업데이트 시작...")
+        TARGET_STOCKS = _update_stock_info(TARGET_STOCKS)
+        
+        # 업데이트된 설정 저장
+        config["target_stocks"] = TARGET_STOCKS
+        config["last_sector_update"] = today
+        _save_config(config, config_path)
+
     msg = "🎯 타겟 종목 매매봇 시작!"
     logger.info(msg)
     discord_alert.SendMessage(msg)
@@ -1106,6 +1184,91 @@ def main():
             discord_alert.SendMessage(error_msg)
             time.sleep(60)  # 에러 발생 시 1분 대기
 
+def create_config_file(config_path: str = "target_stock_config.json") -> None:
+   """기본 설정 파일 생성"""
+   try:
+       logger.info("기본 설정 파일 생성 시작...")
+       
+       # 기본 타겟 종목들 정의 (종목코드와 설정만)
+       default_target_stocks = {
+           "006400": {  # 삼성SDI
+               "allocation_ratio": 0.12,
+               "profit_target": 0.055,
+               "stop_loss": -0.025,
+               "trailing_stop": 0.02,
+               "rsi_oversold": 28,
+               "rsi_overbought": 72,
+               "min_score": 70,
+               "enabled": True
+           },
+           "028300": {  # HLB
+               "allocation_ratio": 0.08,
+               "profit_target": 0.04,
+               "stop_loss": -0.02,
+               "trailing_stop": 0.015,
+               "rsi_oversold": 32,
+               "rsi_overbought": 68,
+               "min_score": 65,
+               "enabled": True
+           }
+       }
+       
+       # 종목별 이름과 섹터 정보 자동 업데이트
+       logger.info("기본 종목들의 이름 및 섹터 정보 조회 중...")
+       updated_stocks = _update_stock_info(default_target_stocks)
+       
+       config = {
+           "target_stocks": updated_stocks,
+           
+           # 전략 설정 (bb_trading.py 방식 참고)
+           "trade_budget_ratio": 0.90,
+           "max_positions": 8,
+           "min_stock_price": 3000,
+           "max_stock_price": 200000,
+           
+           # 손익 관리 설정
+           "stop_loss_ratio": -0.025,
+           "take_profit_ratio": 0.055,
+           "trailing_stop_ratio": 0.018,
+           "max_daily_loss": -0.04,
+           "max_daily_profit": 0.06,
+           
+           # 기술적 분석 설정 (trend_trading.py 방식 적용)
+           "rsi_period": 14,
+           "rsi_oversold": 30,
+           "rsi_overbought": 70,
+           "macd_fast": 12,
+           "macd_slow": 26,
+           "macd_signal": 9,
+           "bb_period": 20,
+           "bb_std": 2.0,
+           
+           # 기타 설정
+           "last_sector_update": datetime.datetime.now().strftime('%Y%m%d'),
+           "bot_name": "TargetStockBot",
+           "use_discord_alert": True,
+           "check_interval_minutes": 30
+       }
+       
+       with open(config_path, 'w', encoding='utf-8') as f:
+           json.dump(config, f, ensure_ascii=False, indent=4)
+       
+       logger.info(f"기본 설정 파일 생성 완료: {config_path}")
+       logger.info(f"등록된 종목 수: {len(updated_stocks)}개")
+       
+       # 생성된 종목 정보 로깅
+       for stock_code, stock_info in updated_stocks.items():
+           stock_name = stock_info.get('name', stock_code)
+           sector = stock_info.get('sector', 'Unknown')
+           allocation = stock_info.get('allocation_ratio', 0) * 100
+           logger.info(f"  - {stock_name}({stock_code}): "
+                      f"섹터 {sector}, "
+                      f"배분비율 {allocation:.1f}%")
+       
+   except Exception as e:
+       logger.exception(f"설정 파일 생성 중 오류: {str(e)}")
+       raise
+   
 if __name__ == "__main__":
     # 실제 거래 모드로 설정
     Common.SetChangeMode()
