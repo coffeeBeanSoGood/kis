@@ -182,6 +182,22 @@ class TradingConfig:
     def max_daily_profit(self):
         """일일 최대 수익 한도"""
         return self.config.get("max_daily_profit", 0.06)
+
+    @property
+    def absolute_budget_strategy(self):
+        """절대 예산 관리 전략 (strict, adaptive, proportional)"""
+        return self.config.get("absolute_budget_strategy", "strict")
+    
+    @property
+    def budget_loss_tolerance(self):
+        """예산 손실 허용 비율 (adaptive 모드용)"""
+        return self.config.get("budget_loss_tolerance", 0.2)
+    
+    @property
+    def initial_total_asset(self):
+        """초기 총 자산 (proportional 모드용)"""
+        return self.config.get("initial_total_asset", 0)
+
     
     # =========================== 기술적 분석 ===========================
     @property
@@ -440,7 +456,7 @@ def _update_stock_info(target_stocks):
         return target_stocks
 
 def get_available_budget():
-    """사용 가능한 예산 계산 (비율/절대금액 방식 모두 지원)"""
+    """사용 가능한 예산 계산 (전략별 분기 처리)"""
     try:
         balance = KisKR.GetBalance()
         if not balance:
@@ -457,33 +473,90 @@ def get_available_budget():
         if trading_config.use_absolute_budget:
             # 절대 금액 기반 예산
             absolute_budget = trading_config.absolute_budget
+            strategy = trading_config.absolute_budget_strategy
             
-            # 절대 예산과 현재 총 자산 중 작은 값 사용
-            budget_by_absolute = min(absolute_budget, total_money)
+            logger.info(f"💰 절대금액 예산 모드: {strategy}")
             
-            # 현금 잔고도 고려
-            available_budget = min(budget_by_absolute, remain_money)
-            
-            logger.info(f"절대 금액 기반 예산 계산:")
-            logger.info(f"  - 설정 절대 예산: {absolute_budget:,.0f}원")
-            logger.info(f"  - 현재 총 자산: {total_money:,.0f}원")
-            logger.info(f"  - 현재 현금 잔고: {remain_money:,.0f}원")
-            logger.info(f"  - 사용 가능 예산: {available_budget:,.0f}원")
+            if strategy == "strict":
+                # 엄격 모드: 설정값 고정
+                available_budget = min(absolute_budget, remain_money)
+                
+                logger.info(f"  - 설정 예산: {absolute_budget:,.0f}원 (고정)")
+                logger.info(f"  - 현금 잔고: {remain_money:,.0f}원")
+                logger.info(f"  - 사용가능: {available_budget:,.0f}원")
+                
+            elif strategy == "adaptive":
+                # 적응형 모드: 손실 허용범위 내에서 조정
+                loss_tolerance = trading_config.budget_loss_tolerance
+                min_budget = absolute_budget * (1 - loss_tolerance)
+                
+                if total_money >= min_budget:
+                    budget_target = absolute_budget
+                else:
+                    budget_target = max(total_money, min_budget)
+                
+                available_budget = min(budget_target, remain_money)
+                
+                logger.info(f"  - 기준 예산: {absolute_budget:,.0f}원")
+                logger.info(f"  - 손실 허용: {loss_tolerance*100:.0f}%")
+                logger.info(f"  - 최소 예산: {min_budget:,.0f}원")
+                logger.info(f"  - 현재 자산: {total_money:,.0f}원")
+                logger.info(f"  - 목표 예산: {budget_target:,.0f}원")
+                logger.info(f"  - 사용가능: {available_budget:,.0f}원")
+                
+            elif strategy == "proportional":
+                # 🎯 비례형 모드: 총자산 비례 조정
+                initial_asset = trading_config.initial_total_asset
+                
+                if initial_asset <= 0:
+                    # 최초 실행시 현재 총자산을 초기자산으로 설정
+                    initial_asset = total_money
+                    trading_config.config["initial_total_asset"] = initial_asset
+                    trading_config.save_config()
+                    logger.info(f"🎯 초기 총자산 설정: {initial_asset:,.0f}원")
+                
+                # 총자산 변화율 계산
+                asset_ratio = total_money / initial_asset
+                
+                # 비례적으로 예산 조정
+                adjusted_budget = absolute_budget * asset_ratio
+                
+                # 안전장치: 최소/최대 예산 설정
+                min_budget = absolute_budget * 0.3   # 30%
+                max_budget = absolute_budget * 3.0   # 300%
+                adjusted_budget = max(min_budget, min(adjusted_budget, max_budget))
+                
+                # 현금 잔고 고려한 최종 예산
+                available_budget = min(adjusted_budget, remain_money)
+                
+                # 상세 로깅
+                performance = ((total_money - initial_asset) / initial_asset) * 100
+                budget_change = ((adjusted_budget / absolute_budget) - 1) * 100
+                
+                logger.info(f"  - 기준 예산: {absolute_budget:,.0f}원")
+                logger.info(f"  - 초기 자산: {initial_asset:,.0f}원")
+                logger.info(f"  - 현재 자산: {total_money:,.0f}원")
+                logger.info(f"  - 자산 성과: {performance:+.1f}%")
+                logger.info(f"  - 예산 배율: {asset_ratio:.2f}배")
+                logger.info(f"  - 조정 예산: {adjusted_budget:,.0f}원 ({budget_change:+.1f}%)")
+                logger.info(f"  - 현금 잔고: {remain_money:,.0f}원")
+                logger.info(f"  - 사용가능: {available_budget:,.0f}원")
+                
+            else:
+                # 알 수 없는 전략: strict 모드로 대체
+                logger.warning(f"알 수 없는 예산 전략: {strategy}, strict 모드로 대체")
+                available_budget = min(absolute_budget, remain_money)
             
         else:
             # 비율 기반 예산 (기존 방식)
             budget_ratio = trading_config.trade_budget_ratio
             budget_by_ratio = total_money * budget_ratio
-            
-            # 현금 잔고도 고려
             available_budget = min(budget_by_ratio, remain_money)
             
-            logger.info(f"비율 기반 예산 계산:")
-            logger.info(f"  - 설정 예산 비율: {budget_ratio*100:.1f}%")
-            logger.info(f"  - 현재 총 자산: {total_money:,.0f}원")
-            logger.info(f"  - 비율 기반 예산: {budget_by_ratio:,.0f}원")
-            logger.info(f"  - 현재 현금 잔고: {remain_money:,.0f}원")
-            logger.info(f"  - 사용 가능 예산: {available_budget:,.0f}원")
+            logger.info(f"📊 비율 기반 예산: {budget_ratio*100:.1f}%")
+            logger.info(f"  - 총 자산: {total_money:,.0f}원")
+            logger.info(f"  - 계산 예산: {budget_by_ratio:,.0f}원")
+            logger.info(f"  - 사용가능: {available_budget:,.0f}원")
         
         return max(0, available_budget)
         
@@ -492,7 +565,7 @@ def get_available_budget():
         return 0
 
 def get_budget_info_message():
-    """예산 정보 메시지 생성"""
+    """예산 정보 메시지 생성 (Proportional 모드 지원)"""
     try:
         balance = KisKR.GetBalance()
         if not balance:
@@ -503,22 +576,40 @@ def get_budget_info_message():
         available_budget = get_available_budget()
         
         if trading_config.use_absolute_budget:
-            msg = f"💰 절대 금액 기반 예산 운용\n"
-            msg += f"설정 예산: {trading_config.absolute_budget:,.0f}원\n"
+            # Proportional 모드 정보
+            absolute_budget = trading_config.absolute_budget
+            initial_asset = trading_config.config.get("initial_total_asset", 0)
+            
+            if initial_asset > 0:
+                asset_ratio = total_money / initial_asset
+                performance = ((total_money - initial_asset) / initial_asset) * 100
+                
+                msg = f"⚖️ 비례형 절대금액 예산 운용\n"
+                msg += f"기준 예산: {absolute_budget:,.0f}원\n"
+                msg += f"초기 자산: {initial_asset:,.0f}원\n"
+                msg += f"현재 자산: {total_money:,.0f}원\n"
+                msg += f"자산 성과: {performance:+.1f}%\n"
+                msg += f"예산 배율: {asset_ratio:.2f}배\n"
+                msg += f"현금 잔고: {remain_money:,.0f}원\n"
+                msg += f"봇 운용 예산: {available_budget:,.0f}원"
+            else:
+                msg = f"⚖️ 비례형 절대금액 예산 운용 (초기화 중)\n"
+                msg += f"기준 예산: {absolute_budget:,.0f}원\n"
+                msg += f"현재 자산: {total_money:,.0f}원\n"
+                msg += f"봇 운용 예산: {available_budget:,.0f}원"
         else:
-            msg += f"💰 비율 기반 예산 운용\n"
+            msg = f"📊 비율 기반 예산 운용\n"
             msg += f"설정 비율: {trading_config.trade_budget_ratio*100:.1f}%\n"
-        
-        msg += f"총 자산: {total_money:,.0f}원\n"
-        msg += f"현금 잔고: {remain_money:,.0f}원\n"
-        msg += f"봇 운용 예산: {available_budget:,.0f}원"
+            msg += f"총 자산: {total_money:,.0f}원\n"
+            msg += f"현금 잔고: {remain_money:,.0f}원\n"
+            msg += f"봇 운용 예산: {available_budget:,.0f}원"
         
         return msg
         
     except Exception as e:
         logger.error(f"예산 정보 메시지 생성 중 에러: {str(e)}")
         return "예산 정보 조회 실패"
-
+    
 def calculate_trading_fee(price, quantity, is_buy=True):
     """거래 수수료 및 세금 계산 (개선된 버전)"""
     try:
@@ -1837,13 +1928,14 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
         logger.error(f"매수 기회 실행 중 에러: {str(e)}")
         return trading_state
 
+# create_config_file 함수도 Proportional 모드로 수정
 def create_config_file(config_path: str = "target_stock_config.json") -> None:
-    """기본 설정 파일 생성 (종목 특성 기반)"""
+    """기본 설정 파일 생성 (Proportional 모드 적용)"""
     try:
         logger.info("종목 특성 기반 설정 파일 생성 시작...")
         
         # 기본 타겟 종목들 정의
-        sample_codes = ["034020", "272210", "267250"]  # 
+        sample_codes = ["034020", "272210", "267250"]
         
         # 특성별 파라미터 매핑
         characteristic_params = {
@@ -1890,10 +1982,10 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
                 # 섹터 정보 조회
                 sector_info = get_sector_info(stock_code)
                 
-                # 간단한 특성 할당 (실제로는 더 복잡한 분석 필요)
-                if i == 0:  # 첫 번째 종목은 성장주로
+                # 간단한 특성 할당
+                if i == 0:
                     char_type = "growth"
-                elif i == len(sample_codes) - 1:  # 마지막 종목은 가치주로
+                elif i == len(sample_codes) - 1:
                     char_type = "value"
                 else:
                     char_type = "balanced"
@@ -1923,14 +2015,19 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
                     "characteristic_type": "balanced"
                 })
         
-        # 전체 설정 구성
+        # 전체 설정 구성 (Proportional 모드 적용)
         config = {
             "target_stocks": target_stocks,
             
-            # 예산 설정
-            "use_absolute_budget": True,
-            "absolute_budget": 10000000,
-            "trade_budget_ratio": 0.90,
+            # 예산 설정 - Proportional 모드
+            "use_absolute_budget": True,                    # 절대금액 모드 사용
+            "absolute_budget_strategy": "proportional",     # 🎯 비례형 전략
+            "absolute_budget": 10000000,                    # 기준 예산 1천만원
+            "initial_total_asset": 0,                       # 최초 실행시 자동 설정
+            "budget_loss_tolerance": 0.2,                   # adaptive 모드용 (사용안함)
+            "trade_budget_ratio": 0.90,                     # 비율모드 백업용
+            
+            # 나머지 설정들은 기존과 동일...
             "max_positions": 8,
             "min_stock_price": 3000,
             "max_stock_price": 200000,
@@ -1962,13 +2059,14 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
             "use_discord_alert": True,
             "check_interval_minutes": 30
         }
-        
+
         # 파일 저장
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, ensure_ascii=False, indent=4)
         
-        logger.info(f"종목 특성 기반 설정 파일 생성 완료: {config_path}")
+        logger.info(f"🎯 Proportional 모드 설정 파일 생성 완료: {config_path}")
         logger.info(f"등록된 종목 수: {len(target_stocks)}개")
+        logger.info(f"예산 관리: 비례형 절대금액 모드 (기준: {config['absolute_budget']:,}원)")
         
         # 적응형 전략 파일 초기화
         adaptive_strategy = AdaptiveMarketStrategy("bb_adaptive_strategy.json")
