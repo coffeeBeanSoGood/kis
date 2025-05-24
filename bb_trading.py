@@ -6,7 +6,7 @@
 bb_trading.py의 방식을 참고하여 trend_trading.py의 기술적 분석을 적용
 1. 미리 설정된 타겟 종목들에 대해서만 매매 진행
 2. 종목별 개별 매매 파라미터 적용
-3. trend_trading.py의 고도화된 기술적 분석 활용
+3. technical_analysis.py의 고도화된 기술적 분석 활용
 4. bb_trading.py의 체계적인 리스크 관리 적용
 5. Config 클래스로 모든 설정 통합 관리
 """
@@ -30,7 +30,7 @@ import KIS_API_Helper_KR as KisKR
 import discord_alert
 
 # trend_trading.py에서 기술적 분석 클래스들 임포트
-from trend_trading import TechnicalIndicators, AdaptiveMarketStrategy, TrendFilter
+from technical_analysis import TechnicalIndicators, AdaptiveMarketStrategy, TrendFilter
 
 import requests
 from bs4 import BeautifulSoup
@@ -438,6 +438,86 @@ def _update_stock_info(target_stocks):
     except Exception as e:
         logger.exception(f"종목 정보 업데이트 중 오류: {str(e)}")
         return target_stocks
+
+def get_available_budget():
+    """사용 가능한 예산 계산 (비율/절대금액 방식 모두 지원)"""
+    try:
+        balance = KisKR.GetBalance()
+        if not balance:
+            logger.error("계좌 정보 조회 실패")
+            return 0
+            
+        total_money = float(balance.get('TotalMoney', 0))
+        remain_money = float(balance.get('RemainMoney', 0))
+        
+        if total_money <= 0:
+            logger.warning("계좌 총 자산이 0 이하입니다.")
+            return 0
+        
+        if trading_config.use_absolute_budget:
+            # 절대 금액 기반 예산
+            absolute_budget = trading_config.absolute_budget
+            
+            # 절대 예산과 현재 총 자산 중 작은 값 사용
+            budget_by_absolute = min(absolute_budget, total_money)
+            
+            # 현금 잔고도 고려
+            available_budget = min(budget_by_absolute, remain_money)
+            
+            logger.info(f"절대 금액 기반 예산 계산:")
+            logger.info(f"  - 설정 절대 예산: {absolute_budget:,.0f}원")
+            logger.info(f"  - 현재 총 자산: {total_money:,.0f}원")
+            logger.info(f"  - 현재 현금 잔고: {remain_money:,.0f}원")
+            logger.info(f"  - 사용 가능 예산: {available_budget:,.0f}원")
+            
+        else:
+            # 비율 기반 예산 (기존 방식)
+            budget_ratio = trading_config.trade_budget_ratio
+            budget_by_ratio = total_money * budget_ratio
+            
+            # 현금 잔고도 고려
+            available_budget = min(budget_by_ratio, remain_money)
+            
+            logger.info(f"비율 기반 예산 계산:")
+            logger.info(f"  - 설정 예산 비율: {budget_ratio*100:.1f}%")
+            logger.info(f"  - 현재 총 자산: {total_money:,.0f}원")
+            logger.info(f"  - 비율 기반 예산: {budget_by_ratio:,.0f}원")
+            logger.info(f"  - 현재 현금 잔고: {remain_money:,.0f}원")
+            logger.info(f"  - 사용 가능 예산: {available_budget:,.0f}원")
+        
+        return max(0, available_budget)
+        
+    except Exception as e:
+        logger.error(f"예산 계산 중 에러: {str(e)}")
+        return 0
+
+def get_budget_info_message():
+    """예산 정보 메시지 생성"""
+    try:
+        balance = KisKR.GetBalance()
+        if not balance:
+            return "계좌 정보 조회 실패"
+        
+        total_money = float(balance.get('TotalMoney', 0))
+        remain_money = float(balance.get('RemainMoney', 0))
+        available_budget = get_available_budget()
+        
+        if trading_config.use_absolute_budget:
+            msg = f"💰 절대 금액 기반 예산 운용\n"
+            msg += f"설정 예산: {trading_config.absolute_budget:,.0f}원\n"
+        else:
+            msg += f"💰 비율 기반 예산 운용\n"
+            msg += f"설정 비율: {trading_config.trade_budget_ratio*100:.1f}%\n"
+        
+        msg += f"총 자산: {total_money:,.0f}원\n"
+        msg += f"현금 잔고: {remain_money:,.0f}원\n"
+        msg += f"봇 운용 예산: {available_budget:,.0f}원"
+        
+        return msg
+        
+    except Exception as e:
+        logger.error(f"예산 정보 메시지 생성 중 에러: {str(e)}")
+        return "예산 정보 조회 실패"
 
 def calculate_trading_fee(price, quantity, is_buy=True):
     """거래 수수료 및 세금 계산 (개선된 버전)"""
@@ -1198,9 +1278,8 @@ def save_trading_state(state):
         json.dump(state, f, indent=2)
 
 ################################### 매매 실행 ##################################
-
 def calculate_position_size(target_config, available_budget, stock_price):
-    """포지션 크기 계산 (개선된 버전 - Config 적용)"""
+    """포지션 크기 계산 (수정된 버전 - 예산 로직 개선)"""
     try:
         # 1. 기본 검증
         if stock_price <= 0:
@@ -1211,23 +1290,19 @@ def calculate_position_size(target_config, available_budget, stock_price):
             logger.warning("사용 가능한 예산이 없습니다.")
             return 0
         
-        # 2. 계좌 잔고 재확인 (실시간)
-        balance = KisKR.GetBalance()
-        if not balance:
-            logger.error("계좌 정보 조회 실패")
-            return 0
-            
-        actual_balance = float(balance.get('RemainMoney', 0))
-        logger.info(f"실제 잔고: {actual_balance:,.0f}원, 사용가능 예산: {available_budget:,.0f}원")
+        # 2. 실제 사용 가능한 예산 재확인 (최신 정보로)
+        current_available_budget = get_available_budget()
         
-        # 3. 실제 사용 가능한 예산 조정
-        usable_budget = min(available_budget, actual_balance)
+        # 전달받은 예산과 현재 예산 중 작은 값 사용 (안전장치)
+        usable_budget = min(available_budget, current_available_budget)
         
         if usable_budget <= 0:
             logger.warning("실제 사용 가능한 예산이 없습니다.")
             return 0
         
-        # 4. 종목별 할당 비율 적용
+        logger.info(f"포지션 계산용 예산: {usable_budget:,.0f}원")
+        
+        # 3. 종목별 할당 비율 적용
         allocation_ratio = target_config.get('allocation_ratio', 0.125)  # 기본 12.5%
         
         # 할당 비율 검증 (0.01% ~ 50% 범위)
@@ -1236,17 +1311,17 @@ def calculate_position_size(target_config, available_budget, stock_price):
         allocated_budget = usable_budget * allocation_ratio
         logger.info(f"할당 예산: {allocated_budget:,.0f}원 (비율: {allocation_ratio*100:.1f}%)")
         
-        # 5. 최소 주문 금액 체크
+        # 4. 최소 주문 금액 체크
         min_order_amount = target_config.get('min_order_amount', 10000)  # 기본 1만원
         if allocated_budget < min_order_amount:
             logger.info(f"할당 예산이 최소 주문 금액({min_order_amount:,}원)보다 작습니다.")
             return 0
         
-        # 6. 최대 주문 금액 제한 (리스크 관리)
+        # 5. 최대 주문 금액 제한 (리스크 관리)
         max_order_amount = target_config.get('max_order_amount', usable_budget * 0.2)  # 기본 20% 제한
         allocated_budget = min(allocated_budget, max_order_amount)
         
-        # 7. 기본 수량 계산
+        # 6. 기본 수량 계산
         base_quantity = int(allocated_budget / stock_price)
         logger.info(f"기본 계산 수량: {base_quantity}주")
         
@@ -1254,11 +1329,11 @@ def calculate_position_size(target_config, available_budget, stock_price):
             logger.info("계산된 수량이 0 이하입니다.")
             return 0
         
-        # 8. 수수료 고려한 실제 필요 금액 계산
+        # 7. 수수료 고려한 실제 필요 금액 계산
         estimated_fee = calculate_trading_fee(stock_price, base_quantity, True)
         total_needed = (stock_price * base_quantity) + estimated_fee
         
-        # 9. 수수료 포함해서 예산 초과하면 수량 조정
+        # 8. 수수료 포함해서 예산 초과하면 수량 조정
         while total_needed > allocated_budget and base_quantity > 0:
             base_quantity -= 1
             if base_quantity > 0:
@@ -1267,18 +1342,18 @@ def calculate_position_size(target_config, available_budget, stock_price):
             else:
                 break
         
-        # 10. 최종 검증
+        # 9. 최종 검증
         if base_quantity <= 0:
             logger.info("수수료 고려 후 매수 가능한 수량이 없습니다.")
             return 0
         
-        # 11. 종목별 최소/최대 수량 제한 적용
+        # 10. 종목별 최소/최대 수량 제한 적용
         min_quantity = target_config.get('min_quantity', 1)
         max_quantity = target_config.get('max_quantity', float('inf'))
         
         final_quantity = max(min_quantity, min(base_quantity, max_quantity))
         
-        # 12. 최종 금액 검증
+        # 11. 최종 금액 검증
         final_amount = stock_price * final_quantity
         final_fee = calculate_trading_fee(stock_price, final_quantity, True)
         final_total = final_amount + final_fee
@@ -1287,7 +1362,7 @@ def calculate_position_size(target_config, available_budget, stock_price):
             logger.warning(f"최종 필요금액({final_total:,.0f}원)이 할당예산({allocated_budget:,.0f}원)을 초과합니다.")
             return 0
         
-        # 13. 로깅
+        # 12. 로깅
         logger.info(f"최종 매수 수량: {final_quantity}주")
         logger.info(f"필요 금액: {final_amount:,.0f}원")
         logger.info(f"예상 수수료: {final_fee:,.0f}원")
@@ -1615,6 +1690,25 @@ def process_positions(trading_state):
                         logger.info(msg)
                         discord_alert.SendMessage(msg)
                         
+                        # 🔥 새로 추가: 적응형 전략 학습
+                        if trading_config.use_adaptive_strategy:
+                            try:
+                                # 매도 시점의 시장 환경 확인
+                                market_env = sell_analysis.get('market_environment', 'sideways')
+                                
+                                # 적응형 전략 업데이트
+                                adaptive_strategy = AdaptiveMarketStrategy("bb_adaptive_strategy.json")
+                                adaptive_strategy.update_performance(
+                                    stock_code, 
+                                    market_env, 
+                                    win=(net_profit > 0)
+                                )
+                                
+                                win_lose = "승리" if net_profit > 0 else "패배"
+                                logger.info(f"🧠 적응형 전략 학습 완료: {stock_code} ({market_env}) - {win_lose}")
+                                
+                            except Exception as e:
+                                logger.error(f"적응형 전략 학습 중 오류: {str(e)}")
                         # 포지션 제거
                         positions_to_remove.append(stock_code)
                     else:
@@ -1637,20 +1731,17 @@ def process_positions(trading_state):
         return trading_state
 
 def execute_buy_opportunities(buy_opportunities, trading_state):
-    """매수 기회 실행 (Config 적용)"""
+    """매수 기회 실행 (수정된 버전 - 새로운 예산 로직 적용)"""
     try:
         if not buy_opportunities:
             return trading_state
         
-        # 계좌 정보 조회
-        balance = KisKR.GetBalance()
-        if not balance:
-            logger.error("계좌 정보 조회 실패")
-            return trading_state
+        # 새로운 예산 계산 함수 사용
+        available_budget = get_available_budget()
         
-        total_money = float(balance.get('TotalMoney', 0))
-        # Config에서 예산 비율 사용
-        available_budget = total_money * trading_config.trade_budget_ratio
+        if available_budget <= 0:
+            logger.info("사용 가능한 예산이 없습니다.")
+            return trading_state
         
         # Config에서 일일 손실/수익 한도 확인
         daily_stats = trading_state['daily_stats']
@@ -1668,6 +1759,11 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
         current_positions = len(trading_state['positions'])
         max_new_positions = trading_config.max_positions - current_positions
         
+        logger.info(f"매수 실행 준비:")
+        logger.info(f"  - 사용 가능 예산: {available_budget:,.0f}원")
+        logger.info(f"  - 현재 보유 종목: {current_positions}개/{trading_config.max_positions}개")
+        logger.info(f"  - 추가 매수 가능: {max_new_positions}개")
+        
         # 상위 종목들에 대해 매수 실행
         for i, opportunity in enumerate(buy_opportunities[:max_new_positions]):
             try:
@@ -1676,8 +1772,14 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                 stock_price = opportunity['price']
                 target_config = opportunity['target_config']
                 
-                # 포지션 크기 계산 (종목별 설정 적용)
-                quantity = calculate_position_size(target_config, available_budget, stock_price)
+                # 매수 전 예산 재확인 (실시간)
+                current_budget = get_available_budget()
+                if current_budget <= 0:
+                    logger.info("예산 소진으로 매수 중단")
+                    break
+                
+                # 포지션 크기 계산 (현재 예산으로)
+                quantity = calculate_position_size(target_config, current_budget, stock_price)
                 
                 if quantity < 1:
                     logger.info(f"매수 수량 부족: {stock_name}({stock_code})")
@@ -1717,7 +1819,8 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                     msg += f"투자금액: {executed_price * executed_amount:,.0f}원\n"
                     msg += f"수수료: {buy_fee:,.0f}원\n"
                     msg += f"목표수익률: {target_config.get('profit_target', trading_config.take_profit_ratio)*100:.1f}%\n"
-                    msg += f"손절률: {target_config.get('stop_loss', trading_config.stop_loss_ratio)*100:.1f}%"
+                    msg += f"손절률: {target_config.get('stop_loss', trading_config.stop_loss_ratio)*100:.1f}%\n"
+                    msg += f"남은 예산: {get_available_budget():,.0f}원"
                     
                     logger.info(msg)
                     discord_alert.SendMessage(msg)
@@ -1733,13 +1836,14 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
     except Exception as e:
         logger.error(f"매수 기회 실행 중 에러: {str(e)}")
         return trading_state
+
 def create_config_file(config_path: str = "target_stock_config.json") -> None:
     """기본 설정 파일 생성 (종목 특성 기반)"""
     try:
         logger.info("종목 특성 기반 설정 파일 생성 시작...")
         
         # 기본 타겟 종목들 정의
-        sample_codes = ["006400", "028300", "005930", "000660"]  # 삼성SDI, HLB, 삼성전자, SK하이닉스
+        sample_codes = ["034020", "272210", "267250"]  # 
         
         # 특성별 파라미터 매핑
         characteristic_params = {
@@ -1945,16 +2049,13 @@ def main():
             
             # 장 시작 알림 (Config 사용)
             if is_market_open and not market_open_notified:
-                balance = KisKR.GetBalance()
-                if balance:
-                    total_money = float(balance.get('TotalMoney', 0))
-                    msg = f"🔔 장 시작!\n총 자산: {total_money:,.0f}원\n"
-                    msg += f"봇 운용자금: {total_money * config.trade_budget_ratio:,.0f}원\n"
-                    msg += f"타겟 종목: {enabled_count}개"
-                    logger.info(msg)
-                    discord_alert.SendMessage(msg)
+                msg = f"🔔 장 시작!\n"
+                msg += get_budget_info_message()
+                msg += f"\n타겟 종목: {enabled_count}개"
+                logger.info(msg)
+                discord_alert.SendMessage(msg)
                 market_open_notified = True
-            
+
             # 거래 시간이 아니면 대기
             if not is_trading_time:
                 logger.info("장 시간 외입니다.")
