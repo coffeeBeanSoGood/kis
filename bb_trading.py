@@ -565,7 +565,7 @@ def get_available_budget():
         return 0
 
 def get_budget_info_message():
-    """예산 정보 메시지 생성 (Proportional 모드 지원)"""
+    """예산 정보 메시지 생성 (모든 모드 지원 - 버그 수정)"""
     try:
         balance = KisKR.GetBalance()
         if not balance:
@@ -576,28 +576,55 @@ def get_budget_info_message():
         available_budget = get_available_budget()
         
         if trading_config.use_absolute_budget:
-            # Proportional 모드 정보
+            # 🔥 수정: 전략별로 다른 메시지 생성
+            strategy = trading_config.absolute_budget_strategy
             absolute_budget = trading_config.absolute_budget
-            initial_asset = trading_config.config.get("initial_total_asset", 0)
             
-            if initial_asset > 0:
-                asset_ratio = total_money / initial_asset
-                performance = ((total_money - initial_asset) / initial_asset) * 100
+            if strategy == "proportional":
+                # Proportional 모드 메시지
+                initial_asset = trading_config.initial_total_asset
                 
-                msg = f"⚖️ 비례형 절대금액 예산 운용\n"
+                if initial_asset > 0:
+                    asset_ratio = total_money / initial_asset
+                    performance = ((total_money - initial_asset) / initial_asset) * 100
+                    
+                    msg = f"⚖️ 비례형 절대금액 예산 운용\n"
+                    msg += f"기준 예산: {absolute_budget:,.0f}원\n"
+                    msg += f"초기 자산: {initial_asset:,.0f}원\n"
+                    msg += f"현재 자산: {total_money:,.0f}원\n"
+                    msg += f"자산 성과: {performance:+.1f}%\n"
+                    msg += f"예산 배율: {asset_ratio:.2f}배\n"
+                    msg += f"현금 잔고: {remain_money:,.0f}원\n"
+                    msg += f"봇 운용 예산: {available_budget:,.0f}원"
+                else:
+                    msg = f"⚖️ 비례형 절대금액 예산 운용 (초기화 중)\n"
+                    msg += f"기준 예산: {absolute_budget:,.0f}원\n"
+                    msg += f"현재 자산: {total_money:,.0f}원\n"
+                    msg += f"봇 운용 예산: {available_budget:,.0f}원"
+            
+            elif strategy == "adaptive":
+                # Adaptive 모드 메시지
+                loss_tolerance = trading_config.budget_loss_tolerance
+                min_budget = absolute_budget * (1 - loss_tolerance)
+                
+                msg = f"🔄 적응형 절대금액 예산 운용\n"
                 msg += f"기준 예산: {absolute_budget:,.0f}원\n"
-                msg += f"초기 자산: {initial_asset:,.0f}원\n"
+                msg += f"손실 허용: {loss_tolerance*100:.0f}%\n"
+                msg += f"최소 예산: {min_budget:,.0f}원\n"
                 msg += f"현재 자산: {total_money:,.0f}원\n"
-                msg += f"자산 성과: {performance:+.1f}%\n"
-                msg += f"예산 배율: {asset_ratio:.2f}배\n"
                 msg += f"현금 잔고: {remain_money:,.0f}원\n"
                 msg += f"봇 운용 예산: {available_budget:,.0f}원"
-            else:
-                msg = f"⚖️ 비례형 절대금액 예산 운용 (초기화 중)\n"
-                msg += f"기준 예산: {absolute_budget:,.0f}원\n"
+            
+            else:  # strict 모드
+                # Strict 모드 메시지
+                msg = f"🔒 엄격형 절대금액 예산 운용\n"
+                msg += f"설정 예산: {absolute_budget:,.0f}원 (고정)\n"
                 msg += f"현재 자산: {total_money:,.0f}원\n"
+                msg += f"현금 잔고: {remain_money:,.0f}원\n"
                 msg += f"봇 운용 예산: {available_budget:,.0f}원"
+        
         else:
+            # 🔥 수정: msg 변수 초기화 추가
             msg = f"📊 비율 기반 예산 운용\n"
             msg += f"설정 비율: {trading_config.trade_budget_ratio*100:.1f}%\n"
             msg += f"총 자산: {total_money:,.0f}원\n"
@@ -609,7 +636,25 @@ def get_budget_info_message():
     except Exception as e:
         logger.error(f"예산 정보 메시지 생성 중 에러: {str(e)}")
         return "예산 정보 조회 실패"
-    
+
+def get_safe_config_value(target_config, key, default_value):
+    """종목별 설정에서 안전하게 값 가져오기"""
+    try:
+        # 종목별 설정에서 먼저 찾기
+        if key in target_config and target_config[key] is not None:
+            return target_config[key]
+        
+        # 전역 설정에서 찾기
+        if hasattr(trading_config, key):
+            return getattr(trading_config, key)
+        
+        # 기본값 반환
+        return default_value
+        
+    except Exception as e:
+        logger.warning(f"설정값 조회 중 오류 ({key}): {str(e)}")
+        return default_value        
+
 def calculate_trading_fee(price, quantity, is_buy=True):
     """거래 수수료 및 세금 계산 (개선된 버전)"""
     try:
@@ -1370,7 +1415,7 @@ def save_trading_state(state):
 
 ################################### 매매 실행 ##################################
 def calculate_position_size(target_config, available_budget, stock_price):
-    """포지션 크기 계산 (수정된 버전 - 예산 로직 개선)"""
+    """포지션 크기 계산 (개선된 버전 - 안전한 설정 접근)"""
     try:
         # 1. 기본 검증
         if stock_price <= 0:
@@ -1381,20 +1426,19 @@ def calculate_position_size(target_config, available_budget, stock_price):
             logger.warning("사용 가능한 예산이 없습니다.")
             return 0
         
-        # 2. 실제 사용 가능한 예산 재확인 (최신 정보로)
+        # 2. 실제 사용 가능한 예산 재확인
         current_available_budget = get_available_budget()
-        
-        # 전달받은 예산과 현재 예산 중 작은 값 사용 (안전장치)
         usable_budget = min(available_budget, current_available_budget)
         
         if usable_budget <= 0:
             logger.warning("실제 사용 가능한 예산이 없습니다.")
             return 0
         
-        logger.info(f"포지션 계산용 예산: {usable_budget:,.0f}원")
-        
-        # 3. 종목별 할당 비율 적용
-        allocation_ratio = target_config.get('allocation_ratio', 0.125)  # 기본 12.5%
+        # 3. 🔥 개선: 안전한 설정값 접근
+        allocation_ratio = get_safe_config_value(target_config, 'allocation_ratio', 0.125)
+        min_order_amount = get_safe_config_value(target_config, 'min_order_amount', 10000)
+        min_quantity = get_safe_config_value(target_config, 'min_quantity', 1)
+        max_quantity = get_safe_config_value(target_config, 'max_quantity', float('inf'))
         
         # 할당 비율 검증 (0.01% ~ 50% 범위)
         allocation_ratio = max(0.0001, min(0.5, allocation_ratio))
@@ -1403,28 +1447,26 @@ def calculate_position_size(target_config, available_budget, stock_price):
         logger.info(f"할당 예산: {allocated_budget:,.0f}원 (비율: {allocation_ratio*100:.1f}%)")
         
         # 4. 최소 주문 금액 체크
-        min_order_amount = target_config.get('min_order_amount', 10000)  # 기본 1만원
         if allocated_budget < min_order_amount:
             logger.info(f"할당 예산이 최소 주문 금액({min_order_amount:,}원)보다 작습니다.")
             return 0
         
         # 5. 최대 주문 금액 제한 (리스크 관리)
-        max_order_amount = target_config.get('max_order_amount', usable_budget * 0.2)  # 기본 20% 제한
+        max_order_amount = get_safe_config_value(target_config, 'max_order_amount', usable_budget * 0.2)
         allocated_budget = min(allocated_budget, max_order_amount)
         
         # 6. 기본 수량 계산
         base_quantity = int(allocated_budget / stock_price)
-        logger.info(f"기본 계산 수량: {base_quantity}주")
         
         if base_quantity <= 0:
             logger.info("계산된 수량이 0 이하입니다.")
             return 0
         
-        # 7. 수수료 고려한 실제 필요 금액 계산
+        # 7. 수수료 고려한 조정
         estimated_fee = calculate_trading_fee(stock_price, base_quantity, True)
         total_needed = (stock_price * base_quantity) + estimated_fee
         
-        # 8. 수수료 포함해서 예산 초과하면 수량 조정
+        # 수수료 포함해서 예산 초과하면 수량 조정
         while total_needed > allocated_budget and base_quantity > 0:
             base_quantity -= 1
             if base_quantity > 0:
@@ -1433,18 +1475,14 @@ def calculate_position_size(target_config, available_budget, stock_price):
             else:
                 break
         
-        # 9. 최종 검증
         if base_quantity <= 0:
             logger.info("수수료 고려 후 매수 가능한 수량이 없습니다.")
             return 0
         
-        # 10. 종목별 최소/최대 수량 제한 적용
-        min_quantity = target_config.get('min_quantity', 1)
-        max_quantity = target_config.get('max_quantity', float('inf'))
-        
+        # 8. 종목별 최소/최대 수량 제한 적용
         final_quantity = max(min_quantity, min(base_quantity, max_quantity))
         
-        # 11. 최종 금액 검증
+        # 9. 최종 검증
         final_amount = stock_price * final_quantity
         final_fee = calculate_trading_fee(stock_price, final_quantity, True)
         final_total = final_amount + final_fee
@@ -1453,12 +1491,7 @@ def calculate_position_size(target_config, available_budget, stock_price):
             logger.warning(f"최종 필요금액({final_total:,.0f}원)이 할당예산({allocated_budget:,.0f}원)을 초과합니다.")
             return 0
         
-        # 12. 로깅
-        logger.info(f"최종 매수 수량: {final_quantity}주")
-        logger.info(f"필요 금액: {final_amount:,.0f}원")
-        logger.info(f"예상 수수료: {final_fee:,.0f}원")
-        logger.info(f"총 필요 금액: {final_total:,.0f}원")
-        logger.info(f"남은 할당 예산: {allocated_budget - final_total:,.0f}원")
+        logger.info(f"최종 매수 수량: {final_quantity}주 (투자금액: {final_total:,.0f}원)")
         
         return final_quantity
         
