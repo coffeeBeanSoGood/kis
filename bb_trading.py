@@ -1123,29 +1123,30 @@ def analyze_buy_signal(stock_data, target_config):
                 signals.append(f"연속하락 후 반등 ({consecutive_down}일) (+20)")
         
         # 🎯 매수 기준 대폭 완화
-        min_score = target_config.get('min_score', 25)  # 35 → 25
-        
-        # 강력한 매수 신호 조건 (완화)
+        min_score = target_config.get('min_score', 40)  # 35 → 25
+
+        # 강력한 매수 신호 조건 (기준 강화)
         strong_conditions = [
-            rsi <= 30,  # RSI 과매도
+            rsi <= 25,  # RSI 극과매도
             bb_position in ["breakthrough", "lower"],  # 볼린저밴드 하단권
-            score >= 50,  # 높은 점수
+            score >= 70,  # 🔥 50 → 70 (높은 점수 기준 상향)
             any("연속하락 후 반등" in s for s in signals),  # 반등 신호
         ]
-        
+
         signal_strength = 'STRONG' if any(strong_conditions) else 'NORMAL'
         is_buy_signal = score >= min_score
-        
-        # 🔥 추가: 매우 강한 신호는 더 낮은 점수에서도 매수
-        if rsi <= 25 or bb_position == "breakthrough":
-            discounted_score = max(15, min_score * 0.7)  # 30% 할인
+
+        # 🔥 특별조건 할인 기준 강화
+        if rsi <= 20 or bb_position == "breakthrough":  # 🔥 25 → 20 (더 극한 상황에만)
+            discounted_score = max(25, min_score * 0.6)  # 🔥 40% 할인 (30%→40%)
             if score >= discounted_score and not is_buy_signal:
-                signals.append(f"특별조건 점수할인: {discounted_score:.0f}점")
-                is_buy_signal = True
+                signals.append(f"극한조건 점수할인: {discounted_score:.0f}점")
+                is_buy_signal = True        
         
         # target_config에 신호 강도 저장 (포지션 크기 계산시 사용)
         target_config['last_signal_strength'] = signal_strength
-        
+        target_config['last_signal_score'] = score  # 🔥 새로 추가
+
         return {
             'is_buy_signal': is_buy_signal,
             'signal_strength': signal_strength,
@@ -1164,7 +1165,42 @@ def analyze_buy_signal(stock_data, target_config):
     except Exception as e:
         logger.error(f"매수 신호 분석 중 에러: {str(e)}")
         return {'is_buy_signal': False, 'score': 0, 'signals': [f"분석 오류: {str(e)}"]}
-    
+
+def should_use_intraday_timing(opportunity, target_config):
+    """신호 강도별 분봉 타이밍 사용 여부 결정"""
+    try:
+        # 전역 설정에서 분봉 타이밍이 비활성화된 경우
+        if not getattr(trading_config, 'use_intraday_timing', False):
+            return False, 0, "분봉 타이밍 비활성화"
+        
+        daily_score = opportunity['score']
+        signal_strength = opportunity.get('signal_strength', 'NORMAL')
+        
+        # 🎯 신호 강도별 차등 적용
+        if signal_strength == 'STRONG' and daily_score >= 70:
+            # 매우 강한 신호: 즉시 매수
+            return False, 0, f"강력한 신호로 즉시 매수 (점수: {daily_score})"
+            
+        elif daily_score >= 60:
+            # 강한 신호: 30분만 대기
+            return True, 0.5, f"강한 신호로 30분 대기 (점수: {daily_score})"
+            
+        elif daily_score >= 50:
+            # 중간 신호: 1시간 대기
+            return True, 1.0, f"중간 신호로 1시간 대기 (점수: {daily_score})"
+            
+        elif daily_score >= 40:
+            # 보통 신호: 2시간 대기 (기존)
+            return True, 2.0, f"보통 신호로 2시간 대기 (점수: {daily_score})"
+            
+        else:
+            # 약한 신호: 분봉 타이밍 더 엄격하게
+            return True, 1.5, f"약한 신호로 1.5시간 대기 (점수: {daily_score})"
+            
+    except Exception as e:
+        logger.error(f"분봉 타이밍 결정 중 오류: {str(e)}")
+        return True, 2.0, "오류로 기본 대기"
+
 def calculate_adaptive_stop_loss(stock_data, position, target_config):
     """적응형 손절 계산 - 변동성과 시장 환경 고려"""
     try:
@@ -1698,56 +1734,434 @@ def execute_buy_order(stock_code, target_config, quantity, price):
     except Exception as e:
         logger.error(f"매수 주문 실행 중 에러: {str(e)}")
         return None, None
-    
+
 def process_buy_candidates(trading_state):
-    """매수 대기 후보들의 진입 타이밍 재확인"""
+    """매수 대기 후보들의 진입 타이밍 재확인 - 신호별 대기시간 + 강제매수 로직"""
     try:
         if 'buy_candidates' not in trading_state:
             return trading_state
         
+        if not trading_state['buy_candidates']:
+            return trading_state
+        
+        logger.info("🔄 매수 대기 후보 관리 시작")
+        logger.info(f"📋 현재 대기 종목: {len(trading_state['buy_candidates'])}개")
+        
         candidates_to_remove = []
+        candidates_executed = []
+        candidates_expired = []
         
         for stock_code, candidate_info in trading_state['buy_candidates'].items():
             try:
-                # 대기 시간 확인
+                # 기본 정보 추출
+                opportunity = candidate_info['opportunity']
+                stock_name = opportunity['stock_name']
+                daily_score = candidate_info.get('daily_score', 0)
+                signal_strength = candidate_info.get('signal_strength', 'NORMAL')
+                timing_reason = candidate_info.get('timing_reason', '알 수 없음')
+                
+                # 대기 시간 계산
                 wait_start = datetime.datetime.fromisoformat(candidate_info['wait_start_time'])
                 wait_hours = (datetime.datetime.now() - wait_start).total_seconds() / 3600
+                wait_minutes = wait_hours * 60
+                max_wait_hours = candidate_info.get('max_wait_hours', 2.0)
                 
-                # 최대 2시간까지만 대기
-                if wait_hours > 2:
-                    logger.info(f"⏰ 매수 대기 시간 초과: {stock_code} ({wait_hours:.1f}시간)")
+                logger.info(f"\n🔍 대기 종목 검토: {stock_name}({stock_code})")
+                logger.info(f"   대기시간: {wait_minutes:.0f}분 / {max_wait_hours*60:.0f}분")
+                logger.info(f"   일봉점수: {daily_score}점 ({signal_strength})")
+                logger.info(f"   대기전략: {timing_reason}")
+                
+                # 🕐 대기 시간 초과 체크
+                if wait_hours > max_wait_hours:
+                    logger.info(f"   ⏰ 대기 시간 초과!")
+                    
+                    # 🎯 강제 매수 여부 결정 (신호 강도별)
+                    should_force_buy = False
+                    force_reason = ""
+                    
+                    if signal_strength == 'STRONG':
+                        # 강한 신호는 항상 강제 매수
+                        should_force_buy = True
+                        force_reason = "강한 신호로 강제 매수"
+                        
+                    elif daily_score >= 60:
+                        # 60점 이상은 강제 매수
+                        should_force_buy = True
+                        force_reason = f"고점수({daily_score}점)로 강제 매수"
+                        
+                    elif daily_score >= 50:
+                        # 50점 이상은 조건부 강제 매수 (현재 RSI 체크)
+                        try:
+                            current_price = KisKR.GetCurrentPrice(stock_code)
+                            stock_data = get_stock_data(stock_code)
+                            if stock_data and stock_data.get('rsi', 50) <= 40:
+                                should_force_buy = True
+                                force_reason = f"중간점수({daily_score}점) + RSI과매도({stock_data['rsi']:.1f})로 강제 매수"
+                            else:
+                                force_reason = f"중간점수({daily_score}점)지만 RSI({stock_data.get('rsi', 50):.1f})로 매수 포기"
+                        except:
+                            force_reason = f"중간점수({daily_score}점)지만 데이터 오류로 매수 포기"
+                            
+                    elif daily_score >= 40:
+                        # 40점대는 매수 포기
+                        force_reason = f"보통점수({daily_score}점)로 매수 포기"
+                        
+                    else:
+                        # 40점 미만은 매수 포기 (실제로는 발생하지 않음)
+                        force_reason = f"낮은점수({daily_score}점)로 매수 포기"
+                    
+                    logger.info(f"   🎯 강제매수 결정: {force_reason}")
+                    
+                    if should_force_buy:
+                        # 💰 예산 재확인
+                        remaining_budget = get_remaining_budget_for_stock(stock_code, trading_state)
+                        total_available_budget = get_available_budget(trading_state)
+                        
+                        if remaining_budget <= 10000 or total_available_budget <= 10000:
+                            logger.info(f"   ❌ 예산 부족으로 강제매수 불가")
+                            logger.info(f"      종목별 예산: {remaining_budget:,.0f}원")
+                            logger.info(f"      전체 예산: {total_available_budget:,.0f}원")
+                            candidates_expired.append({
+                                'stock_code': stock_code,
+                                'stock_name': stock_name, 
+                                'reason': '예산 부족',
+                                'daily_score': daily_score,
+                                'wait_time': wait_hours
+                            })
+                        else:
+                            # 🚀 강제 매수 실행
+                            logger.info(f"   🚀 강제 매수 실행 시작")
+                            
+                            target_config = opportunity['target_config']
+                            stock_price = opportunity['price']
+                            
+                            # 현재가 재확인
+                            try:
+                                current_price = KisKR.GetCurrentPrice(stock_code)
+                                if current_price and current_price > 0:
+                                    stock_price = current_price
+                                    logger.info(f"      현재가 업데이트: {stock_price:,.0f}원")
+                            except:
+                                logger.warning(f"      현재가 조회 실패, 기존 가격 사용: {stock_price:,.0f}원")
+                            
+                            # 포지션 크기 계산
+                            quantity = calculate_position_size(target_config, stock_code, stock_price, trading_state)
+                            
+                            if quantity < 1:
+                                logger.info(f"   ❌ 매수 수량 부족 (계산수량: {quantity})")
+                                candidates_expired.append({
+                                    'stock_code': stock_code,
+                                    'stock_name': stock_name,
+                                    'reason': '수량 부족',
+                                    'daily_score': daily_score,
+                                    'wait_time': wait_hours
+                                })
+                            else:
+                                # 📝 매수 실행
+                                logger.info(f"      수량: {quantity}주, 가격: {stock_price:,.0f}원")
+                                
+                                executed_price, executed_amount = execute_buy_order(
+                                    stock_code, target_config, quantity, stock_price
+                                )
+                                
+                                if executed_price and executed_amount:
+                                    # ✅ 매수 성공
+                                    buy_fee = calculate_trading_fee(executed_price, executed_amount, True)
+                                    actual_investment = executed_price * executed_amount
+                                    
+                                    logger.info(f"   ✅ 강제 매수 성공!")
+                                    logger.info(f"      체결가: {executed_price:,.0f}원")
+                                    logger.info(f"      체결량: {executed_amount}주")
+                                    logger.info(f"      투자금액: {actual_investment:,.0f}원")
+                                    
+                                    # 포지션 정보 저장
+                                    position_info = {
+                                        'stock_code': stock_code,
+                                        'stock_name': stock_name,
+                                        'entry_price': executed_price,
+                                        'amount': executed_amount,
+                                        'buy_fee': buy_fee,
+                                        'entry_time': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                                        'high_price': executed_price,
+                                        'trailing_stop': executed_price * (1 - target_config.get('trailing_stop', trading_config.trailing_stop_ratio)),
+                                        'target_config': target_config,
+                                        'buy_analysis': opportunity['analysis'],
+                                        'signal_strength': signal_strength,
+                                        'daily_score': daily_score,
+                                        'entry_method': 'forced_buy_after_wait',  # 🔥 강제매수 표시
+                                        'wait_time_hours': wait_hours,
+                                        'force_reason': force_reason
+                                    }
+                                    
+                                    trading_state['positions'][stock_code] = position_info
+                                    
+                                    # 성공 기록
+                                    candidates_executed.append({
+                                        'stock_code': stock_code,
+                                        'stock_name': stock_name,
+                                        'executed_price': executed_price,
+                                        'executed_amount': executed_amount,
+                                        'investment_amount': actual_investment,
+                                        'daily_score': daily_score,
+                                        'signal_strength': signal_strength,
+                                        'wait_time': wait_hours,
+                                        'force_reason': force_reason
+                                    })
+                                    
+                                    # 🎉 Discord 알림
+                                    msg = f"⏰ 대기 후 강제 매수: {stock_name}({stock_code})\n"
+                                    msg += f"매수가: {executed_price:,.0f}원 × {executed_amount}주\n"
+                                    msg += f"투자금액: {actual_investment:,.0f}원\n"
+                                    msg += f"대기시간: {wait_hours:.1f}시간\n"
+                                    msg += f"일봉점수: {daily_score}점 ({signal_strength})\n"
+                                    msg += f"매수사유: {force_reason}"
+                                    
+                                    logger.info(msg)
+                                    if hasattr(trading_config, 'use_discord_alert') and trading_config.config.get('use_discord_alert', True):
+                                        discord_alert.SendMessage(msg)
+                                        
+                                else:
+                                    # ❌ 매수 실패
+                                    logger.error(f"   ❌ 강제 매수 실패")
+                                    candidates_expired.append({
+                                        'stock_code': stock_code,
+                                        'stock_name': stock_name,
+                                        'reason': '주문 실패',
+                                        'daily_score': daily_score,
+                                        'wait_time': wait_hours
+                                    })
+                    else:
+                        # 📉 매수 포기
+                        candidates_expired.append({
+                            'stock_code': stock_code,
+                            'stock_name': stock_name,
+                            'reason': force_reason,
+                            'daily_score': daily_score,
+                            'wait_time': wait_hours
+                        })
+                    
+                    # 대기 목록에서 제거
                     candidates_to_remove.append(stock_code)
                     continue
                 
-                # 분봉 진입 타이밍 재확인
-                target_config = candidate_info['opportunity']['target_config']
+                # 🔍 아직 대기 시간 내: 분봉 진입 타이밍 재확인
+                logger.info(f"   🕐 대기 시간 내: 분봉 타이밍 재확인")
+                
+                target_config = opportunity['target_config']
                 timing_analysis = analyze_intraday_entry_timing(stock_code, target_config)
                 
+                current_intraday_score = timing_analysis.get('entry_score', 0)
+                min_intraday_score = candidate_info.get('min_intraday_score', 20)
+                previous_intraday_score = candidate_info.get('last_intraday_score', 0)
+                
+                logger.info(f"   분봉 점수: {current_intraday_score}/{min_intraday_score}점 (이전: {previous_intraday_score}점)")
+                
+                # 점수 변화 분석
+                score_change = current_intraday_score - previous_intraday_score
+                if score_change != 0:
+                    change_direction = "상승" if score_change > 0 else "하락"
+                    logger.info(f"   점수 변화: {score_change:+d}점 ({change_direction})")
+                
                 if timing_analysis['enter_now']:
-                    logger.info(f"🎯 분봉 진입 타이밍 도래: {stock_code}")
+                    # 🎯 분봉 타이밍 도래!
+                    logger.info(f"   🎯 분봉 진입 타이밍 도래!")
+                    logger.info(f"      사유: {timing_analysis['reason']}")
+                    logger.info(f"      대기시간: {wait_hours:.1f}시간")
                     
-                    # 매수 실행
-                    opportunity = candidate_info['opportunity']
-                    # ... 실제 매수 로직 실행
+                    # 분봉 신호 출력
+                    if timing_analysis.get('entry_signals'):
+                        logger.info(f"      분봉 신호:")
+                        for signal in timing_analysis['entry_signals'][:3]:
+                            logger.info(f"        - {signal}")
+                    
+                    # 💰 예산 재확인
+                    remaining_budget = get_remaining_budget_for_stock(stock_code, trading_state)
+                    total_available_budget = get_available_budget(trading_state)
+                    
+                    if remaining_budget <= 10000 or total_available_budget <= 10000:
+                        logger.info(f"   ❌ 예산 부족으로 매수 불가")
+                        candidates_expired.append({
+                            'stock_code': stock_code,
+                            'stock_name': stock_name,
+                            'reason': '예산 부족 (분봉 타이밍)',
+                            'daily_score': daily_score,
+                            'wait_time': wait_hours
+                        })
+                        candidates_to_remove.append(stock_code)
+                        continue
+                    
+                    # 📝 매수 실행
+                    target_config = opportunity['target_config']
+                    stock_price = opportunity['price']
+                    
+                    # 현재가 재확인
+                    try:
+                        current_price = KisKR.GetCurrentPrice(stock_code)
+                        if current_price and current_price > 0:
+                            stock_price = current_price
+                    except:
+                        pass
+                    
+                    quantity = calculate_position_size(target_config, stock_code, stock_price, trading_state)
+                    
+                    if quantity < 1:
+                        logger.info(f"   ❌ 매수 수량 부족")
+                        candidates_expired.append({
+                            'stock_code': stock_code,
+                            'stock_name': stock_name,
+                            'reason': '수량 부족 (분봉 타이밍)',
+                            'daily_score': daily_score,
+                            'wait_time': wait_hours
+                        })
+                    else:
+                        logger.info(f"   🔵 분봉 타이밍 매수 실행")
+                        
+                        executed_price, executed_amount = execute_buy_order(
+                            stock_code, target_config, quantity, stock_price
+                        )
+                        
+                        if executed_price and executed_amount:
+                            # ✅ 매수 성공
+                            buy_fee = calculate_trading_fee(executed_price, executed_amount, True)
+                            actual_investment = executed_price * executed_amount
+                            
+                            logger.info(f"   ✅ 분봉 타이밍 매수 성공!")
+                            
+                            # 포지션 정보 저장
+                            position_info = {
+                                'stock_code': stock_code,
+                                'stock_name': stock_name,
+                                'entry_price': executed_price,
+                                'amount': executed_amount,
+                                'buy_fee': buy_fee,
+                                'entry_time': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                                'high_price': executed_price,
+                                'trailing_stop': executed_price * (1 - target_config.get('trailing_stop', trading_config.trailing_stop_ratio)),
+                                'target_config': target_config,
+                                'buy_analysis': opportunity['analysis'],
+                                'signal_strength': signal_strength,
+                                'daily_score': daily_score,
+                                'entry_method': 'intraday_timing_after_wait',
+                                'wait_time_hours': wait_hours,
+                                'intraday_analysis': timing_analysis,
+                                'intraday_score': current_intraday_score
+                            }
+                            
+                            trading_state['positions'][stock_code] = position_info
+                            
+                            # 성공 기록
+                            candidates_executed.append({
+                                'stock_code': stock_code,
+                                'stock_name': stock_name,
+                                'executed_price': executed_price,
+                                'executed_amount': executed_amount,
+                                'investment_amount': actual_investment,
+                                'daily_score': daily_score,
+                                'signal_strength': signal_strength,
+                                'wait_time': wait_hours,
+                                'intraday_score': current_intraday_score,
+                                'entry_method': '분봉 타이밍'
+                            })
+                            
+                            # 🎉 Discord 알림
+                            msg = f"🎯 분봉 타이밍 매수: {stock_name}({stock_code})\n"
+                            msg += f"매수가: {executed_price:,.0f}원 × {executed_amount}주\n"
+                            msg += f"투자금액: {actual_investment:,.0f}원\n"
+                            msg += f"대기시간: {wait_hours:.1f}시간\n"
+                            msg += f"일봉점수: {daily_score}점 ({signal_strength})\n"
+                            msg += f"분봉점수: {current_intraday_score}점\n"
+                            msg += f"진입사유: {timing_analysis['reason']}"
+                            
+                            logger.info(msg)
+                            if hasattr(trading_config, 'use_discord_alert') and trading_config.config.get('use_discord_alert', True):
+                                discord_alert.SendMessage(msg)
+                        else:
+                            logger.error(f"   ❌ 분봉 타이밍 매수 실패")
+                            candidates_expired.append({
+                                'stock_code': stock_code,
+                                'stock_name': stock_name,
+                                'reason': '주문 실패 (분봉 타이밍)',
+                                'daily_score': daily_score,
+                                'wait_time': wait_hours
+                            })
                     
                     candidates_to_remove.append(stock_code)
+                
                 else:
-                    # 타이밍 점수 업데이트
-                    candidate_info['last_intraday_score'] = timing_analysis['entry_score']
+                    # 🔄 계속 대기: 정보 업데이트
+                    logger.info(f"   🔄 분봉 타이밍 대기 계속")
+                    logger.info(f"      사유: {timing_analysis['reason']}")
+                    
+                    # 대기 정보 업데이트
+                    candidate_info['last_intraday_score'] = current_intraday_score
+                    candidate_info['last_check_time'] = datetime.datetime.now().isoformat()
+                    candidate_info['check_count'] = candidate_info.get('check_count', 0) + 1
+                    
+                    # 분봉 신호 변화 추적
+                    if timing_analysis.get('entry_signals'):
+                        candidate_info['latest_intraday_signals'] = timing_analysis['entry_signals'][:3]
                     
             except Exception as e:
                 logger.error(f"매수 후보 처리 중 오류 ({stock_code}): {str(e)}")
                 candidates_to_remove.append(stock_code)
+                candidates_expired.append({
+                    'stock_code': stock_code,
+                    'stock_name': stock_code,
+                    'reason': f'처리 오류: {str(e)}',
+                    'daily_score': 0,
+                    'wait_time': 0
+                })
         
-        # 처리 완료된 후보들 제거
+        # 🗑️ 처리 완료된 후보들 제거
         for stock_code in candidates_to_remove:
-            del trading_state['buy_candidates'][stock_code]
+            if stock_code in trading_state['buy_candidates']:
+                del trading_state['buy_candidates'][stock_code]
+        
+        # 📊 처리 결과 요약
+        total_processed = len(candidates_executed) + len(candidates_expired)
+        remaining_candidates = len(trading_state.get('buy_candidates', {}))
+        
+        logger.info(f"\n📊 매수 대기 후보 처리 완료:")
+        logger.info(f"   - 처리된 종목: {total_processed}개")
+        logger.info(f"   - 매수 실행: {len(candidates_executed)}개")
+        logger.info(f"   - 매수 포기: {len(candidates_expired)}개")
+        logger.info(f"   - 계속 대기: {remaining_candidates}개")
+        
+        # 🎯 실행된 종목 상세 정보
+        if candidates_executed:
+            logger.info(f"\n✅ 매수 실행된 종목들:")
+            for exec_info in candidates_executed:
+                logger.info(f"   - {exec_info['stock_name']}({exec_info['stock_code']}): "
+                          f"{exec_info['executed_price']:,.0f}원×{exec_info['executed_amount']}주, "
+                          f"대기 {exec_info['wait_time']:.1f}시간")
+        
+        # 📉 포기된 종목 상세 정보
+        if candidates_expired:
+            logger.info(f"\n❌ 매수 포기된 종목들:")
+            for exp_info in candidates_expired:
+                logger.info(f"   - {exp_info['stock_name']}({exp_info['stock_code']}): "
+                          f"{exp_info['reason']}, 대기 {exp_info['wait_time']:.1f}시간")
+        
+        # 🔄 계속 대기 중인 종목들
+        if remaining_candidates > 0:
+            logger.info(f"\n⏳ 계속 대기 중인 종목들:")
+            for stock_code, info in trading_state['buy_candidates'].items():
+                wait_start = datetime.datetime.fromisoformat(info['wait_start_time'])
+                wait_hours = (datetime.datetime.now() - wait_start).total_seconds() / 3600
+                max_wait = info.get('max_wait_hours', 2.0)
+                stock_name = info['opportunity']['stock_name']
+                daily_score = info.get('daily_score', 0)
+                
+                remaining_time = max_wait - wait_hours
+                logger.info(f"   - {stock_name}({stock_code}): "
+                          f"{wait_hours:.1f}시간 대기 중 (남은시간: {remaining_time:.1f}시간, {daily_score}점)")
         
         return trading_state
         
     except Exception as e:
-        logger.error(f"매수 후보 관리 중 오류: {str(e)}")
-        return trading_state    
+        logger.error(f"매수 후보 관리 중 전체 오류: {str(e)}")
+        logger.exception("상세 에러 정보:")
+        return trading_state
 
 def execute_sell_order(stock_code, target_config, quantity):
     """매도 주문 실행"""
@@ -2072,13 +2486,10 @@ def process_positions(trading_state):
         return trading_state
 
 def execute_buy_opportunities(buy_opportunities, trading_state):
-    """매수 기회 실행 - 예산 관리 강화 (개선됨)"""
+    """매수 기회 실행 - 신호 강도별 분봉 타이밍 + 40점 기준 적용"""
     try:
         if not buy_opportunities:
             return trading_state
-        
-        # 분봉 타이밍 사용 여부 확인
-        use_intraday = trading_config.use_intraday_timing if hasattr(trading_config, 'use_intraday_timing') else False
         
         # 전체 사용 가능 예산 확인
         total_available_budget = get_available_budget(trading_state)
@@ -2114,13 +2525,13 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
         per_stock_limit = get_per_stock_budget_limit()
         active_stock_count = get_active_target_stock_count()
         
-        logger.info(f"💰 매수 실행 준비 (개선된 예산 관리):")
+        logger.info(f"💰 매수 실행 준비 (신호 강도별 분봉 타이밍):")
         logger.info(f"  - 전체 사용가능 예산: {total_available_budget:,.0f}원")
         logger.info(f"  - 이미 투자된 금액: {total_invested:,.0f}원")
         logger.info(f"  - 활성 타겟 종목 수: {active_stock_count}개")
         logger.info(f"  - 종목별 예산 한도: {per_stock_limit:,.0f}원")
         logger.info(f"  - 현재/최대 보유종목: {current_positions}/{max_allowed_positions}개")
-        logger.info(f"  - 분봉 타이밍: {'ON' if use_intraday else 'OFF'}")
+        logger.info(f"  - 매수 기준: 40점 (강화)")
         
         # 매수 실행
         executed_count = 0
@@ -2130,46 +2541,90 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                 stock_name = opportunity['stock_name']
                 stock_price = opportunity['price']
                 target_config = opportunity['target_config']
+                daily_score = opportunity['score']
+                signal_strength = opportunity.get('signal_strength', 'NORMAL')
+                
+                logger.info(f"\n🔍 매수 검토: {stock_name}({stock_code})")
+                logger.info(f"   일봉 점수: {daily_score}점 ({signal_strength})")
                 
                 # 종목별 남은 예산 확인
                 remaining_budget = get_remaining_budget_for_stock(stock_code, trading_state)
                 if remaining_budget <= 10000:  # 최소 1만원 이상
-                    logger.info(f"⏭️ {stock_name}({stock_code}): 종목별 예산 부족 ({remaining_budget:,.0f}원)")
+                    logger.info(f"   ❌ 종목별 예산 부족: {remaining_budget:,.0f}원")
                     continue
                 
-                # 분봉 타이밍 체크 (옵션)
+                # 🎯 신호 강도별 분봉 타이밍 결정
+                use_intraday, max_wait_hours, timing_reason = should_use_intraday_timing(opportunity, target_config)
+                
+                logger.info(f"   📊 분봉 타이밍 전략: {timing_reason}")
+                
+                # 분봉 타이밍 적용 여부
                 if use_intraday:
-                    logger.info(f"🔍 분봉 진입 타이밍 분석: {stock_name}({stock_code})")
+                    logger.info(f"   🔍 분봉 진입 타이밍 분석 중...")
                     timing_analysis = analyze_intraday_entry_timing(stock_code, target_config)
                     
+                    intraday_score = timing_analysis.get('entry_score', 0)
+                    min_intraday_score = target_config.get('min_entry_score', 20)
+                    
+                    logger.info(f"   🕐 분봉 점수: {intraday_score}/{min_intraday_score}점")
+                    
                     if not timing_analysis['enter_now']:
-                        logger.info(f"⏳ 분봉 진입 타이밍 대기: {stock_name}({stock_code}) - {timing_analysis['reason']}")
+                        logger.info(f"   ⏳ 분봉 진입 타이밍 대기 결정")
+                        logger.info(f"      사유: {timing_analysis['reason']}")
+                        logger.info(f"      최대 대기시간: {max_wait_hours}시간")
                         
-                        # 매수 대기 리스트에 추가
+                        # 매수 대기 리스트에 추가 (신호별 대기시간 적용)
                         if 'buy_candidates' not in trading_state:
                             trading_state['buy_candidates'] = {}
                         
                         trading_state['buy_candidates'][stock_code] = {
                             'opportunity': opportunity,
                             'wait_start_time': datetime.datetime.now().isoformat(),
-                            'daily_score': opportunity['score'],
-                            'last_intraday_score': timing_analysis.get('entry_score', 0),
-                            'last_check_time': datetime.datetime.now().isoformat()
+                            'max_wait_hours': max_wait_hours,  # 🔥 신호별 대기시간
+                            'daily_score': daily_score,
+                            'signal_strength': signal_strength,
+                            'last_intraday_score': intraday_score,
+                            'min_intraday_score': min_intraday_score,
+                            'last_check_time': datetime.datetime.now().isoformat(),
+                            'timing_reason': timing_reason,  # 🔥 타이밍 이유 저장
+                            'timing_analysis': timing_analysis
                         }
+                        
+                        logger.info(f"      → 매수 대기 리스트 등록 완료")
+                        
+                        # 대기 종목 요약 정보
+                        total_candidates = len(trading_state.get('buy_candidates', {}))
+                        logger.info(f"📋 현재 매수 대기 종목: {total_candidates}개")
+                        
                         continue
+                    else:
+                        logger.info(f"   ✅ 분봉 진입 타이밍 양호")
+                        logger.info(f"      사유: {timing_analysis['reason']}")
+                        logger.info(f"      분봉 신호: {timing_analysis.get('entry_signals', [])[:3]}")
+                else:
+                    logger.info(f"   🚀 일봉 신호 강도로 즉시 매수 진행")
                 
-                # 개선된 포지션 크기 계산
+                # 포지션 크기 계산
                 quantity = calculate_position_size(target_config, stock_code, stock_price, trading_state)
                 
                 if quantity < 1:
-                    logger.info(f"❌ {stock_name}({stock_code}): 매수 수량 부족")
+                    logger.info(f"   ❌ 매수 수량 부족 (계산된 수량: {quantity})")
                     continue
                 
-                logger.info(f"🔵 매수 시도: {stock_name}({stock_code})")
-                logger.info(f"   수량: {quantity}주, 가격: {stock_price:,.0f}원")
-                logger.info(f"   투자금액: {stock_price * quantity:,.0f}원")
+                # 최종 투자금액 계산
+                estimated_investment = stock_price * quantity
+                estimated_fee = calculate_trading_fee(stock_price, quantity, True)
+                total_cost = estimated_investment + estimated_fee
                 
-                # 매수 주문 실행
+                logger.info(f"   💰 매수 계획:")
+                logger.info(f"      수량: {quantity}주")
+                logger.info(f"      가격: {stock_price:,.0f}원")
+                logger.info(f"      투자금액: {estimated_investment:,.0f}원")
+                logger.info(f"      예상 수수료: {estimated_fee:,.0f}원")
+                logger.info(f"      총 소요: {total_cost:,.0f}원")
+                
+                # 🔵 매수 주문 실행
+                logger.info(f"   🔵 매수 주문 실행: {stock_name}({stock_code})")
                 executed_price, executed_amount = execute_buy_order(
                     stock_code, target_config, quantity, stock_price
                 )
@@ -2177,6 +2632,13 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                 if executed_price and executed_amount:
                     # 매수 수수료 계산
                     buy_fee = calculate_trading_fee(executed_price, executed_amount, True)
+                    actual_investment = executed_price * executed_amount
+                    
+                    logger.info(f"   ✅ 매수 체결 성공!")
+                    logger.info(f"      체결가: {executed_price:,.0f}원")
+                    logger.info(f"      체결량: {executed_amount}주")
+                    logger.info(f"      실제 투자금액: {actual_investment:,.0f}원")
+                    logger.info(f"      실제 수수료: {buy_fee:,.0f}원")
                     
                     # 포지션 정보 저장
                     position_info = {
@@ -2190,38 +2652,65 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                         'trailing_stop': executed_price * (1 - target_config.get('trailing_stop', trading_config.trailing_stop_ratio)),
                         'target_config': target_config,
                         'buy_analysis': opportunity['analysis'],
-                        'signal_strength': target_config.get('last_signal_strength', 'NORMAL'),
-                        'entry_method': 'intraday_timing' if use_intraday else 'daily_signal'
+                        'signal_strength': signal_strength,
+                        'daily_score': daily_score,  # 🔥 일봉 점수 저장
+                        'entry_method': 'intraday_timing' if use_intraday else 'daily_signal_only'
                     }
                     
-                    if use_intraday:
+                    # 분봉 타이밍 사용시 분봉 정보도 저장
+                    if use_intraday and 'timing_analysis' in locals():
                         position_info['intraday_analysis'] = timing_analysis
+                        position_info['intraday_score'] = timing_analysis.get('entry_score', 0)
                     
                     trading_state['positions'][stock_code] = position_info
                     executed_count += 1
                     
-                    # 매수 완료 알림
-                    invested_amount = executed_price * executed_amount
-                    updated_total_invested = get_total_invested_amount(trading_state) + invested_amount
-                    active_stock_count = get_active_target_stock_count()
+                    # 📊 예산 현황 업데이트
+                    updated_total_invested = get_total_invested_amount(trading_state) + actual_investment
                     total_target_budget = get_per_stock_budget_limit() * active_stock_count
                     remaining_total_budget = total_target_budget - updated_total_invested
                     
-                    msg = f"✅ 매수 완료: {stock_name}({stock_code})\n"
+                    # 종목별 투자 현황
+                    current_stock_invested = get_invested_amount_for_stock(stock_code, trading_state) + actual_investment
+                    stock_usage_rate = (current_stock_invested / per_stock_limit * 100) if per_stock_limit > 0 else 0
+                    
+                    # 🎉 매수 완료 알림 (상세 정보 포함)
+                    msg = f"🎉 매수 완료: {stock_name}({stock_code})\n"
                     msg += f"매수가: {executed_price:,.0f}원 × {executed_amount}주\n"
-                    msg += f"투자금액: {invested_amount:,.0f}원\n"
+                    msg += f"투자금액: {actual_investment:,.0f}원\n"
                     msg += f"수수료: {buy_fee:,.0f}원\n"
-                    msg += f"\n📊 예산 현황:"
-                    msg += f"\n• 전체 투자: {updated_total_invested:,.0f}원"
-                    msg += f"\n• 남은 예산: {remaining_total_budget:,.0f}원"
-                    msg += f"\n• 종목별 한도: {per_stock_limit:,.0f}원"
-                    msg += f"\n• 활성 종목 수: {active_stock_count}개"
+                    
+                    # 신호 정보
+                    msg += f"\n🎯 신호 정보:\n"
+                    msg += f"• 일봉 점수: {daily_score}점 ({signal_strength})\n"
+                    if use_intraday:
+                        intraday_score = timing_analysis.get('entry_score', 0) if 'timing_analysis' in locals() else 0
+                        msg += f"• 분봉 점수: {intraday_score}점\n"
+                        msg += f"• 진입 방식: 분봉 타이밍 적용\n"
+                    else:
+                        msg += f"• 진입 방식: 강한 신호로 즉시 매수\n"
+                    
+                    # 예산 현황
+                    msg += f"\n📊 예산 현황:\n"
+                    msg += f"• 전체 투자: {updated_total_invested:,.0f}원\n"
+                    msg += f"• 남은 예산: {remaining_total_budget:,.0f}원\n"
+                    msg += f"• 활성 종목 수: {active_stock_count}개\n"
                     
                     # 종목별 투자 현황
-                    current_stock_invested = get_invested_amount_for_stock(stock_code, trading_state) + invested_amount
-                    msg += f"\n• {stock_name} 투자: {current_stock_invested:,.0f}원/{per_stock_limit:,.0f}원"
+                    msg += f"\n💰 {stock_name} 투자 현황:\n"
+                    msg += f"• 투자금액: {current_stock_invested:,.0f}원\n"
+                    msg += f"• 종목별 한도: {per_stock_limit:,.0f}원\n"
+                    msg += f"• 사용률: {stock_usage_rate:.1f}%\n"
+                    
+                    # 주요 매수 사유 (상위 3개)
+                    if opportunity.get('signals'):
+                        msg += f"\n📈 주요 매수 사유:\n"
+                        for signal in opportunity['signals'][:3]:
+                            msg += f"• {signal}\n"
                     
                     logger.info(msg)
+                    
+                    # Discord 알림 전송
                     if hasattr(trading_config, 'use_discord_alert') and trading_config.config.get('use_discord_alert', True):
                         discord_alert.SendMessage(msg)
                     
@@ -2230,21 +2719,57 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                     if total_available_budget < 10000:  # 1만원 미만이면 매수 중단
                         logger.info("💰 전체 예산 부족으로 매수 중단")
                         break
+                    
+                    logger.info(f"   💰 남은 전체 예산: {total_available_budget:,.0f}원")
                 
                 else:
-                    logger.error(f"❌ 매수 주문 실패: {stock_name}({stock_code})")
+                    logger.error(f"   ❌ 매수 주문 실패: {stock_name}({stock_code})")
+                    logger.error(f"      주문 결과: {executed_price}, {executed_amount}")
                 
             except Exception as e:
                 logger.error(f"매수 실행 중 에러 ({stock_code}): {str(e)}")
                 continue
         
+        # 🎯 실행 결과 요약
         if executed_count > 0:
-            logger.info(f"🎯 매수 실행 완료: {executed_count}개 종목")
+            logger.info(f"\n🎯 매수 실행 완료: {executed_count}개 종목")
+            
+            # 현재 포지션 현황
+            updated_positions = len(trading_state['positions'])
+            logger.info(f"📊 현재 보유 종목: {updated_positions}/{max_allowed_positions}개")
+            
+            # 전체 투자 현황
+            final_total_invested = get_total_invested_amount(trading_state)
+            final_available_budget = get_available_budget(trading_state)
+            
+            logger.info(f"💰 전체 투자 현황:")
+            logger.info(f"   - 총 투자됨: {final_total_invested:,.0f}원")
+            logger.info(f"   - 사용 가능: {final_available_budget:,.0f}원")
+        else:
+            logger.info(f"\n⏸️ 매수 실행 종목 없음")
+            logger.info(f"   사유: 예산 부족, 타이밍 대기, 또는 기준 미달")
+        
+        # 매수 대기 종목 현황
+        if 'buy_candidates' in trading_state and trading_state['buy_candidates']:
+            candidate_count = len(trading_state['buy_candidates'])
+            logger.info(f"\n📋 매수 대기 종목: {candidate_count}개")
+            
+            for code, info in trading_state['buy_candidates'].items():
+                wait_start = datetime.datetime.fromisoformat(info['wait_start_time'])
+                wait_minutes = (datetime.datetime.now() - wait_start).total_seconds() / 60
+                max_wait_hours = info.get('max_wait_hours', 2.0)
+                daily_score = info.get('daily_score', 0)
+                signal_strength = info.get('signal_strength', 'NORMAL')
+                
+                stock_name = info['opportunity']['stock_name']
+                logger.info(f"   - {stock_name}({code}): {wait_minutes:.0f}분 대기 "
+                          f"(최대 {max_wait_hours}시간, {daily_score}점 {signal_strength})")
         
         return trading_state
         
     except Exception as e:
-        logger.error(f"개선된 매수 실행 중 에러: {str(e)}")
+        logger.error(f"매수 실행 중 전체 에러: {str(e)}")
+        logger.exception("상세 에러 정보:")
         return trading_state
 
 def create_config_file(config_path: str = "target_stock_config.json") -> None:
@@ -2254,74 +2779,72 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
         
         # 기본 타겟 종목들 정의 (거래량 확보를 위해 확대)
         sample_codes = ["034020", "272210", "267250"]  # 두산에너빌리티, 한화시스템, 일진파워
-        
-        # 특성별 파라미터 매핑 (분봉 타이밍 설정 포함)
+
+        # 🎯 특성별 파라미터 수정 (모든 타입의 min_score 상향)
         characteristic_params = {
             "growth": {
-                "allocation_ratio": 0.30,        # 🚀 20% → 30% (1단계)
-                "profit_target": 0.12,           # 🚀 8.5% → 12% (2단계)
-                "stop_loss": -0.12,              # 🚀 -10% → -12% (완화)
-                "rsi_oversold": 55,              # 🚀 50 → 55 (3단계)
+                "allocation_ratio": 0.30,
+                "profit_target": 0.12,
+                "stop_loss": -0.12,
+                "rsi_oversold": 55,
                 "rsi_overbought": 75,
-                "min_score": 30,                 # 🚀 40 → 30 (3단계)
-                "trailing_stop": 0.025,          # 🚀 3% → 2.5% (타이트)
+                "min_score": 40,                 # 🔥 30 → 40 (강화)
+                "trailing_stop": 0.025,
                 "min_holding_hours": 48,
                 "use_adaptive_stop": True,
                 "volatility_stop_multiplier": 1.5,
                 "stop_loss_delay_hours": 2,
                 
-                # 🎯 분봉 진입 타이밍 설정 (종목별)
-                "min_entry_score": 30,              # 최소 진입 점수
-                "intraday_rsi_oversold": 35,        # 분봉 RSI 과매도 기준
-                "intraday_rsi_overbought": 70,      # 분봉 RSI 과매수 기준
-                "intraday_volume_threshold": 1.2,   # 분봉 거래량 임계값
-                "use_bb_entry_timing": True,        # 볼린저밴드 진입 타이밍 사용
-                "bb_lower_margin": 0.02,            # 볼린저 하단 여유율 (2%)
-                "ma_support_margin": 0.01           # 이평선 지지 여유율 (1%)
+                # 🎯 분봉 진입 타이밍 설정 (완화)
+                "min_entry_score": 20,              # 🔥 30 → 20 (완화)
+                "intraday_rsi_oversold": 35,
+                "intraday_rsi_overbought": 70,
+                "intraday_volume_threshold": 1.2,
+                "use_bb_entry_timing": True,
+                "bb_lower_margin": 0.02,
+                "ma_support_margin": 0.01
             },
             "balanced": {
-                "allocation_ratio": 0.25,        # 🚀 18% → 25% (1단계)
-                "profit_target": 0.10,           # 🚀 7.5% → 10% (2단계)
-                "stop_loss": -0.12,              # 🚀 완화
-                "rsi_oversold": 55,              # 🚀 완화 (3단계)
+                "allocation_ratio": 0.25,
+                "profit_target": 0.10,
+                "stop_loss": -0.12,
+                "rsi_oversold": 55,
                 "rsi_overbought": 75,
-                "min_score": 30,                 # 🚀 완화 (3단계)
+                "min_score": 40,                 # 🔥 30 → 40 (강화)
                 "trailing_stop": 0.03,
                 "min_holding_hours": 48,
                 "use_adaptive_stop": True,
                 "volatility_stop_multiplier": 1.4,
                 "stop_loss_delay_hours": 2,
                 
-                # 🎯 분봉 진입 타이밍 설정 (종목별)
-                "min_entry_score": 35,              # 최소 진입 점수 (조금 더 보수적)
-                "intraday_rsi_oversold": 40,        # 분봉 RSI 과매도 기준
-                "intraday_rsi_overbought": 65,      # 분봉 RSI 과매수 기준
-                "intraday_volume_threshold": 1.15,  # 분봉 거래량 임계값
-                "use_bb_entry_timing": True,        # 볼린저밴드 진입 타이밍 사용
-                "bb_lower_margin": 0.025,           # 볼린저 하단 여유율 (2.5%)
-                "ma_support_margin": 0.015          # 이평선 지지 여유율 (1.5%)
+                "min_entry_score": 25,              # 🔥 35 → 25 (완화)
+                "intraday_rsi_oversold": 40,
+                "intraday_rsi_overbought": 65,
+                "intraday_volume_threshold": 1.15,
+                "use_bb_entry_timing": True,
+                "bb_lower_margin": 0.025,
+                "ma_support_margin": 0.015
             },
             "value": {
-                "allocation_ratio": 0.22,        # 🚀 16% → 22% (1단계)
-                "profit_target": 0.08,           # 🚀 7% → 8% (2단계)
-                "stop_loss": -0.10,              # 적정 유지
-                "rsi_oversold": 60,              # 🚀 50 → 60 (3단계)
+                "allocation_ratio": 0.22,
+                "profit_target": 0.08,
+                "stop_loss": -0.10,
+                "rsi_oversold": 60,
                 "rsi_overbought": 70,
-                "min_score": 35,                 # 🚀 65 → 35 (3단계)
+                "min_score": 45,                 # 🔥 35 → 45 (가장 보수적)
                 "trailing_stop": 0.035,
                 "min_holding_hours": 48,
                 "use_adaptive_stop": True,
                 "volatility_stop_multiplier": 1.3,
                 "stop_loss_delay_hours": 1,
                 
-                # 🎯 분봉 진입 타이밍 설정 (종목별) - 가치주는 더 보수적
-                "min_entry_score": 40,              # 최소 진입 점수 (가장 보수적)
-                "intraday_rsi_oversold": 45,        # 분봉 RSI 과매도 기준
-                "intraday_rsi_overbought": 60,      # 분봉 RSI 과매수 기준
-                "intraday_volume_threshold": 1.1,   # 분봉 거래량 임계값
-                "use_bb_entry_timing": True,        # 볼린저밴드 진입 타이밍 사용
-                "bb_lower_margin": 0.03,            # 볼린저 하단 여유율 (3%)
-                "ma_support_margin": 0.02           # 이평선 지지 여유율 (2%)
+                "min_entry_score": 30,              # 🔥 40 → 30 (완화)
+                "intraday_rsi_oversold": 45,
+                "intraday_rsi_overbought": 60,
+                "intraday_volume_threshold": 1.1,
+                "use_bb_entry_timing": True,
+                "bb_lower_margin": 0.03,
+                "ma_support_margin": 0.02
             }
         }
 
