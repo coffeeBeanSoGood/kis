@@ -558,122 +558,6 @@ def get_invested_amount_for_stock(stock_code, trading_state):
         logger.error(f"종목별 투자 금액 계산 중 오류 ({stock_code}): {str(e)}")
         return 0    
 
-def get_per_stock_budget_limit():
-    """종목별 예산 한도 계산 - 활성 종목 수 기반"""
-    try:
-        if trading_config.use_absolute_budget:
-            total_budget = trading_config.absolute_budget
-        else:
-            balance = KisKR.GetBalance()
-            if not balance:
-                return 0
-            total_money = float(balance.get('TotalMoney', 0))
-            total_budget = total_money * trading_config.trade_budget_ratio
-        
-        active_stock_count = get_active_target_stock_count()
-        
-        if active_stock_count == 0:
-            logger.warning("활성화된 타겟 종목이 없습니다")
-            return 0
-        
-        per_stock_limit = total_budget / active_stock_count
-        
-        logger.debug(f"종목별 예산 한도: {per_stock_limit:,.0f}원 (총예산: {total_budget:,.0f}원 ÷ {active_stock_count}종목)")
-        return per_stock_limit
-        
-    except Exception as e:
-        logger.error(f"종목별 예산 한도 계산 중 오류: {str(e)}")
-        return 0
-
-def get_available_budget(trading_state=None):
-    """사용 가능한 예산 계산 - 이미 투자된 금액 차감 (개선됨)"""
-    try:
-        if trading_state is None:
-            trading_state = load_trading_state()
-        
-        balance = KisKR.GetBalance()
-        if not balance:
-            logger.error("계좌 정보 조회 실패")
-            return 0
-            
-        total_money = float(balance.get('TotalMoney', 0))
-        remain_money = float(balance.get('RemainMoney', 0))
-        
-        if total_money <= 0:
-            logger.warning("계좌 총 자산이 0 이하입니다.")
-            return 0
-        
-        # 총 투자 가능 예산 계산
-        if trading_config.use_absolute_budget:
-            total_target_budget = trading_config.absolute_budget
-            strategy = trading_config.absolute_budget_strategy
-            
-            logger.info(f"💰 절대금액 예산 모드: {strategy}")
-            
-            if strategy == "proportional":
-                initial_asset = trading_config.initial_total_asset
-                
-                if initial_asset <= 0:
-                    initial_asset = total_money
-                    trading_config.config["initial_total_asset"] = initial_asset
-                    trading_config.save_config()
-                    logger.info(f"🎯 초기 총자산 설정: {initial_asset:,.0f}원")
-                
-                performance = (total_money - initial_asset) / initial_asset
-                
-                if performance > 0.2:
-                    multiplier = min(1.4, 1.0 + performance * 0.3)
-                elif performance > 0.1:
-                    multiplier = 1.0 + performance * 0.5
-                elif performance > 0.05:
-                    multiplier = 1.0 + performance * 0.8
-                elif performance > -0.05:
-                    multiplier = 1.0
-                elif performance > -0.1:
-                    multiplier = max(0.95, 1.0 + performance * 0.2)
-                elif performance > -0.2:
-                    multiplier = max(0.85, 1.0 + performance * 0.15)
-                else:
-                    multiplier = max(0.7, 1.0 + performance * 0.1)
-                
-                total_target_budget = total_target_budget * multiplier
-                
-                logger.info(f"  - 성과 기반 조정: {performance*100:+.1f}% → 배율 {multiplier:.3f}")
-                
-            elif strategy == "adaptive":
-                loss_tolerance = trading_config.budget_loss_tolerance
-                min_budget = total_target_budget * (1 - loss_tolerance)
-                
-                if total_money >= min_budget:
-                    total_target_budget = total_target_budget
-                else:
-                    total_target_budget = max(total_money, min_budget)
-            
-            # strategy == "strict"는 그대로 유지
-        else:
-            # 비율 기반 예산
-            total_target_budget = total_money * trading_config.trade_budget_ratio
-        
-        # 🎯 핵심: 이미 투자된 금액 차감
-        total_invested = get_total_invested_amount(trading_state)
-        remaining_target_budget = total_target_budget - total_invested
-        
-        # 현금 잔고와 비교하여 최종 사용 가능 예산 결정
-        available_budget = min(remaining_target_budget, remain_money)
-        
-        logger.info(f"📊 개선된 예산 계산:")
-        logger.info(f"  - 목표 총예산: {total_target_budget:,.0f}원")
-        logger.info(f"  - 이미 투자됨: {total_invested:,.0f}원")
-        logger.info(f"  - 남은 목표예산: {remaining_target_budget:,.0f}원")
-        logger.info(f"  - 현금 잔고: {remain_money:,.0f}원")
-        logger.info(f"  - 사용가능 예산: {available_budget:,.0f}원")
-        
-        return max(0, available_budget)
-        
-    except Exception as e:
-        logger.error(f"개선된 예산 계산 중 에러: {str(e)}")
-        return 0
-
 def get_available_budget(trading_state=None):
     """사용 가능한 예산 계산 - 이미 투자된 금액 차감 (개선됨)"""
     try:
@@ -1989,8 +1873,8 @@ def scan_target_stocks(trading_state):
         current_positions = len(trading_state['positions'])
         
         # Config에서 최대 보유 종목 수 확인
-        if current_positions >= trading_config.max_positions:
-            logger.info(f"최대 보유 종목 수({trading_config.max_positions}개) 도달")
+        if current_positions >= get_active_target_stock_count():
+            logger.info(f"최대 보유 종목 수({get_active_target_stock_count()}개) 도달")
             return []
         
         logger.info(f"타겟 종목 매수 기회 스캔 시작: {len(trading_config.target_stocks)}개 종목 분석")
@@ -2550,7 +2434,7 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
         logger.info(f"주요 설정:")
         logger.info(f"  - 분봉 타이밍: {'ON' if config['use_intraday_timing'] else 'OFF'}")
         logger.info(f"  - 예산: {config['absolute_budget']:,}원")
-        logger.info(f"  - 최대 종목수: {config['max_positions']}개")
+        # logger.info(f"  - 최대 종목수: {config['max_positions']}개")
         logger.info(f"  - 체크 주기: {config['intraday_check_interval']}초 (분봉 사용시)")
         logger.info(f"  - 모든 종목: 성장주 전략 적용")
         
