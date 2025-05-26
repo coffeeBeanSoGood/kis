@@ -309,6 +309,23 @@ class TradingConfig:
     def use_trend_filter(self):
         """트렌드 필터 사용 여부"""
         return self.config.get("use_trend_filter", True)
+    
+    # =========================== 분봉 타이밍 설정 ===========================
+    @property
+    def use_intraday_timing(self):
+        """분봉 진입 타이밍 사용 여부"""
+        return self.config.get("use_intraday_timing", False)  # 기본값 False (백테스트 고려)
+    
+    @property
+    def intraday_check_interval(self):
+        """분봉 체크 주기 (초)"""
+        return self.config.get("intraday_check_interval", 30)
+    
+    @property
+    def max_candidate_wait_hours(self):
+        """최대 대기 시간"""
+        return self.config.get("max_candidate_wait_hours", 2)
+
 
 ################################### 로깅 처리 ##################################
 
@@ -962,39 +979,113 @@ def get_stock_data(stock_code):
 ################################### 매매 신호 분석 ##################################
 
 def analyze_buy_signal(stock_data, target_config):
-    """매수 신호 분석 - 고수익률 버전 (기회 확대)"""
+    """매수 신호 분석 - 개선된 버전 (백테스팅 결과 반영)"""
     try:
         signals = []
         score = 0
-        warning_reasons = []
         
         stock_code = stock_data['stock_code']
         current_price = stock_data['current_price']
         rsi = stock_data['rsi']
         df = stock_data['ohlcv_data']
         
-        # 🟡 완화된 경고 시스템 (점수 감점)
-        if len(df) >= 5:
-            recent_drop_5d = (df['close'].iloc[-1] / df['close'].iloc[-6] - 1) * 100
-            recent_drop_3d = (df['close'].iloc[-1] / df['close'].iloc[-4] - 1) * 100
+        # 🎯 1단계: 기본 진입 조건 완화
+        # RSI 기준 대폭 완화 (실제 과매도 구간)
+        if rsi <= 25:  # 극과매도
+            score += 40
+            signals.append(f"RSI 극과매도 {rsi:.1f} (+40)")
+        elif rsi <= 30:  # 강과매도  
+            score += 35
+            signals.append(f"RSI 강과매도 {rsi:.1f} (+35)")
+        elif rsi <= 35:  # 과매도
+            score += 25
+            signals.append(f"RSI 과매도 {rsi:.1f} (+25)")
+        elif rsi <= 45:  # 조정 구간
+            score += 15
+            signals.append(f"RSI 조정구간 {rsi:.1f} (+15)")
+        
+        # 🎯 2단계: 볼린저밴드 기준 완화
+        bb_position = "middle"
+        bb_lower_distance = (current_price - stock_data['bb_lower']) / stock_data['bb_lower'] * 100
+        
+        if bb_lower_distance <= -2:  # 하단 돌파
+            score += 35
+            signals.append("볼린저밴드 하단 돌파 (+35)")
+            bb_position = "breakthrough"
+        elif bb_lower_distance <= 3:  # 하단 근처 (3% 이내)
+            score += 25
+            signals.append("볼린저밴드 하단 근처 (+25)")
+            bb_position = "lower"
+        elif current_price <= stock_data['bb_middle']:
+            score += 15
+            signals.append("볼린저밴드 중간선 하단 (+15)")
+            bb_position = "below_middle"
+        
+        # 🎯 3단계: 추세 조건 유연화
+        ma5 = stock_data['ma5']
+        ma20 = stock_data['ma20']
+        ma60 = stock_data['ma60']
+        
+        # 정배열이 아니어도 단기 상승 조건만으로 점수 부여
+        if ma5 > ma20:
+            if ma20 > ma60:
+                score += 20  # 완전 정배열
+                signals.append("완전 정배열 (+20)")
+            else:
+                score += 15  # 부분 정배열
+                signals.append("단기 상승 추세 (+15)")
+        elif ma5 > ma20 * 0.995:  # 거의 근접 (0.5% 이내)
+            score += 12
+            signals.append("골든크로스 임박 (+12)")
+        
+        # 🎯 4단계: 가격 위치 기반 점수 (새로 추가)
+        price_position = 0.5  # 기본값
+        if len(df) >= 20:
+            recent_low_20d = df['low'].iloc[-20:].min()
+            recent_high_20d = df['high'].iloc[-20:].max()
+            if recent_high_20d > recent_low_20d:
+                price_position = (current_price - recent_low_20d) / (recent_high_20d - recent_low_20d)
+                
+                if price_position <= 0.2:  # 20일 저점 근처
+                    score += 20
+                    signals.append("20일 저점 근처 (+20)")
+                elif price_position <= 0.3:
+                    score += 15
+                    signals.append("20일 하위 30% 구간 (+15)")
+                elif price_position <= 0.4:
+                    score += 10
+                    signals.append("20일 하위 40% 구간 (+10)")
+        
+        # 🎯 5단계: 모멘텀 신호 (기존 MACD 등)
+        macd = stock_data['macd']
+        macd_signal = stock_data['macd_signal']
+        macd_histogram = stock_data['macd_histogram']
+        
+        if macd > macd_signal and macd_histogram > 0:
+            score += 15
+            signals.append("MACD 골든크로스 + 상승 (+15)")
+        elif macd > macd_signal:
+            score += 10
+            signals.append("MACD 골든크로스 (+10)")
+        elif macd_histogram > 0:
+            score += 8
+            signals.append("MACD 모멘텀 상승 (+8)")
+        
+        # 🎯 6단계: 거래량 신호 (기준 완화)
+        volume_ratio = 1.0
+        if len(df) >= 20:
+            recent_volume = df['volume'].iloc[-1]
+            avg_volume_20d = df['volume'].rolling(20).mean().iloc[-1]
+            volume_ratio = recent_volume / avg_volume_20d if avg_volume_20d > 0 else 1
             
-            if recent_drop_5d < -25:  # 20% → 25% 완화
-                score -= 12  # 15 → 12 완화
-                warning_reasons.append(f"5일간 급락 {recent_drop_5d:.1f}% (-12점)")
-            elif recent_drop_3d < -15:  # 12% → 15% 완화
-                score -= 8  # 10 → 8 완화
-                warning_reasons.append(f"3일간 급락 {recent_drop_3d:.1f}% (-8점)")
+            if volume_ratio >= 1.3:  # 1.5 → 1.3 완화
+                score += 12
+                signals.append(f"거래량 급증 {volume_ratio:.1f}배 (+12)")
+            elif volume_ratio >= 1.1:  # 1.2 → 1.1 완화
+                score += 8
+                signals.append(f"거래량 증가 {volume_ratio:.1f}배 (+8)")
         
-        if rsi > 85:  # 80 → 85 완화
-            score -= 15  # 20 → 15 완화
-            warning_reasons.append(f"극도 과매수 RSI {rsi:.1f} (-15점)")
-        elif rsi > 80:  # 75 → 80 완화
-            score -= 8  # 10 → 8 완화
-            warning_reasons.append(f"과매수 RSI {rsi:.1f} (-8점)")
-        
-        # 🚀 3단계: 추가 매수 신호들
-        
-        # 1) 연속 하락 후 반등 신호
+        # 🎯 7단계: 연속 하락 후 반등 신호
         if len(df) >= 5:
             consecutive_down = 0
             for i in range(1, 4):
@@ -1004,148 +1095,50 @@ def analyze_buy_signal(stock_data, target_config):
                     break
             
             if consecutive_down >= 2 and df['close'].iloc[-1] > df['close'].iloc[-2]:
-                score += 25
-                signals.append(f"연속 하락 후 반등 ({consecutive_down}일 하락) (+25)")
-        
-        # 2) 거래량 급증 + 가격 상승
-        if len(df) >= 10:
-            recent_volume = df['volume'].iloc[-1]
-            avg_volume = df['volume'].rolling(10).mean().iloc[-1]
-            volume_surge = recent_volume / avg_volume if avg_volume > 0 else 1
-            price_change = (df['close'].iloc[-1] / df['close'].iloc[-2] - 1) * 100
-            
-            if volume_surge >= 1.3 and price_change > 0.5:  # 기준 완화
                 score += 20
-                signals.append(f"거래량 급증 + 상승 ({volume_surge:.1f}배, +{price_change:.1f}%) (+20)")
+                signals.append(f"연속하락 후 반등 ({consecutive_down}일) (+20)")
         
-        # 3) 기술적 바닥 패턴
-        if len(df) >= 10:
-            recent_low = df['low'].iloc[-10:].min()
-            if current_price <= recent_low * 1.08:  # 5% → 8% 완화
-                score += 15
-                signals.append("기술적 바닥 근처 (+15)")
+        # 🎯 매수 기준 대폭 완화
+        min_score = target_config.get('min_score', 25)  # 35 → 25
         
-        # 4) 기존 신호들 (기준 완화)
-        
-        # RSI 기반 신호
-        rsi_oversold = target_config.get('rsi_oversold', 55)  # 50 → 55 완화
-        if rsi <= rsi_oversold - 20:  # 15 → 20 완화
-            score += 30
-            signals.append(f"RSI 극과매도 {rsi:.1f} (+30)")
-        elif rsi <= rsi_oversold - 10:  # 추가
-            score += 25
-            signals.append(f"RSI 강과매도 {rsi:.1f} (+25)")
-        elif rsi <= rsi_oversold:
-            score += 20
-            signals.append(f"RSI 과매도 {rsi:.1f} (+20)")
-        elif rsi <= rsi_oversold + 10:  # 완화
-            score += 12
-            signals.append(f"RSI 조정 구간 {rsi:.1f} (+12)")
-        
-        # 볼린저밴드 신호
-        bb_position = "middle"
-        if current_price <= stock_data['bb_lower'] * 1.08:  # 5% → 8% 완화
-            score += 25
-            signals.append("볼린저밴드 하단 근처 (+25)")
-            bb_position = "lower"
-        elif current_price <= stock_data['bb_middle'] * 1.03:  # 완화
-            score += 18
-            signals.append("볼린저밴드 중간선 근처 (+18)")
-            bb_position = "middle"
-        elif current_price <= stock_data['bb_middle']:
-            score += 12
-            signals.append("볼린저밴드 중간선 하단 (+12)")
-            bb_position = "below_middle"
-        
-        # MACD 신호
-        macd = stock_data['macd']
-        macd_signal = stock_data['macd_signal']
-        macd_histogram = stock_data['macd_histogram']
-        
-        if len(df) >= 3:
-            if macd > macd_signal and macd_histogram > 0:
-                score += 20
-                signals.append("MACD 골든크로스 + 히스토그램 상승 (+20)")
-            elif macd > macd_signal:
-                score += 15
-                signals.append("MACD 골든크로스 (+15)")
-            elif macd_histogram > 0:
-                score += 10
-                signals.append("MACD 히스토그램 상승 (+10)")
-        
-        # 이동평균선 신호
-        ma5 = stock_data['ma5']
-        ma20 = stock_data['ma20']
-        ma60 = stock_data['ma60']
-        
-        if ma5 > ma20 > ma60:
-            strength = ((ma5 - ma60) / ma60) * 100
-            if strength > 2:  # 3% → 2% 완화
-                score += 18
-                signals.append("강한 정배열 (+18)")
-            else:
-                score += 12
-                signals.append("정배열 (+12)")
-        elif ma5 > ma20:
-            score += 10
-            signals.append("단기 상승 (+10)")
-        elif ma5 > ma20 * 0.99:  # 거의 근접 (완화)
-            score += 8
-            signals.append("골든크로스 임박 (+8)")
-        
-        # 거래량 신호
-        if len(df) >= 20:
-            recent_volume = df['volume'].iloc[-1]
-            avg_volume_20d = df['volume'].rolling(20).mean().iloc[-1]
-            volume_ratio = recent_volume / avg_volume_20d if avg_volume_20d > 0 else 1
-            
-            if volume_ratio >= 1.5:  # 1.8 → 1.5 완화
-                score += 15
-                signals.append(f"거래량 폭증 {volume_ratio:.1f}배 (+15)")
-            elif volume_ratio >= 1.2:  # 1.3 → 1.2 완화
-                score += 10
-                signals.append(f"거래량 급증 {volume_ratio:.1f}배 (+10)")
-            elif volume_ratio >= 1.0:  # 1.1 → 1.0 완화
-                score += 6
-                signals.append(f"거래량 증가 {volume_ratio:.1f}배 (+6)")
-        
-        # 🎯 3단계: 매수 기준 대폭 완화
-        min_score = target_config.get('min_score', 35)  # 40 → 35 완화
-        
-        # 강력한 매수 신호 조건
-        strong_buy_conditions = [
-            score >= min_score + 20,  # 15 → 20 상향
-            any("연속 하락 후 반등" in s for s in signals),
-            any("거래량 급증 + 상승" in s for s in signals),
-            any("극과매도" in s for s in signals),
-            rsi <= 30,  # 25 → 30 완화
-            score >= 60  # 50 → 60 상향
+        # 강력한 매수 신호 조건 (완화)
+        strong_conditions = [
+            rsi <= 30,  # RSI 과매도
+            bb_position in ["breakthrough", "lower"],  # 볼린저밴드 하단권
+            score >= 50,  # 높은 점수
+            any("연속하락 후 반등" in s for s in signals),  # 반등 신호
         ]
         
-        signal_strength = 'STRONG' if any(strong_buy_conditions) else 'NORMAL'
+        signal_strength = 'STRONG' if any(strong_conditions) else 'NORMAL'
         is_buy_signal = score >= min_score
         
-        # 신호 강도를 target_config에 저장 (포지션 크기 계산시 사용)
-        target_config['last_signal_strength'] = signal_strength
+        # 🔥 추가: 매우 강한 신호는 더 낮은 점수에서도 매수
+        if rsi <= 25 or bb_position == "breakthrough":
+            discounted_score = max(15, min_score * 0.7)  # 30% 할인
+            if score >= discounted_score and not is_buy_signal:
+                signals.append(f"특별조건 점수할인: {discounted_score:.0f}점")
+                is_buy_signal = True
         
-        all_signals = signals + warning_reasons
+        # target_config에 신호 강도 저장 (포지션 크기 계산시 사용)
+        target_config['last_signal_strength'] = signal_strength
         
         return {
             'is_buy_signal': is_buy_signal,
             'signal_strength': signal_strength,
             'score': score,
             'min_score': min_score,
-            'signals': all_signals if all_signals else ["매수 신호 부족"],
+            'signals': signals if signals else ["매수 신호 부족"],
             'bb_position': bb_position,
             'analysis': {
                 'rsi': rsi,
-                'price_vs_bb_lower': (current_price / stock_data['bb_lower'] - 1) * 100 if stock_data['bb_lower'] > 0 else 0,
-                'enhanced_strategy': True
+                'price_position': price_position,
+                'volume_surge': volume_ratio,
+                'trend_strength': 'strong' if ma5 > ma20 > ma60 else 'weak'
             }
         }
         
     except Exception as e:
-        logger.error(f"고수익률 매수 신호 분석 중 에러: {str(e)}")
+        logger.error(f"매수 신호 분석 중 에러: {str(e)}")
         return {'is_buy_signal': False, 'score': 0, 'signals': [f"분석 오류: {str(e)}"]}
     
 def calculate_adaptive_stop_loss(stock_data, position, target_config):
@@ -1217,7 +1210,7 @@ def calculate_adaptive_stop_loss(stock_data, position, target_config):
         return target_config.get('stop_loss', trading_config.stop_loss_ratio)
 
 def analyze_sell_signal(stock_data, position, target_config):
-    """매도 신호 분석 - 고수익률 버전 (다단계 익절)"""
+    """매도 신호 분석 - 개선된 버전 (손절 최소화)"""
     try:
         stock_code = stock_data['stock_code']
         current_price = stock_data['current_price']
@@ -1229,11 +1222,11 @@ def analyze_sell_signal(stock_data, position, target_config):
         profit_rate = (current_price - entry_price) / entry_price
         entry_signal_strength = position.get('signal_strength', 'NORMAL')
         
-        # 🚨 긴급 매도 (기존 유지)
+        # 🚨 1단계: 긴급 매도 (극한 상황에서만)
         df = stock_data.get('ohlcv_data')
         if df is not None and len(df) >= 3:
             daily_drop = (df['close'].iloc[-1] / df['close'].iloc[-2] - 1) * 100
-            if daily_drop < -12:
+            if daily_drop < -15:  # -12% → -15% (더 관대하게)
                 return {
                     'is_sell_signal': True,
                     'sell_type': 'emergency_exit',
@@ -1241,80 +1234,56 @@ def analyze_sell_signal(stock_data, position, target_config):
                     'urgent': True
                 }
         
-        # 🚀 2단계: 적극적 다단계 익절 전략
-        
-        # 기본 익절 목표 설정
-        base_target = target_config.get('profit_target', 0.10)  # 6% → 10%
-        
-        # 신호 강도별 목표 조정
+        # 🎯 2단계: 적극적 익절 (수익 확보 우선)
         if entry_signal_strength == 'STRONG':
             profit_targets = {
-                'quick': base_target * 0.5,     # 5% 빠른 익절
-                'normal': base_target,          # 10% 일반 익절
-                'extended': base_target * 1.5   # 15% 확장 익절
+                'quick': 0.08,      # 8% 빠른 익절
+                'normal': 0.15,     # 15% 일반 익절  
+                'extended': 0.25    # 25% 확장 익절
             }
         else:
             profit_targets = {
-                'quick': base_target * 0.4,     # 4% 빠른 익절
-                'normal': base_target * 0.8,    # 8% 일반 익절
-                'extended': base_target * 1.2   # 12% 확장 익절
+                'quick': 0.06,      # 6% 빠른 익절
+                'normal': 0.12,     # 12% 일반 익절
+                'extended': 0.20    # 20% 확장 익절
             }
         
-        # 기술적 지표 확인
+        # RSI와 볼린저밴드 과열 확인
         rsi = stock_data.get('rsi', 50)
-        ma5 = stock_data.get('ma5', 0)
-        ma20 = stock_data.get('ma20', 0)
         bb_upper = stock_data.get('bb_upper', 0)
         
-        # 다단계 익절 실행
+        # 과열 감지
+        is_overheated = (rsi >= 80) or (bb_upper > 0 and current_price >= bb_upper)
+        is_very_overheated = (rsi >= 85) or (bb_upper > 0 and current_price >= bb_upper * 1.02)
         
-        # 1) 빠른 익절 - 과매수 구간
+        # 다단계 익절 실행
         if profit_rate >= profit_targets['quick']:
-            if rsi >= 75 or (bb_upper > 0 and current_price >= bb_upper):
+            if is_very_overheated:
                 return {
                     'is_sell_signal': True,
-                    'sell_type': 'quick_profit',
-                    'reason': f"과매수 구간 빠른 익절 {profit_rate*100:.1f}% (목표: {profit_targets['quick']*100:.1f}%)",
+                    'sell_type': 'quick_profit_overheated',
+                    'reason': f"과열 상태 빠른 익절 {profit_rate*100:.1f}%",
+                    'urgent': False
+                }
+            elif profit_rate >= profit_targets['normal'] and is_overheated:
+                return {
+                    'is_sell_signal': True,
+                    'sell_type': 'normal_profit_overheated',
+                    'reason': f"과열 상태 일반 익절 {profit_rate*100:.1f}%",
                     'urgent': False
                 }
         
-        # 2) 부분 익절 - 일반 목표 달성시
-        if profit_rate >= profit_targets['normal']:
-            # 아직 부분매도 안했고, 추세가 약화되지 않았으면 부분매도
-            if not position.get('partial_sold', False) and ma5 > ma20 and rsi < 80:
-                # 실제 부분매도는 구현 복잡성으로 인해 로그만 남기고 보유 지속
-                logger.info(f"🎯 부분 익절 기회: {profit_rate*100:.1f}% (50% 매도 고려)")
-                position['partial_sold'] = True  # 플래그 설정
-                # 트레일링 스탑으로 전환
-                pass
-            else:
-                # 추세 약화시 전체 매도
-                if ma5 <= ma20 or rsi >= 80:
-                    return {
-                        'is_sell_signal': True,
-                        'sell_type': 'normal_profit',
-                        'reason': f"추세 약화 익절 {profit_rate*100:.1f}% (목표: {profit_targets['normal']*100:.1f}%)",
-                        'urgent': False
-                    }
-        
-        # 3) 확장 익절 - 고수익 달성시
         if profit_rate >= profit_targets['extended']:
             return {
                 'is_sell_signal': True,
                 'sell_type': 'extended_profit',
-                'reason': f"확장 목표 달성 {profit_rate*100:.1f}% (목표: {profit_targets['extended']*100:.1f}%)",
+                'reason': f"확장 목표 달성 {profit_rate*100:.1f}%",
                 'urgent': False
             }
         
-        # 📉 손절 (기존 유지 - 100% 승률 보존)
-        base_stop_loss = target_config.get('stop_loss', -0.12)  # -10% → -12%
+        # 🔥 3단계: 혁신적 손절 로직 - "지연 + 조건부 손절"
         
-        if entry_signal_strength == 'STRONG':
-            adjusted_stop_loss = base_stop_loss * 1.4
-        else:
-            adjusted_stop_loss = base_stop_loss
-        
-        # 시간 기반 완화
+        # 보유시간 계산
         holding_hours = 0
         try:
             entry_time_str = position.get('entry_time', '')
@@ -1331,41 +1300,84 @@ def analyze_sell_signal(stock_data, position, target_config):
             holding_days = position.get('holding_days', 0)
             holding_hours = holding_days * 24
         
-        min_holding_hours = target_config.get('min_holding_hours', 48)
-        if holding_hours < min_holding_hours:
-            time_multiplier = 1 + (min_holding_hours - holding_hours) / min_holding_hours * 1.5
-            adjusted_stop_loss *= time_multiplier
+        # 기본 손절률 설정 (대폭 완화)
+        if entry_signal_strength == 'STRONG':
+            base_stop_loss = -0.18  # 강한 신호: -18%
+        else:
+            base_stop_loss = -0.15  # 일반 신호: -15%
         
-        if profit_rate <= adjusted_stop_loss:
-            if rsi <= 30:
+        # 🎯 시간별 손절 완화 로직
+        if holding_hours < 6:
+            # 6시간 이내: 손절 금지 (단, 극한 상황 제외)
+            if profit_rate <= -0.25:  # -25% 이상 손실시에만
+                return {
+                    'is_sell_signal': True,
+                    'sell_type': 'emergency_stop_loss',
+                    'reason': f"극한 상황 손절 {profit_rate*100:.1f}% (보유 {holding_hours:.1f}시간)",
+                    'urgent': True
+                }
+            else:
                 return {
                     'is_sell_signal': False,
                     'sell_type': None,
-                    'reason': f"과매도로 손절 지연 (RSI: {rsi:.1f})",
+                    'reason': f"초기 보유기간 손절 지연 {profit_rate*100:.1f}% (보유 {holding_hours:.1f}시간)",
                     'urgent': False
                 }
+        
+        elif holding_hours < 24:
+            # 6-24시간: 손절 기준 완화 (50% 완화)
+            adjusted_stop_loss = base_stop_loss * 1.5
+        elif holding_hours < 72:
+            # 1-3일: 손절 기준 약간 완화 (25% 완화)
+            adjusted_stop_loss = base_stop_loss * 1.25
+        else:
+            # 3일 이상: 기본 손절 기준 적용
+            adjusted_stop_loss = base_stop_loss
+        
+        # 🔥 4단계: RSI 기반 손절 지연 로직
+        if profit_rate <= adjusted_stop_loss:
+            # RSI가 과매도 상태면 손절 지연
+            if rsi <= 25:  # 극과매도
+                return {
+                    'is_sell_signal': False,
+                    'sell_type': None,
+                    'reason': f"RSI 극과매도로 손절 지연 {profit_rate*100:.1f}% (RSI: {rsi:.1f})",
+                    'urgent': False
+                }
+            elif rsi <= 30:  # 강과매도 - 추가 지연 조건 확인
+                # 볼린저밴드 하단 돌파시에도 지연
+                if current_price <= stock_data.get('bb_lower', 0):
+                    return {
+                        'is_sell_signal': False,
+                        'sell_type': None,
+                        'reason': f"과매도+볼밴하단으로 손절 지연 {profit_rate*100:.1f}%",
+                        'urgent': False
+                    }
             
+            # 그 외에는 손절 실행 (하지만 매우 관대한 기준)
             return {
                 'is_sell_signal': True,
-                'sell_type': 'stop_loss',
-                'reason': f"손절 실행 {profit_rate*100:.1f}% (기준: {adjusted_stop_loss*100:.1f}%)",
+                'sell_type': 'delayed_stop_loss',
+                'reason': f"지연 손절 실행 {profit_rate*100:.1f}% (기준: {adjusted_stop_loss*100:.1f}%)",
                 'urgent': True
             }
         
-        # 🔄 적극적 트레일링 스탑
-        trailing_stop = target_config.get('trailing_stop', 0.025)  # 3% → 2.5% 타이트
+        # 🔄 5단계: 개선된 트레일링 스탑 (더 관대하게)
+        trailing_stop = target_config.get('trailing_stop', 0.04)  # 2.5% → 4%로 확대
         high_price = position.get('high_price', entry_price)
         
-        if high_price > entry_price and profit_rate > 0.03:
+        if high_price > entry_price and profit_rate > 0.05:  # 5% 이상 수익시에만
             trailing_loss = (high_price - current_price) / high_price
             
-            # 수익률별 차등 트레일링
-            if profit_rate > 0.12:  # 12% 이상 수익시
-                adjusted_trailing = trailing_stop * 0.7  # 더 타이트
-            elif profit_rate > 0.08:  # 8% 이상 수익시
-                adjusted_trailing = trailing_stop * 0.85
+            # 수익률별 차등 트레일링 (더 관대하게)
+            if profit_rate > 0.20:  # 20% 이상 수익시
+                adjusted_trailing = trailing_stop * 0.6  # 더 타이트하게
+            elif profit_rate > 0.15:  # 15% 이상 수익시
+                adjusted_trailing = trailing_stop * 0.8
+            elif profit_rate > 0.10:  # 10% 이상 수익시
+                adjusted_trailing = trailing_stop * 1.0
             else:
-                adjusted_trailing = trailing_stop
+                adjusted_trailing = trailing_stop * 1.3  # 더 관대하게
             
             if trailing_loss >= adjusted_trailing:
                 return {
@@ -1375,17 +1387,141 @@ def analyze_sell_signal(stock_data, position, target_config):
                     'urgent': True
                 }
         
+        # 🎯 6단계: 추세 반전 감지 매도 (새로 추가)
+        ma5 = stock_data.get('ma5', 0)
+        ma20 = stock_data.get('ma20', 0)
+        
+        # 수익 상태에서 추세 반전시에만 매도 고려
+        if profit_rate > 0.03:  # 3% 이상 수익시
+            if ma5 < ma20 * 0.98:  # 단기 평균이 중기 평균 아래로 2% 이상 하락
+                if rsi < 40:  # RSI도 약세
+                    return {
+                        'is_sell_signal': True,
+                        'sell_type': 'trend_reversal',
+                        'reason': f"추세 반전 매도 {profit_rate*100:.1f}% (MA5<MA20, RSI약세)",
+                        'urgent': False
+                    }
+        
+        # 기본: 보유 지속
         return {
             'is_sell_signal': False,
             'sell_type': None,
             'reason': f"보유 지속 (수익률: {profit_rate*100:.1f}%, 보유: {holding_hours:.1f}시간)",
             'urgent': False,
-            'profit_rate': profit_rate
+            'profit_rate': profit_rate,
+            'holding_hours': holding_hours
         }
         
     except Exception as e:
-        logger.error(f"고수익률 매도 신호 분석 중 에러: {str(e)}")
+        logger.error(f"매도 신호 분석 중 에러: {str(e)}")
         return {'is_sell_signal': False, 'sell_type': None, 'reason': f'분석 오류: {str(e)}'}
+
+def analyze_intraday_entry_timing(stock_code, target_config):
+    """분봉 기준 최적 진입 타이밍 분석"""
+    try:
+        # 5분봉 데이터 조회 (최근 2시간)
+        df_5m = Common.GetOhlcv("KR", stock_code, period='5m', count=24)
+        
+        if df_5m is None or len(df_5m) < 10:
+            return {'enter_now': True, 'reason': '분봉 데이터 부족'}
+        
+        current_price = KisKR.GetCurrentPrice(stock_code)
+        
+        # 분봉 기술적 지표 계산
+        df_5m['RSI_5m'] = TechnicalIndicators.calculate_rsi(df_5m, 14)
+        df_5m['MA5_5m'] = df_5m['close'].rolling(5).mean()
+        df_5m['MA20_5m'] = df_5m['close'].rolling(20).mean()
+        
+        # 볼린저밴드 (5분봉)
+        bb_5m = TechnicalIndicators.calculate_bollinger_bands(df_5m, 20, 2.0)
+        df_5m[['BB_Mid', 'BB_Upper', 'BB_Lower']] = bb_5m
+        
+        entry_signals = []
+        entry_score = 0
+        
+        # 🎯 진입 타이밍 신호들
+        
+        # 1) RSI 과매도 반등
+        rsi_5m = df_5m['RSI_5m'].iloc[-1]
+        if rsi_5m <= 30:
+            entry_score += 30
+            entry_signals.append(f"분봉 RSI 과매도 {rsi_5m:.1f} (+30)")
+        elif rsi_5m <= 40:
+            entry_score += 20
+            entry_signals.append(f"분봉 RSI 조정 {rsi_5m:.1f} (+20)")
+        
+        # 2) 볼린저밴드 하단 터치
+        bb_lower = df_5m['BB_Lower'].iloc[-1]
+        if current_price <= bb_lower * 1.02:  # 하단 2% 이내
+            entry_score += 25
+            entry_signals.append("볼린저 하단 근접 (+25)")
+        
+        # 3) 단기 이평선 지지
+        ma5_5m = df_5m['MA5_5m'].iloc[-1]
+        if abs(current_price - ma5_5m) / ma5_5m <= 0.01:  # 1% 이내
+            entry_score += 20
+            entry_signals.append("5분봉 5MA 지지 (+20)")
+        
+        # 4) 거래량 증가 + 가격 안정
+        recent_volume = df_5m['volume'].iloc[-3:].mean()
+        avg_volume = df_5m['volume'].iloc[-20:-3].mean()
+        volume_ratio = recent_volume / avg_volume if avg_volume > 0 else 1
+        
+        if volume_ratio >= 1.2:
+            entry_score += 15
+            entry_signals.append(f"분봉 거래량 증가 {volume_ratio:.1f}배 (+15)")
+        
+        # 5) 연속 하락 후 반등 (5분봉)
+        if len(df_5m) >= 5:
+            recent_changes = df_5m['close'].pct_change().iloc[-4:-1]
+            consecutive_down = sum(1 for x in recent_changes if x < 0)
+            last_change = df_5m['close'].pct_change().iloc[-1]
+            
+            if consecutive_down >= 2 and last_change > 0:
+                entry_score += 20
+                entry_signals.append("분봉 반등 신호 (+20)")
+        
+        # 📉 진입 지연 신호들
+        
+        # 1) 과매수 구간
+        if rsi_5m >= 70:
+            entry_score -= 20
+            entry_signals.append(f"분봉 과매수 {rsi_5m:.1f} (-20)")
+        
+        # 2) 볼린저밴드 상단
+        bb_upper = df_5m['BB_Upper'].iloc[-1]
+        if current_price >= bb_upper * 0.98:
+            entry_score -= 15
+            entry_signals.append("볼린저 상단 근접 (-15)")
+        
+        # 3) 급등 후 고점
+        if len(df_5m) >= 10:
+            recent_high = df_5m['high'].iloc[-10:].max()
+            if current_price >= recent_high * 0.98:
+                entry_score -= 10
+                entry_signals.append("단기 고점 근처 (-10)")
+        
+        # 🎯 진입 결정
+        min_entry_score = target_config.get('min_entry_score', 30)
+        
+        if entry_score >= min_entry_score:
+            return {
+                'enter_now': True,
+                'entry_score': entry_score,
+                'entry_signals': entry_signals,
+                'reason': f"좋은 진입 타이밍 (점수: {entry_score})"
+            }
+        else:
+            return {
+                'enter_now': False,
+                'entry_score': entry_score,
+                'entry_signals': entry_signals,
+                'reason': f"진입 타이밍 대기 (점수: {entry_score}/{min_entry_score})"
+            }
+            
+    except Exception as e:
+        logger.error(f"분봉 진입 타이밍 분석 중 오류: {str(e)}")
+        return {'enter_now': True, 'reason': '분석 오류로 즉시 진입'}
 
 ################################### 상태 관리 ##################################
 
@@ -1416,7 +1552,7 @@ def save_trading_state(state):
 ################################### 매매 실행 ##################################
 
 def calculate_position_size(target_config, available_budget, stock_price):
-    """포지션 크기 계산 - 고수익률 버전 (25-30% 배분)"""
+    """포지션 크기 계산 - 개선된 버전 (기존 함수명 유지)"""
     try:
         if stock_price <= 0 or available_budget <= 0:
             return 0
@@ -1427,18 +1563,23 @@ def calculate_position_size(target_config, available_budget, stock_price):
         if usable_budget <= 0:
             return 0
         
-        # 🚀 1단계: 포지션 크기 확대
-        base_allocation = get_safe_config_value(target_config, 'allocation_ratio', 0.25)  # 기본 25%
+        # 🎯 1단계: 기본 배분율 확대
+        base_allocation = get_safe_config_value(target_config, 'allocation_ratio', 0.35)  # 25% → 35%
         
-        # 신호 강도에 따른 추가 확대
+        # 🚀 2단계: 신호 강도별 배분 확대
         signal_strength = target_config.get('last_signal_strength', 'NORMAL')
-        if signal_strength == 'STRONG':
-            enhanced_allocation = base_allocation * 1.3  # 강한 신호시 30% 추가
-        else:
-            enhanced_allocation = base_allocation * 1.1  # 일반 신호시 10% 추가
         
-        # 최대 한도 설정 (리스크 관리)
-        max_allocation = 0.35  # 최대 35%
+        # 신호 강도 배수 적용
+        if signal_strength == 'STRONG':
+            strength_multiplier = 1.4  # 40% 증가
+        else:
+            strength_multiplier = 1.2  # 20% 증가
+        
+        # 전체 배분율 계산
+        enhanced_allocation = base_allocation * strength_multiplier
+        
+        # 🚨 리스크 관리 (최대 한도 확대)
+        max_allocation = 0.50  # 35% → 50% (더 공격적)
         enhanced_allocation = min(enhanced_allocation, max_allocation)
         
         allocated_budget = usable_budget * enhanced_allocation
@@ -1447,10 +1588,6 @@ def calculate_position_size(target_config, available_budget, stock_price):
         min_order_amount = get_safe_config_value(target_config, 'min_order_amount', 10000)
         if allocated_budget < min_order_amount:
             return 0
-        
-        # 최대 주문 금액 제한
-        max_order_amount = get_safe_config_value(target_config, 'max_order_amount', usable_budget * 0.4)
-        allocated_budget = min(allocated_budget, max_order_amount)
         
         # 기본 수량 계산
         base_quantity = int(allocated_budget / stock_price)
@@ -1473,27 +1610,25 @@ def calculate_position_size(target_config, available_budget, stock_price):
         if base_quantity <= 0:
             return 0
         
-        # 종목별 최소/최대 수량 제한
-        min_quantity = get_safe_config_value(target_config, 'min_quantity', 1)
-        max_quantity = get_safe_config_value(target_config, 'max_quantity', float('inf'))
-        final_quantity = max(min_quantity, min(base_quantity, max_quantity))
-        
         # 최종 검증
-        final_amount = stock_price * final_quantity
-        final_fee = calculate_trading_fee(stock_price, final_quantity, True)
+        final_amount = stock_price * base_quantity
+        final_fee = calculate_trading_fee(stock_price, base_quantity, True)
         final_total = final_amount + final_fee
         
         if final_total > allocated_budget:
             return 0
         
-        logger.info(f"🚀 고수익률 포지션: {enhanced_allocation*100:.1f}% 배분, {final_quantity}주, {final_total:,.0f}원")
+        logger.info(f"🚀 개선된 포지션 계산:")
+        logger.info(f"   기본 배분: {base_allocation*100:.1f}%")
+        logger.info(f"   신호 배수: {strength_multiplier:.2f} (강도: {signal_strength})")
+        logger.info(f"   최종 배분: {enhanced_allocation*100:.1f}% ({base_quantity}주, {final_total:,.0f}원)")
         
-        return final_quantity
+        return base_quantity
         
     except Exception as e:
-        logger.error(f"고수익률 포지션 계산 중 에러: {str(e)}")
+        logger.error(f"포지션 계산 중 에러: {str(e)}")
         return 0
-    
+
 def execute_buy_order(stock_code, target_config, quantity, price):
     """매수 주문 실행"""
     try:
@@ -1526,6 +1661,56 @@ def execute_buy_order(stock_code, target_config, quantity, price):
     except Exception as e:
         logger.error(f"매수 주문 실행 중 에러: {str(e)}")
         return None, None
+    
+def process_buy_candidates(trading_state):
+    """매수 대기 후보들의 진입 타이밍 재확인"""
+    try:
+        if 'buy_candidates' not in trading_state:
+            return trading_state
+        
+        candidates_to_remove = []
+        
+        for stock_code, candidate_info in trading_state['buy_candidates'].items():
+            try:
+                # 대기 시간 확인
+                wait_start = datetime.datetime.fromisoformat(candidate_info['wait_start_time'])
+                wait_hours = (datetime.datetime.now() - wait_start).total_seconds() / 3600
+                
+                # 최대 2시간까지만 대기
+                if wait_hours > 2:
+                    logger.info(f"⏰ 매수 대기 시간 초과: {stock_code} ({wait_hours:.1f}시간)")
+                    candidates_to_remove.append(stock_code)
+                    continue
+                
+                # 분봉 진입 타이밍 재확인
+                target_config = candidate_info['opportunity']['target_config']
+                timing_analysis = analyze_intraday_entry_timing(stock_code, target_config)
+                
+                if timing_analysis['enter_now']:
+                    logger.info(f"🎯 분봉 진입 타이밍 도래: {stock_code}")
+                    
+                    # 매수 실행
+                    opportunity = candidate_info['opportunity']
+                    # ... 실제 매수 로직 실행
+                    
+                    candidates_to_remove.append(stock_code)
+                else:
+                    # 타이밍 점수 업데이트
+                    candidate_info['last_intraday_score'] = timing_analysis['entry_score']
+                    
+            except Exception as e:
+                logger.error(f"매수 후보 처리 중 오류 ({stock_code}): {str(e)}")
+                candidates_to_remove.append(stock_code)
+        
+        # 처리 완료된 후보들 제거
+        for stock_code in candidates_to_remove:
+            del trading_state['buy_candidates'][stock_code]
+        
+        return trading_state
+        
+    except Exception as e:
+        logger.error(f"매수 후보 관리 중 오류: {str(e)}")
+        return trading_state    
 
 def execute_sell_order(stock_code, target_config, quantity):
     """매도 주문 실행"""
@@ -1850,10 +2035,13 @@ def process_positions(trading_state):
         return trading_state
 
 def execute_buy_opportunities(buy_opportunities, trading_state):
-    """매수 기회 실행 (수정된 버전 - 새로운 예산 로직 적용)"""
+    """매수 기회 실행 (분봉 타이밍 옵션 추가 - 수정된 버전)"""
     try:
         if not buy_opportunities:
             return trading_state
+        
+        # 🎯 분봉 타이밍 사용 여부 확인
+        use_intraday = trading_config.use_intraday_timing if hasattr(trading_config, 'use_intraday_timing') else False
         
         # 새로운 예산 계산 함수 사용
         available_budget = get_available_budget()
@@ -1878,7 +2066,7 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
         current_positions = len(trading_state['positions'])
         max_new_positions = trading_config.max_positions - current_positions
         
-        logger.info(f"매수 실행 준비:")
+        logger.info(f"매수 실행 준비: (분봉타이밍: {'ON' if use_intraday else 'OFF'})")
         logger.info(f"  - 사용 가능 예산: {available_budget:,.0f}원")
         logger.info(f"  - 현재 보유 종목: {current_positions}개/{trading_config.max_positions}개")
         logger.info(f"  - 추가 매수 가능: {max_new_positions}개")
@@ -1890,6 +2078,39 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                 stock_name = opportunity['stock_name']
                 stock_price = opportunity['price']
                 target_config = opportunity['target_config']
+                
+                # 🎯 분봉 타이밍 체크 (옵션)
+                if use_intraday:
+                    logger.info(f"🔍 분봉 진입 타이밍 분석: {stock_name}({stock_code})")
+                    timing_analysis = analyze_intraday_entry_timing(stock_code, target_config)
+                    
+                    if not timing_analysis['enter_now']:
+                        logger.info(f"⏳ 분봉 진입 타이밍 대기: {stock_name}({stock_code})")
+                        logger.info(f"   사유: {timing_analysis['reason']}")
+                        logger.info(f"   진입점수: {timing_analysis.get('entry_score', 0)}점")
+                        
+                        # 매수 대기 리스트에 추가
+                        if 'buy_candidates' not in trading_state:
+                            trading_state['buy_candidates'] = {}
+                        
+                        trading_state['buy_candidates'][stock_code] = {
+                            'opportunity': opportunity,
+                            'wait_start_time': datetime.datetime.now().isoformat(),
+                            'daily_score': opportunity['score'],
+                            'last_intraday_score': timing_analysis.get('entry_score', 0),
+                            'last_check_time': datetime.datetime.now().isoformat()
+                        }
+                        
+                        logger.info(f"   → 매수 대기 리스트 등록 완료")
+                        continue  # 이번 루프는 스킵하고 다음 종목으로
+                    else:
+                        logger.info(f"✅ 분봉 진입 타이밍 양호: {stock_name}({stock_code})")
+                        logger.info(f"   사유: {timing_analysis['reason']}")
+                        logger.info(f"   진입점수: {timing_analysis.get('entry_score', 0)}점")
+                        for signal in timing_analysis.get('entry_signals', []):
+                            logger.info(f"   - {signal}")
+                else:
+                    logger.info(f"📊 일봉 신호 기반 즉시 매수: {stock_name}({stock_code})")
                 
                 # 매수 전 예산 재확인 (실시간)
                 current_budget = get_available_budget()
@@ -1906,7 +2127,9 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                 
                 logger.info(f"🔵 매수 시도: {stock_name}({stock_code})")
                 logger.info(f"   수량: {quantity}주, 가격: {stock_price:,.0f}원")
-                logger.info(f"   점수: {opportunity['score']}/{opportunity['min_score']}점")
+                logger.info(f"   일봉점수: {opportunity['score']}/{opportunity['min_score']}점")
+                if use_intraday:
+                    logger.info(f"   분봉점수: {timing_analysis.get('entry_score', 0)}점")
                 
                 # 매수 주문 실행
                 executed_price, executed_amount = execute_buy_order(
@@ -1918,7 +2141,7 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                     buy_fee = calculate_trading_fee(executed_price, executed_amount, True)
                     
                     # 포지션 정보 저장 (종목별 설정 포함)
-                    trading_state['positions'][stock_code] = {
+                    position_info = {
                         'stock_code': stock_code,
                         'stock_name': stock_name,
                         'entry_price': executed_price,
@@ -1928,8 +2151,18 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                         'high_price': executed_price,
                         'trailing_stop': executed_price * (1 - target_config.get('trailing_stop', trading_config.trailing_stop_ratio)),
                         'target_config': target_config,
-                        'buy_analysis': opportunity['analysis']
+                        'buy_analysis': opportunity['analysis'],
+                        'signal_strength': target_config.get('last_signal_strength', 'NORMAL')
                     }
+                    
+                    # 분봉 타이밍 정보도 저장 (사용한 경우)
+                    if use_intraday:
+                        position_info['intraday_analysis'] = timing_analysis
+                        position_info['entry_method'] = 'intraday_timing'
+                    else:
+                        position_info['entry_method'] = 'daily_signal'
+                    
+                    trading_state['positions'][stock_code] = position_info
                     
                     # 매수 완료 알림
                     msg = f"✅ 매수 완료: {stock_name}({stock_code})\n"
@@ -1939,16 +2172,34 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                     msg += f"수수료: {buy_fee:,.0f}원\n"
                     msg += f"목표수익률: {target_config.get('profit_target', trading_config.take_profit_ratio)*100:.1f}%\n"
                     msg += f"손절률: {target_config.get('stop_loss', trading_config.stop_loss_ratio)*100:.1f}%\n"
+                    
+                    if use_intraday:
+                        msg += f"진입방식: 분봉 타이밍 ({timing_analysis.get('entry_score', 0)}점)\n"
+                    else:
+                        msg += f"진입방식: 일봉 신호 ({opportunity['score']}점)\n"
+                    
                     msg += f"남은 예산: {get_available_budget():,.0f}원"
                     
                     logger.info(msg)
-                    discord_alert.SendMessage(msg)
+                    
+                    # Discord 알림도 전송
+                    if hasattr(trading_config, 'use_discord_alert') and trading_config.config.get('use_discord_alert', True):
+                        discord_alert.SendMessage(msg)
                 else:
                     logger.error(f"매수 주문 실패: {stock_name}({stock_code})")
                 
             except Exception as e:
-                logger.error(f"매수 실행 중 에러: {str(e)}")
+                logger.error(f"매수 실행 중 에러 ({stock_code}): {str(e)}")
                 continue
+        
+        # 매수 대기 리스트 상태 로깅
+        if use_intraday and 'buy_candidates' in trading_state and trading_state['buy_candidates']:
+            logger.info(f"📋 현재 매수 대기 종목: {len(trading_state['buy_candidates'])}개")
+            for code, info in trading_state['buy_candidates'].items():
+                wait_start = datetime.datetime.fromisoformat(info['wait_start_time'])
+                wait_minutes = (datetime.datetime.now() - wait_start).total_seconds() / 60
+                stock_name = info['opportunity']['stock_name']
+                logger.info(f"   - {stock_name}({code}): {wait_minutes:.0f}분 대기중 (분봉점수: {info['last_intraday_score']})")
         
         return trading_state
         
@@ -1956,16 +2207,15 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
         logger.error(f"매수 기회 실행 중 에러: {str(e)}")
         return trading_state
 
-# create_config_file 함수도 Proportional 모드로 수정
 def create_config_file(config_path: str = "target_stock_config.json") -> None:
-    """기본 설정 파일 생성 (백테스트 문제점 반영한 개선 버전)"""
+    """기본 설정 파일 생성 (분봉 타이밍 옵션 포함한 개선 버전)"""
     try:
-        logger.info("백테스트 문제점 반영한 개선 설정 파일 생성 시작...")
+        logger.info("분봉 타이밍 옵션 포함한 개선 설정 파일 생성 시작...")
         
         # 기본 타겟 종목들 정의 (거래량 확보를 위해 확대)
-        sample_codes = ["034020", "272210", "267250"]
+        sample_codes = ["034020", "272210", "267250"]  # 두산에너빌리티, 한화시스템, 일진파워
         
-        # 특성별 파라미터 매핑 (백테스트 결과 반영)
+        # 특성별 파라미터 매핑 (분봉 타이밍 설정 포함)
         characteristic_params = {
             "growth": {
                 "allocation_ratio": 0.30,        # 🚀 20% → 30% (1단계)
@@ -1978,7 +2228,16 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
                 "min_holding_hours": 48,
                 "use_adaptive_stop": True,
                 "volatility_stop_multiplier": 1.5,
-                "stop_loss_delay_hours": 2
+                "stop_loss_delay_hours": 2,
+                
+                # 🎯 분봉 진입 타이밍 설정 (종목별)
+                "min_entry_score": 30,              # 최소 진입 점수
+                "intraday_rsi_oversold": 35,        # 분봉 RSI 과매도 기준
+                "intraday_rsi_overbought": 70,      # 분봉 RSI 과매수 기준
+                "intraday_volume_threshold": 1.2,   # 분봉 거래량 임계값
+                "use_bb_entry_timing": True,        # 볼린저밴드 진입 타이밍 사용
+                "bb_lower_margin": 0.02,            # 볼린저 하단 여유율 (2%)
+                "ma_support_margin": 0.01           # 이평선 지지 여유율 (1%)
             },
             "balanced": {
                 "allocation_ratio": 0.25,        # 🚀 18% → 25% (1단계)
@@ -1991,7 +2250,16 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
                 "min_holding_hours": 48,
                 "use_adaptive_stop": True,
                 "volatility_stop_multiplier": 1.4,
-                "stop_loss_delay_hours": 2
+                "stop_loss_delay_hours": 2,
+                
+                # 🎯 분봉 진입 타이밍 설정 (종목별)
+                "min_entry_score": 35,              # 최소 진입 점수 (조금 더 보수적)
+                "intraday_rsi_oversold": 40,        # 분봉 RSI 과매도 기준
+                "intraday_rsi_overbought": 65,      # 분봉 RSI 과매수 기준
+                "intraday_volume_threshold": 1.15,  # 분봉 거래량 임계값
+                "use_bb_entry_timing": True,        # 볼린저밴드 진입 타이밍 사용
+                "bb_lower_margin": 0.025,           # 볼린저 하단 여유율 (2.5%)
+                "ma_support_margin": 0.015          # 이평선 지지 여유율 (1.5%)
             },
             "value": {
                 "allocation_ratio": 0.22,        # 🚀 16% → 22% (1단계)
@@ -2004,7 +2272,16 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
                 "min_holding_hours": 48,
                 "use_adaptive_stop": True,
                 "volatility_stop_multiplier": 1.3,
-                "stop_loss_delay_hours": 1
+                "stop_loss_delay_hours": 1,
+                
+                # 🎯 분봉 진입 타이밍 설정 (종목별) - 가치주는 더 보수적
+                "min_entry_score": 40,              # 최소 진입 점수 (가장 보수적)
+                "intraday_rsi_oversold": 45,        # 분봉 RSI 과매도 기준
+                "intraday_rsi_overbought": 60,      # 분봉 RSI 과매수 기준
+                "intraday_volume_threshold": 1.1,   # 분봉 거래량 임계값
+                "use_bb_entry_timing": True,        # 볼린저밴드 진입 타이밍 사용
+                "bb_lower_margin": 0.03,            # 볼린저 하단 여유율 (3%)
+                "ma_support_margin": 0.02           # 이평선 지지 여유율 (2%)
             }
         }
 
@@ -2022,13 +2299,8 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
                 # 섹터 정보 조회
                 sector_info = get_sector_info(stock_code)
                 
-                # 간단한 특성 할당
-                if i == 0:
-                    char_type = "growth"
-                elif i == len(sample_codes) - 1:
-                    char_type = "value"
-                else:
-                    char_type = "balanced"
+                # 🔥 모든 종목을 성장주로 설정 (사용자 요청)
+                char_type = "growth"
                 
                 # 특성별 파라미터 적용
                 params = characteristic_params[char_type].copy()
@@ -2047,28 +2319,37 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
             except Exception as e:
                 logger.warning(f"종목 {stock_code} 정보 수집 중 오류: {str(e)}")
                 # 기본값으로 설정
-                target_stocks[stock_code] = characteristic_params["balanced"].copy()
+                target_stocks[stock_code] = characteristic_params["growth"].copy()
                 target_stocks[stock_code].update({
                     "name": f"종목{stock_code}",
                     "sector": "Unknown",
                     "enabled": True,
-                    "characteristic_type": "balanced"
+                    "characteristic_type": "growth"
                 })
         
-        # 전체 설정 구성 (백테스트 문제점 반영)
+        # 전체 설정 구성 (분봉 타이밍 옵션 포함)
         config = {
             "target_stocks": target_stocks,
+            
+            # 🎯 분봉 타이밍 전역 설정 (새로 추가)
+            "use_intraday_timing": True,            # 분봉 진입 타이밍 사용 여부 (백테스트시 False)
+            "intraday_check_interval": 10,          # 분봉 체크 주기 (초) - 분봉 타이밍 사용시
+            "default_check_interval": 30,           # 기본 체크 주기 (초) - 일봉만 사용시
+            "max_candidate_wait_hours": 2,          # 최대 대기 시간 (시간)
+            "intraday_data_period": "5m",           # 분봉 데이터 주기 (5분봉)
+            "intraday_data_count": 24,              # 분봉 데이터 개수 (2시간치)
+            "force_buy_after_wait": True,           # 최대 대기시간 후 강제 매수 여부
             
             # 예산 설정 - 기존 구조 유지하되 일부 값만 최적화
             "use_absolute_budget": True,
             "absolute_budget_strategy": "proportional",
-            "absolute_budget": 10000000,
+            "absolute_budget": 500000,              # 🎯 50만원으로 설정
             "initial_total_asset": 0,
             "budget_loss_tolerance": 0.2,
             "trade_budget_ratio": 0.85,             # 0.90 → 0.85 (약간 보수적)
             
             # 포지션 관리 - 일부만 최적화
-            "max_positions": 6,                     # 8 → 6 (적정 분산)
+            "max_positions": 3,                     # 🎯 3종목으로 설정
             "min_stock_price": 3000,                # 기존 유지
             "max_stock_price": 200000,              # 기존 유지
             
@@ -2093,23 +2374,37 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
             "use_adaptive_strategy": True,
             "use_trend_filter": True,
             
+            # 🎯 분봉 타이밍 관련 알림 설정
+            "alert_intraday_wait": True,            # 분봉 대기 알림 사용 여부
+            "alert_intraday_entry": True,           # 분봉 진입 알림 사용 여부
+            "alert_candidate_summary": True,        # 대기 종목 요약 알림 사용 여부
+            
             # 기타 설정 - 기존 유지
             "last_sector_update": datetime.datetime.now().strftime('%Y%m%d'),
             "bot_name": "TargetStockBot",           # 기존 이름 유지
             "use_discord_alert": True,
-            "check_interval_minutes": 30
+            "check_interval_minutes": 30            # 기본 체크 주기 (분) - 호환성 유지
         }
 
         # 파일 저장
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, ensure_ascii=False, indent=4)
         
-        logger.info(f"🎯 개선된 설정 파일 생성 완료: {config_path}")
-        logger.info(f"주요 개선: 매수조건 완화, 적응형 전략 끄기, 손익비율 조정")
+        logger.info(f"🎯 분봉 타이밍 옵션 포함 설정 파일 생성 완료: {config_path}")
+        logger.info(f"주요 설정:")
+        logger.info(f"  - 분봉 타이밍: {'ON' if config['use_intraday_timing'] else 'OFF'}")
+        logger.info(f"  - 예산: {config['absolute_budget']:,}원")
+        logger.info(f"  - 최대 종목수: {config['max_positions']}개")
+        logger.info(f"  - 체크 주기: {config['intraday_check_interval']}초 (분봉 사용시)")
+        logger.info(f"  - 모든 종목: 성장주 전략 적용")
         
         # 적응형 전략 파일 초기화
-        adaptive_strategy = AdaptiveMarketStrategy("bb_adaptive_strategy.json")
-        adaptive_strategy.save_strategy()
+        try:
+            adaptive_strategy = AdaptiveMarketStrategy("bb_adaptive_strategy.json")
+            adaptive_strategy.save_strategy()
+            logger.info("적응형 전략 파일 초기화 완료")
+        except Exception as e:
+            logger.warning(f"적응형 전략 파일 초기화 중 오류 (무시): {str(e)}")
         
     except Exception as e:
         logger.exception(f"설정 파일 생성 중 오류: {str(e)}")
@@ -2203,12 +2498,19 @@ def main():
             logger.info("=== 타겟 종목 포지션 관리 ===")
             trading_state = process_positions(trading_state)
             save_trading_state(trading_state)
+
+            # 🎯 분봉 타이밍 사용시에만 매수 대기 후보 관리
+            if hasattr(trading_config, 'use_intraday_timing') and trading_config.use_intraday_timing:
+                trading_state = process_buy_candidates(trading_state)
+                save_trading_state(trading_state)
             
             # 새로운 매수 기회 스캔 (15시 이전까지만)
             if now.hour < 15:
                 logger.info("=== 타겟 종목 매수 기회 스캔 ===")
                 buy_opportunities = scan_target_stocks(trading_state)
-                
+                trading_state = execute_buy_opportunities(buy_opportunities, trading_state)  # 🎯 함수명 그대로
+                save_trading_state(trading_state)
+
                 if buy_opportunities:
                     # 매수 실행
                     trading_state = execute_buy_opportunities(buy_opportunities, trading_state)
@@ -2225,8 +2527,16 @@ def main():
                 daily_report_sent = True
             
             # 30초 대기
-            time.sleep(30)
-            
+            # time.sleep(30)
+
+            # 🎯 분봉 타이밍 사용시 체크 주기 조정
+            if hasattr(trading_config, 'use_intraday_timing') and trading_config.use_intraday_timing:
+                check_interval = getattr(trading_config, 'intraday_check_interval', 10)
+            else:
+                check_interval = 30  # 기존 주기
+                
+            time.sleep(check_interval)
+
         except Exception as e:
             error_msg = f"⚠️ 메인 루프 에러: {str(e)}"
             logger.error(error_msg)
