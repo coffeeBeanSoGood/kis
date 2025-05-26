@@ -1270,7 +1270,7 @@ def calculate_adaptive_stop_loss(stock_data, position, target_config):
         return target_config.get('stop_loss', trading_config.stop_loss_ratio)
 
 def analyze_sell_signal(stock_data, position, target_config):
-    """매도 신호 분석 - 개선된 버전 (손절 최소화)"""
+    """개선된 매도 신호 분석 - 자본 보호 우선 손절"""
     try:
         stock_code = stock_data['stock_code']
         current_price = stock_data['current_price']
@@ -1282,19 +1282,19 @@ def analyze_sell_signal(stock_data, position, target_config):
         profit_rate = (current_price - entry_price) / entry_price
         entry_signal_strength = position.get('signal_strength', 'NORMAL')
         
-        # 🚨 1단계: 긴급 매도 (극한 상황에서만)
+        # 🚨 1단계: 긴급 매도 (기준 강화)
         df = stock_data.get('ohlcv_data')
         if df is not None and len(df) >= 3:
             daily_drop = (df['close'].iloc[-1] / df['close'].iloc[-2] - 1) * 100
-            if daily_drop < -15:  # -12% → -15% (더 관대하게)
+            if daily_drop < -10:  # -15% → -10% (더 엄격하게)
                 return {
                     'is_sell_signal': True,
                     'sell_type': 'emergency_exit',
-                    'reason': f"극도 급락 {daily_drop:.1f}% (긴급 매도)",
+                    'reason': f"급락 긴급매도 {daily_drop:.1f}%",
                     'urgent': True
                 }
         
-        # 🎯 2단계: 적극적 익절 (수익 확보 우선)
+        # 🎯 2단계: 익절 로직 (기존 유지 - 좋음)
         if entry_signal_strength == 'STRONG':
             profit_targets = {
                 'quick': 0.08,      # 8% 빠른 익절
@@ -1312,24 +1312,23 @@ def analyze_sell_signal(stock_data, position, target_config):
         rsi = stock_data.get('rsi', 50)
         bb_upper = stock_data.get('bb_upper', 0)
         
-        # 과열 감지
         is_overheated = (rsi >= 80) or (bb_upper > 0 and current_price >= bb_upper)
         is_very_overheated = (rsi >= 85) or (bb_upper > 0 and current_price >= bb_upper * 1.02)
         
-        # 다단계 익절 실행
+        # 익절 실행
         if profit_rate >= profit_targets['quick']:
             if is_very_overheated:
                 return {
                     'is_sell_signal': True,
                     'sell_type': 'quick_profit_overheated',
-                    'reason': f"과열 상태 빠른 익절 {profit_rate*100:.1f}%",
+                    'reason': f"과열상태 빠른익절 {profit_rate*100:.1f}%",
                     'urgent': False
                 }
             elif profit_rate >= profit_targets['normal'] and is_overheated:
                 return {
                     'is_sell_signal': True,
                     'sell_type': 'normal_profit_overheated',
-                    'reason': f"과열 상태 일반 익절 {profit_rate*100:.1f}%",
+                    'reason': f"과열상태 일반익절 {profit_rate*100:.1f}%",
                     'urgent': False
                 }
         
@@ -1337,11 +1336,9 @@ def analyze_sell_signal(stock_data, position, target_config):
             return {
                 'is_sell_signal': True,
                 'sell_type': 'extended_profit',
-                'reason': f"확장 목표 달성 {profit_rate*100:.1f}%",
+                'reason': f"확장목표 달성 {profit_rate*100:.1f}%",
                 'urgent': False
             }
-        
-        # 🔥 3단계: 혁신적 손절 로직 - "지연 + 조건부 손절"
         
         # 보유시간 계산
         holding_hours = 0
@@ -1360,120 +1357,129 @@ def analyze_sell_signal(stock_data, position, target_config):
             holding_days = position.get('holding_days', 0)
             holding_hours = holding_days * 24
         
-        # 기본 손절률 설정 (대폭 완화)
-        if entry_signal_strength == 'STRONG':
-            base_stop_loss = -0.18  # 강한 신호: -18%
-        else:
-            base_stop_loss = -0.15  # 일반 신호: -15%
+        # 🔥 3단계: 개선된 손절 로직 - 자본 보호 우선
         
-        # 🎯 시간별 손절 완화 로직
-        if holding_hours < 6:
-            # 6시간 이내: 손절 금지 (단, 극한 상황 제외)
-            if profit_rate <= -0.25:  # -25% 이상 손실시에만
+        # 신호별 손절 기준 (대폭 강화)
+        if entry_signal_strength == 'STRONG':
+            base_stop_loss = -0.08  # -18% → -8% (대폭 강화)
+        else:
+            base_stop_loss = -0.06  # -15% → -6% (대폭 강화)
+        
+        # 🎯 시간별 손절 로직 (대폭 단축)
+        if holding_hours < 2:  # 6시간 → 2시간 (대폭 단축)
+            # 극한 상황 손절 기준 강화
+            if profit_rate <= -0.12:  # -25% → -12% (대폭 강화)
                 return {
                     'is_sell_signal': True,
                     'sell_type': 'emergency_stop_loss',
-                    'reason': f"극한 상황 손절 {profit_rate*100:.1f}% (보유 {holding_hours:.1f}시간)",
+                    'reason': f"극한상황 손절 {profit_rate*100:.1f}% (보유 {holding_hours:.1f}시간)",
                     'urgent': True
                 }
             else:
                 return {
                     'is_sell_signal': False,
                     'sell_type': None,
-                    'reason': f"초기 보유기간 손절 지연 {profit_rate*100:.1f}% (보유 {holding_hours:.1f}시간)",
+                    'reason': f"초기보유 손절지연 {profit_rate*100:.1f}% (보유 {holding_hours:.1f}시간)",
                     'urgent': False
                 }
         
-        elif holding_hours < 24:
-            # 6-24시간: 손절 기준 완화 (50% 완화)
-            adjusted_stop_loss = base_stop_loss * 1.5
-        elif holding_hours < 72:
-            # 1-3일: 손절 기준 약간 완화 (25% 완화)
-            adjusted_stop_loss = base_stop_loss * 1.25
+        elif holding_hours < 12:  # 24시간 → 12시간 (단축)
+            # 손절 기준 20% 완화 (50% → 20%)
+            adjusted_stop_loss = base_stop_loss * 1.2
+        elif holding_hours < 24:  # 72시간 → 24시간 (대폭 단축)
+            # 손절 기준 10% 완화 (25% → 10%)
+            adjusted_stop_loss = base_stop_loss * 1.1
         else:
-            # 3일 이상: 기본 손절 기준 적용
+            # 기본 손절 기준 적용
             adjusted_stop_loss = base_stop_loss
         
-        # 🔥 4단계: RSI 기반 손절 지연 로직
+        # 🔥 4단계: RSI 기반 손절 지연 (조건 대폭 강화)
         if profit_rate <= adjusted_stop_loss:
-            # RSI가 과매도 상태면 손절 지연
-            if rsi <= 25:  # 극과매도
-                return {
-                    'is_sell_signal': False,
-                    'sell_type': None,
-                    'reason': f"RSI 극과매도로 손절 지연 {profit_rate*100:.1f}% (RSI: {rsi:.1f})",
-                    'urgent': False
-                }
-            elif rsi <= 30:  # 강과매도 - 추가 지연 조건 확인
-                # 볼린저밴드 하단 돌파시에도 지연
-                if current_price <= stock_data.get('bb_lower', 0):
+            # 🎯 극도 과매도에서만 지연 (조건 대폭 강화)
+            if rsi <= 20:  # 25 → 20 (더 극한 상황에만)
+                # 추가 조건: 볼린저밴드 하단 -3% 돌파시에만
+                if current_price <= stock_data.get('bb_lower', 0) * 0.97:  # 3% 아래만
                     return {
                         'is_sell_signal': False,
                         'sell_type': None,
-                        'reason': f"과매도+볼밴하단으로 손절 지연 {profit_rate*100:.1f}%",
+                        'reason': f"극도과매도+볼밴하단 손절지연 {profit_rate*100:.1f}% (RSI: {rsi:.1f})",
                         'urgent': False
                     }
             
-            # 그 외에는 손절 실행 (하지만 매우 관대한 기준)
+            # 🔥 기본: 즉시 손절 실행 (지연 조건 대폭 축소)
             return {
                 'is_sell_signal': True,
-                'sell_type': 'delayed_stop_loss',
-                'reason': f"지연 손절 실행 {profit_rate*100:.1f}% (기준: {adjusted_stop_loss*100:.1f}%)",
+                'sell_type': 'improved_stop_loss',
+                'reason': f"자본보호 손절 {profit_rate*100:.1f}% (기준: {adjusted_stop_loss*100:.1f}%)",
                 'urgent': True
             }
         
-        # 🔄 5단계: 개선된 트레일링 스탑 (더 관대하게)
-        trailing_stop = target_config.get('trailing_stop', 0.04)  # 2.5% → 4%로 확대
+        # 🔄 5단계: 트레일링 스탑 (조건 강화)
+        trailing_stop = target_config.get('trailing_stop', 0.03)  # 4% → 3% (강화)
         high_price = position.get('high_price', entry_price)
         
-        if high_price > entry_price and profit_rate > 0.05:  # 5% 이상 수익시에만
+        if high_price > entry_price and profit_rate > 0.04:  # 5% → 4% (기준 낮춤)
             trailing_loss = (high_price - current_price) / high_price
             
-            # 수익률별 차등 트레일링 (더 관대하게)
+            # 수익률별 차등 트레일링 (더 타이트하게)
             if profit_rate > 0.20:  # 20% 이상 수익시
-                adjusted_trailing = trailing_stop * 0.6  # 더 타이트하게
+                adjusted_trailing = trailing_stop * 0.5  # 0.6 → 0.5 (더 타이트)
             elif profit_rate > 0.15:  # 15% 이상 수익시
-                adjusted_trailing = trailing_stop * 0.8
+                adjusted_trailing = trailing_stop * 0.7  # 0.8 → 0.7 (더 타이트)
             elif profit_rate > 0.10:  # 10% 이상 수익시
-                adjusted_trailing = trailing_stop * 1.0
+                adjusted_trailing = trailing_stop * 0.9  # 1.0 → 0.9 (더 타이트)
             else:
-                adjusted_trailing = trailing_stop * 1.3  # 더 관대하게
+                adjusted_trailing = trailing_stop * 1.1  # 1.3 → 1.1 (덜 관대)
             
             if trailing_loss >= adjusted_trailing:
                 return {
                     'is_sell_signal': True,
                     'sell_type': 'trailing_stop',
-                    'reason': f"트레일링 스탑 {trailing_loss*100:.1f}% (수익: {profit_rate*100:.1f}%)",
+                    'reason': f"트레일링스탑 {trailing_loss*100:.1f}% (수익: {profit_rate*100:.1f}%)",
                     'urgent': True
                 }
         
-        # 🎯 6단계: 추세 반전 감지 매도 (새로 추가)
+        # 🎯 6단계: 추세 반전 감지 매도 (기준 강화)
         ma5 = stock_data.get('ma5', 0)
         ma20 = stock_data.get('ma20', 0)
         
-        # 수익 상태에서 추세 반전시에만 매도 고려
-        if profit_rate > 0.03:  # 3% 이상 수익시
-            if ma5 < ma20 * 0.98:  # 단기 평균이 중기 평균 아래로 2% 이상 하락
-                if rsi < 40:  # RSI도 약세
+        # 수익 상태에서 추세 반전시 매도 (기준 낮춤)
+        if profit_rate > 0.02:  # 3% → 2% (기준 낮춤)
+            if ma5 < ma20 * 0.985:  # 0.98 → 0.985 (더 민감하게)
+                if rsi < 45:  # 40 → 45 (더 민감하게)
                     return {
                         'is_sell_signal': True,
                         'sell_type': 'trend_reversal',
-                        'reason': f"추세 반전 매도 {profit_rate*100:.1f}% (MA5<MA20, RSI약세)",
+                        'reason': f"추세반전 매도 {profit_rate*100:.1f}% (MA5<MA20, RSI약세)",
                         'urgent': False
                     }
+        
+        # 🔥 7단계: 추가 안전장치 - 연속 하락 손절
+        if len(df) >= 3:
+            # 최근 3일 연속 하락 + 손실 상태면 매도
+            recent_changes = df['close'].pct_change().iloc[-3:]
+            consecutive_down = sum(1 for x in recent_changes if x < -0.02)  # 2% 이상 하락
+            
+            if consecutive_down >= 2 and profit_rate < -0.03:  # 연속 하락 + 3% 손실
+                return {
+                    'is_sell_signal': True,
+                    'sell_type': 'consecutive_decline',
+                    'reason': f"연속하락 안전매도 {profit_rate*100:.1f}% (연속하락 {consecutive_down}일)",
+                    'urgent': True
+                }
         
         # 기본: 보유 지속
         return {
             'is_sell_signal': False,
             'sell_type': None,
-            'reason': f"보유 지속 (수익률: {profit_rate*100:.1f}%, 보유: {holding_hours:.1f}시간)",
+            'reason': f"보유지속 (수익률: {profit_rate*100:.1f}%, 보유: {holding_hours:.1f}시간)",
             'urgent': False,
             'profit_rate': profit_rate,
             'holding_hours': holding_hours
         }
         
     except Exception as e:
-        logger.error(f"매도 신호 분석 중 에러: {str(e)}")
+        logger.error(f"개선된 매도 신호 분석 중 에러: {str(e)}")
         return {'is_sell_signal': False, 'sell_type': None, 'reason': f'분석 오류: {str(e)}'}
 
 def analyze_intraday_entry_timing(stock_code, target_config):
@@ -2876,12 +2882,12 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
             "growth": {
                 "allocation_ratio": 0.30,
                 "profit_target": 0.12,
-                "stop_loss": -0.12,
+                "stop_loss": -0.08,           # -0.12 → -0.08
                 "rsi_oversold": 55,
                 "rsi_overbought": 75,
                 "min_score": 40,                 # 🔥 30 → 40 (강화)
-                "trailing_stop": 0.025,
-                "min_holding_hours": 48,
+                "trailing_stop": 0.03,        # 0.025 → 0.03  
+                "min_holding_hours": 24,      # 48 → 24
                 "use_adaptive_stop": True,
                 "volatility_stop_multiplier": 1.5,
                 "stop_loss_delay_hours": 2,
@@ -2898,16 +2904,15 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
             "balanced": {
                 "allocation_ratio": 0.25,
                 "profit_target": 0.10,
-                "stop_loss": -0.12,
+                "stop_loss": -0.07,           # -0.12 → -0.07
                 "rsi_oversold": 55,
                 "rsi_overbought": 75,
                 "min_score": 40,                 # 🔥 30 → 40 (강화)
-                "trailing_stop": 0.03,
-                "min_holding_hours": 48,
+                "trailing_stop": 0.035,       # 0.03 → 0.035
+                "min_holding_hours": 24,      # 48 → 24
                 "use_adaptive_stop": True,
                 "volatility_stop_multiplier": 1.4,
                 "stop_loss_delay_hours": 2,
-                
                 "min_entry_score": 25,              # 🔥 35 → 25 (완화)
                 "intraday_rsi_oversold": 40,
                 "intraday_rsi_overbought": 65,
@@ -2919,12 +2924,12 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
             "value": {
                 "allocation_ratio": 0.22,
                 "profit_target": 0.08,
-                "stop_loss": -0.10,
+                "stop_loss": -0.06,           # -0.10 → -0.06
                 "rsi_oversold": 60,
                 "rsi_overbought": 70,
                 "min_score": 45,                 # 🔥 35 → 45 (가장 보수적)
-                "trailing_stop": 0.035,
-                "min_holding_hours": 48,
+                "trailing_stop": 0.04,        # 0.035 → 0.04
+                "min_holding_hours": 24,      # 48 → 24
                 "use_adaptive_stop": True,
                 "volatility_stop_multiplier": 1.3,
                 "stop_loss_delay_hours": 1,
