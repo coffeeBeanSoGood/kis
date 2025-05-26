@@ -149,10 +149,14 @@ class TradingConfig:
         """거래 예산 비율"""
         return self.config.get("trade_budget_ratio", 0.90)
     
-    @property
+    @property 
     def max_positions(self):
-        """최대 보유 종목 수"""
-        return self.config.get("max_positions", 8)
+        """최대 보유 종목 수 - 활성 타겟 종목 수 기반"""
+        active_count = 0
+        for stock_code, config in self.target_stocks.items():
+            if config.get('enabled', True):
+                active_count += 1
+        return active_count if active_count > 0 else 1
     
     @property
     def min_stock_price(self):
@@ -479,9 +483,114 @@ def _update_stock_info(target_stocks):
         logger.exception(f"종목 정보 업데이트 중 오류: {str(e)}")
         return target_stocks
 
-def get_available_budget():
-    """사용 가능한 예산 계산 (전략별 분기 처리) - 수정된 버전"""
+def get_active_target_stock_count():
+    """활성화된 타겟 종목 수 자동 계산"""
     try:
+        active_count = 0
+        for stock_code, config in trading_config.target_stocks.items():
+            if config.get('enabled', True):  # enabled가 True인 것만 카운트
+                active_count += 1
+        
+        logger.debug(f"활성 타겟 종목 수: {active_count}개")
+        return active_count
+        
+    except Exception as e:
+        logger.error(f"활성 종목 수 계산 중 오류: {str(e)}")
+        return 1  # 최소 1개로 설정하여 0으로 나누기 방지
+
+def get_per_stock_budget_limit():
+    """종목별 예산 한도 계산 - 활성 종목 수 기반"""
+    try:
+        if trading_config.use_absolute_budget:
+            total_budget = trading_config.absolute_budget
+        else:
+            balance = KisKR.GetBalance()
+            if not balance:
+                return 0
+            total_money = float(balance.get('TotalMoney', 0))
+            total_budget = total_money * trading_config.trade_budget_ratio
+        
+        active_stock_count = get_active_target_stock_count()
+        
+        if active_stock_count == 0:
+            logger.warning("활성화된 타겟 종목이 없습니다")
+            return 0
+        
+        per_stock_limit = total_budget / active_stock_count
+        
+        logger.debug(f"종목별 예산 한도: {per_stock_limit:,.0f}원 (총예산: {total_budget:,.0f}원 ÷ {active_stock_count}종목)")
+        return per_stock_limit
+        
+    except Exception as e:
+        logger.error(f"종목별 예산 한도 계산 중 오류: {str(e)}")
+        return 0
+    
+def get_total_invested_amount(trading_state):
+    """현재 총 투자된 금액 계산"""
+    try:
+        total_invested = 0
+        for stock_code, position in trading_state['positions'].items():
+            if stock_code in trading_config.target_stocks:
+                invested_amount = position['entry_price'] * position['amount']
+                total_invested += invested_amount
+                logger.debug(f"투자된 금액 - {stock_code}: {invested_amount:,.0f}원")
+        
+        logger.info(f"📊 총 투자된 금액: {total_invested:,.0f}원")
+        return total_invested
+        
+    except Exception as e:
+        logger.error(f"총 투자 금액 계산 중 오류: {str(e)}")
+        return 0
+
+def get_invested_amount_for_stock(stock_code, trading_state):
+    """특정 종목에 투자된 금액 계산"""
+    try:
+        if stock_code not in trading_state['positions']:
+            return 0
+        
+        position = trading_state['positions'][stock_code]
+        invested_amount = position['entry_price'] * position['amount']
+        
+        logger.debug(f"종목별 투자금액 - {stock_code}: {invested_amount:,.0f}원")
+        return invested_amount
+        
+    except Exception as e:
+        logger.error(f"종목별 투자 금액 계산 중 오류 ({stock_code}): {str(e)}")
+        return 0    
+
+def get_per_stock_budget_limit():
+    """종목별 예산 한도 계산 - 활성 종목 수 기반"""
+    try:
+        if trading_config.use_absolute_budget:
+            total_budget = trading_config.absolute_budget
+        else:
+            balance = KisKR.GetBalance()
+            if not balance:
+                return 0
+            total_money = float(balance.get('TotalMoney', 0))
+            total_budget = total_money * trading_config.trade_budget_ratio
+        
+        active_stock_count = get_active_target_stock_count()
+        
+        if active_stock_count == 0:
+            logger.warning("활성화된 타겟 종목이 없습니다")
+            return 0
+        
+        per_stock_limit = total_budget / active_stock_count
+        
+        logger.debug(f"종목별 예산 한도: {per_stock_limit:,.0f}원 (총예산: {total_budget:,.0f}원 ÷ {active_stock_count}종목)")
+        return per_stock_limit
+        
+    except Exception as e:
+        logger.error(f"종목별 예산 한도 계산 중 오류: {str(e)}")
+        return 0
+
+def get_available_budget(trading_state=None):
+    """사용 가능한 예산 계산 - 이미 투자된 금액 차감 (개선됨)"""
+    try:
+        if trading_state is None:
+            trading_state = load_trading_state()
+        
         balance = KisKR.GetBalance()
         if not balance:
             logger.error("계좌 정보 조회 실패")
@@ -494,208 +603,239 @@ def get_available_budget():
             logger.warning("계좌 총 자산이 0 이하입니다.")
             return 0
         
+        # 총 투자 가능 예산 계산
         if trading_config.use_absolute_budget:
-            # 절대 금액 기반 예산
-            absolute_budget = trading_config.absolute_budget
+            total_target_budget = trading_config.absolute_budget
             strategy = trading_config.absolute_budget_strategy
             
             logger.info(f"💰 절대금액 예산 모드: {strategy}")
             
-            if strategy == "strict":
-                # 엄격 모드: 설정값 고정
-                available_budget = min(absolute_budget, remain_money)
-                
-                logger.info(f"  - 설정 예산: {absolute_budget:,.0f}원 (고정)")
-                logger.info(f"  - 현금 잔고: {remain_money:,.0f}원")
-                logger.info(f"  - 사용가능: {available_budget:,.0f}원")
-                
-            elif strategy == "adaptive":
-                # 적응형 모드: 손실 허용범위 내에서 조정
-                loss_tolerance = trading_config.budget_loss_tolerance
-                min_budget = absolute_budget * (1 - loss_tolerance)
-                
-                if total_money >= min_budget:
-                    budget_target = absolute_budget
-                else:
-                    budget_target = max(total_money, min_budget)
-                
-                available_budget = min(budget_target, remain_money)
-                
-                logger.info(f"  - 기준 예산: {absolute_budget:,.0f}원")
-                logger.info(f"  - 손실 허용: {loss_tolerance*100:.0f}%")
-                logger.info(f"  - 최소 예산: {min_budget:,.0f}원")
-                logger.info(f"  - 현재 자산: {total_money:,.0f}원")
-                logger.info(f"  - 목표 예산: {budget_target:,.0f}원")
-                logger.info(f"  - 사용가능: {available_budget:,.0f}원")
-                
-            elif strategy == "proportional":
-                # 🔥 수정된 비례형 모드: 점진적 성과 기반 조정
+            if strategy == "proportional":
                 initial_asset = trading_config.initial_total_asset
                 
                 if initial_asset <= 0:
-                    # 최초 실행시 현재 총자산을 초기자산으로 설정
                     initial_asset = total_money
                     trading_config.config["initial_total_asset"] = initial_asset
                     trading_config.save_config()
                     logger.info(f"🎯 초기 총자산 설정: {initial_asset:,.0f}원")
                 
-                # 성과율 계산
                 performance = (total_money - initial_asset) / initial_asset
                 
-                # 🎯 점진적 배율 계산 (안전한 방식)
-                if performance > 0.2:  # 20% 이상 수익
-                    # 큰 수익에서는 보수적으로 증가
+                if performance > 0.2:
                     multiplier = min(1.4, 1.0 + performance * 0.3)
-                elif performance > 0.1:  # 10~20% 수익
-                    # 중간 수익에서는 적당히 증가
+                elif performance > 0.1:
                     multiplier = 1.0 + performance * 0.5
-                elif performance > 0.05:  # 5~10% 수익
-                    # 작은 수익에서는 비례 증가
+                elif performance > 0.05:
                     multiplier = 1.0 + performance * 0.8
-                elif performance > -0.05:  # ±5% 내
-                    # 변동 없음
+                elif performance > -0.05:
                     multiplier = 1.0
-                elif performance > -0.1:  # -5~-10% 손실
-                    # 작은 손실에서는 소폭 감소만
+                elif performance > -0.1:
                     multiplier = max(0.95, 1.0 + performance * 0.2)
-                elif performance > -0.2:  # -10~-20% 손실  
-                    # 중간 손실에서는 적당히 감소
+                elif performance > -0.2:
                     multiplier = max(0.85, 1.0 + performance * 0.15)
-                else:  # -20% 이상 손실
-                    # 큰 손실에서는 최소한만 감소
+                else:
                     multiplier = max(0.7, 1.0 + performance * 0.1)
                 
-                # 조정된 예산 계산
-                adjusted_budget = absolute_budget * multiplier
+                total_target_budget = total_target_budget * multiplier
                 
-                # 최종 사용가능 예산
-                available_budget = min(adjusted_budget, remain_money)
+                logger.info(f"  - 성과 기반 조정: {performance*100:+.1f}% → 배율 {multiplier:.3f}")
                 
-                # 상세 로깅
-                performance_pct = performance * 100
-                budget_change = ((multiplier - 1.0) * 100)
+            elif strategy == "adaptive":
+                loss_tolerance = trading_config.budget_loss_tolerance
+                min_budget = total_target_budget * (1 - loss_tolerance)
                 
-                logger.info(f"  - 기준 예산: {absolute_budget:,.0f}원")
-                logger.info(f"  - 초기 자산: {initial_asset:,.0f}원")
-                logger.info(f"  - 현재 자산: {total_money:,.0f}원")
-                logger.info(f"  - 자산 성과: {performance_pct:+.1f}%")
-                logger.info(f"  - 예산 배율: {multiplier:.3f}배 ({budget_change:+.1f}%)")
-                logger.info(f"  - 조정 예산: {adjusted_budget:,.0f}원")
-                logger.info(f"  - 현금 잔고: {remain_money:,.0f}원")
-                logger.info(f"  - 사용가능: {available_budget:,.0f}원")
-                
-            else:
-                # 알 수 없는 전략: strict 모드로 대체
-                logger.warning(f"알 수 없는 예산 전략: {strategy}, strict 모드로 대체")
-                available_budget = min(absolute_budget, remain_money)
+                if total_money >= min_budget:
+                    total_target_budget = total_target_budget
+                else:
+                    total_target_budget = max(total_money, min_budget)
             
+            # strategy == "strict"는 그대로 유지
         else:
-            # 비율 기반 예산 (기존 방식)
-            budget_ratio = trading_config.trade_budget_ratio
-            budget_by_ratio = total_money * budget_ratio
-            available_budget = min(budget_by_ratio, remain_money)
-            
-            logger.info(f"📊 비율 기반 예산: {budget_ratio*100:.1f}%")
-            logger.info(f"  - 총 자산: {total_money:,.0f}원")
-            logger.info(f"  - 계산 예산: {budget_by_ratio:,.0f}원")
-            logger.info(f"  - 사용가능: {available_budget:,.0f}원")
+            # 비율 기반 예산
+            total_target_budget = total_money * trading_config.trade_budget_ratio
+        
+        # 🎯 핵심: 이미 투자된 금액 차감
+        total_invested = get_total_invested_amount(trading_state)
+        remaining_target_budget = total_target_budget - total_invested
+        
+        # 현금 잔고와 비교하여 최종 사용 가능 예산 결정
+        available_budget = min(remaining_target_budget, remain_money)
+        
+        logger.info(f"📊 개선된 예산 계산:")
+        logger.info(f"  - 목표 총예산: {total_target_budget:,.0f}원")
+        logger.info(f"  - 이미 투자됨: {total_invested:,.0f}원")
+        logger.info(f"  - 남은 목표예산: {remaining_target_budget:,.0f}원")
+        logger.info(f"  - 현금 잔고: {remain_money:,.0f}원")
+        logger.info(f"  - 사용가능 예산: {available_budget:,.0f}원")
         
         return max(0, available_budget)
         
     except Exception as e:
-        logger.error(f"예산 계산 중 에러: {str(e)}")
+        logger.error(f"개선된 예산 계산 중 에러: {str(e)}")
         return 0
 
-def get_budget_info_message():
-    """예산 정보 메시지 생성 (수정된 버전)"""
+def get_available_budget(trading_state=None):
+    """사용 가능한 예산 계산 - 이미 투자된 금액 차감 (개선됨)"""
     try:
+        if trading_state is None:
+            trading_state = load_trading_state()
+        
         balance = KisKR.GetBalance()
+        if not balance:
+            logger.error("계좌 정보 조회 실패")
+            return 0
+            
+        total_money = float(balance.get('TotalMoney', 0))
+        remain_money = float(balance.get('RemainMoney', 0))
+        
+        if total_money <= 0:
+            logger.warning("계좌 총 자산이 0 이하입니다.")
+            return 0
+        
+        # 총 투자 가능 예산 계산
+        if trading_config.use_absolute_budget:
+            total_target_budget = trading_config.absolute_budget
+            strategy = trading_config.absolute_budget_strategy
+            
+            logger.info(f"💰 절대금액 예산 모드: {strategy}")
+            
+            if strategy == "proportional":
+                initial_asset = trading_config.initial_total_asset
+                
+                if initial_asset <= 0:
+                    initial_asset = total_money
+                    trading_config.config["initial_total_asset"] = initial_asset
+                    trading_config.save_config()
+                    logger.info(f"🎯 초기 총자산 설정: {initial_asset:,.0f}원")
+                
+                performance = (total_money - initial_asset) / initial_asset
+                
+                if performance > 0.2:
+                    multiplier = min(1.4, 1.0 + performance * 0.3)
+                elif performance > 0.1:
+                    multiplier = 1.0 + performance * 0.5
+                elif performance > 0.05:
+                    multiplier = 1.0 + performance * 0.8
+                elif performance > -0.05:
+                    multiplier = 1.0
+                elif performance > -0.1:
+                    multiplier = max(0.95, 1.0 + performance * 0.2)
+                elif performance > -0.2:
+                    multiplier = max(0.85, 1.0 + performance * 0.15)
+                else:
+                    multiplier = max(0.7, 1.0 + performance * 0.1)
+                
+                total_target_budget = total_target_budget * multiplier
+                
+                logger.info(f"  - 성과 기반 조정: {performance*100:+.1f}% → 배율 {multiplier:.3f}")
+                
+            elif strategy == "adaptive":
+                loss_tolerance = trading_config.budget_loss_tolerance
+                min_budget = total_target_budget * (1 - loss_tolerance)
+                
+                if total_money >= min_budget:
+                    total_target_budget = total_target_budget
+                else:
+                    total_target_budget = max(total_money, min_budget)
+            
+            # strategy == "strict"는 그대로 유지
+        else:
+            # 비율 기반 예산
+            total_target_budget = total_money * trading_config.trade_budget_ratio
+        
+        # 🎯 핵심: 이미 투자된 금액 차감
+        total_invested = get_total_invested_amount(trading_state)
+        remaining_target_budget = total_target_budget - total_invested
+        
+        # 현금 잔고와 비교하여 최종 사용 가능 예산 결정
+        available_budget = min(remaining_target_budget, remain_money)
+        
+        logger.info(f"📊 개선된 예산 계산:")
+        logger.info(f"  - 목표 총예산: {total_target_budget:,.0f}원")
+        logger.info(f"  - 이미 투자됨: {total_invested:,.0f}원")
+        logger.info(f"  - 남은 목표예산: {remaining_target_budget:,.0f}원")
+        logger.info(f"  - 현금 잔고: {remain_money:,.0f}원")
+        logger.info(f"  - 사용가능 예산: {available_budget:,.0f}원")
+        
+        return max(0, available_budget)
+        
+    except Exception as e:
+        logger.error(f"개선된 예산 계산 중 에러: {str(e)}")
+        return 0
+
+def get_remaining_budget_for_stock(stock_code, trading_state):
+    """특정 종목의 남은 투자 가능 예산 계산"""
+    try:
+        per_stock_limit = get_per_stock_budget_limit()
+        already_invested = get_invested_amount_for_stock(stock_code, trading_state)
+        remaining = per_stock_limit - already_invested
+        
+        stock_name = trading_config.target_stocks.get(stock_code, {}).get('name', stock_code)
+        logger.debug(f"💰 {stock_name}({stock_code}) 남은 예산: {remaining:,.0f}원 (한도: {per_stock_limit:,.0f}원, 투자됨: {already_invested:,.0f}원)")
+        
+        return max(0, remaining)
+        
+    except Exception as e:
+        logger.error(f"종목별 남은 예산 계산 중 오류 ({stock_code}): {str(e)}")
+        return 0    
+
+def get_budget_info_message():
+    """예산 정보 메시지 생성 - 종목별 분배 현황 포함 (개선됨)"""
+    try:
+        trading_state = load_trading_state()
+        balance = KisKR.GetBalance()
+        
         if not balance:
             return "계좌 정보 조회 실패"
         
         total_money = float(balance.get('TotalMoney', 0))
         remain_money = float(balance.get('RemainMoney', 0))
-        available_budget = get_available_budget()
         
+        # 예산 계산
+        total_available_budget = get_available_budget(trading_state)
+        total_invested = get_total_invested_amount(trading_state)
+        per_stock_limit = get_per_stock_budget_limit()
+        
+        # 기본 정보
         if trading_config.use_absolute_budget:
             strategy = trading_config.absolute_budget_strategy
             absolute_budget = trading_config.absolute_budget
             
-            if strategy == "proportional":
-                # 🔥 수정된 Proportional 모드 메시지
-                initial_asset = trading_config.initial_total_asset
-                
-                if initial_asset > 0:
-                    performance = (total_money - initial_asset) / initial_asset
-                    performance_pct = performance * 100
-                    
-                    # 배율 계산 (get_available_budget와 동일한 로직)
-                    if performance > 0.2:
-                        multiplier = min(1.4, 1.0 + performance * 0.3)
-                    elif performance > 0.1:
-                        multiplier = 1.0 + performance * 0.5
-                    elif performance > 0.05:
-                        multiplier = 1.0 + performance * 0.8
-                    elif performance > -0.05:
-                        multiplier = 1.0
-                    elif performance > -0.1:
-                        multiplier = max(0.95, 1.0 + performance * 0.2)
-                    elif performance > -0.2:
-                        multiplier = max(0.85, 1.0 + performance * 0.15)
-                    else:
-                        multiplier = max(0.7, 1.0 + performance * 0.1)
-                    
-                    budget_change = ((multiplier - 1.0) * 100)
-                    
-                    msg = f"⚖️ 점진적 비례형 예산 운용\n"
-                    msg += f"기준 예산: {absolute_budget:,.0f}원\n"
-                    msg += f"초기 자산: {initial_asset:,.0f}원\n"
-                    msg += f"현재 자산: {total_money:,.0f}원\n"
-                    msg += f"자산 성과: {performance_pct:+.1f}%\n"
-                    msg += f"예산 배율: {multiplier:.3f}배 ({budget_change:+.1f}%)\n"
-                    msg += f"현금 잔고: {remain_money:,.0f}원\n"
-                    msg += f"봇 운용 예산: {available_budget:,.0f}원"
-                else:
-                    msg = f"⚖️ 점진적 비례형 예산 운용 (초기화 중)\n"
-                    msg += f"기준 예산: {absolute_budget:,.0f}원\n"
-                    msg += f"현재 자산: {total_money:,.0f}원\n"
-                    msg += f"봇 운용 예산: {available_budget:,.0f}원"
-            
-            elif strategy == "adaptive":
-                # Adaptive 모드 메시지 (기존과 동일)
-                loss_tolerance = trading_config.budget_loss_tolerance
-                min_budget = absolute_budget * (1 - loss_tolerance)
-                
-                msg = f"🔄 적응형 절대금액 예산 운용\n"
-                msg += f"기준 예산: {absolute_budget:,.0f}원\n"
-                msg += f"손실 허용: {loss_tolerance*100:.0f}%\n"
-                msg += f"최소 예산: {min_budget:,.0f}원\n"
-                msg += f"현재 자산: {total_money:,.0f}원\n"
-                msg += f"현금 잔고: {remain_money:,.0f}원\n"
-                msg += f"봇 운용 예산: {available_budget:,.0f}원"
-            
-            else:  # strict 모드
-                # Strict 모드 메시지 (기존과 동일)
-                msg = f"🔒 엄격형 절대금액 예산 운용\n"
-                msg += f"설정 예산: {absolute_budget:,.0f}원 (고정)\n"
-                msg += f"현재 자산: {total_money:,.0f}원\n"
-                msg += f"현금 잔고: {remain_money:,.0f}원\n"
-                msg += f"봇 운용 예산: {available_budget:,.0f}원"
-        
+            msg = f"💰 절대금액 예산 운용 ({strategy})\n"
+            msg += f"설정 예산: {absolute_budget:,.0f}원\n"
         else:
-            # 비율 기반 예산 운용 (기존과 동일)
             msg = f"📊 비율 기반 예산 운용\n"
             msg += f"설정 비율: {trading_config.trade_budget_ratio*100:.1f}%\n"
-            msg += f"총 자산: {total_money:,.0f}원\n"
-            msg += f"현금 잔고: {remain_money:,.0f}원\n"
-            msg += f"봇 운용 예산: {available_budget:,.0f}원"
+        
+        msg += f"현재 자산: {total_money:,.0f}원\n"
+        msg += f"현금 잔고: {remain_money:,.0f}원\n"
+        msg += f"\n📈 투자 현황:\n"
+        msg += f"• 총 투자됨: {total_invested:,.0f}원\n"
+        msg += f"• 사용가능: {total_available_budget:,.0f}원\n"
+        msg += f"• 종목별 한도: {per_stock_limit:,.0f}원\n"
+        
+        # 종목별 투자 현황
+        msg += f"\n🎯 종목별 투자 현황:\n"
+        for stock_code, stock_config in trading_config.target_stocks.items():
+            if not stock_config.get('enabled', True):
+                continue
+                
+            stock_name = stock_config.get('name', stock_code)
+            invested = get_invested_amount_for_stock(stock_code, trading_state)
+            remaining = get_remaining_budget_for_stock(stock_code, trading_state)
+            usage_rate = (invested / per_stock_limit * 100) if per_stock_limit > 0 else 0
+            
+            if invested > 0:
+                msg += f"• {stock_name}: {invested:,.0f}원 ({usage_rate:.1f}%)\n"
+            else:
+                msg += f"• {stock_name}: 투자 대기 (가능: {remaining:,.0f}원)\n"
         
         return msg
         
     except Exception as e:
-        logger.error(f"예산 정보 메시지 생성 중 에러: {str(e)}")
+        logger.error(f"개선된 예산 정보 메시지 생성 중 에러: {str(e)}")
         return "예산 정보 조회 실패"
-    
+
 def get_safe_config_value(target_config, key, default_value):
     """종목별 설정에서 안전하게 값 가져오기"""
     try:
@@ -1551,54 +1691,60 @@ def save_trading_state(state):
 
 ################################### 매매 실행 ##################################
 
-def calculate_position_size(target_config, available_budget, stock_price):
-    """포지션 크기 계산 - 개선된 버전 (기존 함수명 유지)"""
+def calculate_position_size(target_config, stock_code, stock_price, trading_state):
+    """포지션 크기 계산 - 종목별 예산 한도 적용 (개선됨)"""
     try:
-        if stock_price <= 0 or available_budget <= 0:
-            return 0
-            
-        current_available_budget = get_available_budget()
-        usable_budget = min(available_budget, current_available_budget)
-        
-        if usable_budget <= 0:
+        if stock_price <= 0:
             return 0
         
-        # 🎯 1단계: 기본 배분율 확대
-        base_allocation = get_safe_config_value(target_config, 'allocation_ratio', 0.35)  # 25% → 35%
+        # 1. 종목별 남은 예산 확인
+        remaining_budget_for_stock = get_remaining_budget_for_stock(stock_code, trading_state)
         
-        # 🚀 2단계: 신호 강도별 배분 확대
+        if remaining_budget_for_stock <= 0:
+            stock_name = target_config.get('name', stock_code)
+            logger.info(f"❌ {stock_name}({stock_code}): 종목별 예산 한도 초과 (남은예산: {remaining_budget_for_stock:,.0f}원)")
+            return 0
+        
+        # 2. 전체 사용 가능 예산 확인
+        total_available_budget = get_available_budget(trading_state)
+        
+        if total_available_budget <= 0:
+            logger.info("❌ 전체 사용 가능 예산 부족")
+            return 0
+        
+        # 3. 실제 사용할 예산 결정 (둘 중 작은 값)
+        usable_budget = min(remaining_budget_for_stock, total_available_budget)
+        
+        # 4. 기본 배분율 적용
+        base_allocation = get_safe_config_value(target_config, 'allocation_ratio', 0.35)
+        
+        # 5. 신호 강도별 배분 조정
         signal_strength = target_config.get('last_signal_strength', 'NORMAL')
-        
-        # 신호 강도 배수 적용
         if signal_strength == 'STRONG':
-            strength_multiplier = 1.4  # 40% 증가
+            strength_multiplier = 1.2  # 20% 증가 (기존 40%에서 축소)
         else:
-            strength_multiplier = 1.2  # 20% 증가
+            strength_multiplier = 1.0   # 기본값
         
-        # 전체 배분율 계산
+        # 6. 최종 배분 예산 계산
         enhanced_allocation = base_allocation * strength_multiplier
-        
-        # 🚨 리스크 관리 (최대 한도 확대)
-        max_allocation = 0.50  # 35% → 50% (더 공격적)
-        enhanced_allocation = min(enhanced_allocation, max_allocation)
-        
         allocated_budget = usable_budget * enhanced_allocation
         
-        # 최소 주문 금액 체크
+        # 7. 최소 주문 금액 체크
         min_order_amount = get_safe_config_value(target_config, 'min_order_amount', 10000)
         if allocated_budget < min_order_amount:
             return 0
         
-        # 기본 수량 계산
+        # 8. 기본 수량 계산
         base_quantity = int(allocated_budget / stock_price)
         
         if base_quantity <= 0:
             return 0
         
-        # 수수료 고려한 조정
+        # 9. 수수료 고려한 조정
         estimated_fee = calculate_trading_fee(stock_price, base_quantity, True)
         total_needed = (stock_price * base_quantity) + estimated_fee
         
+        # 예산 내에서 수량 조정
         while total_needed > allocated_budget and base_quantity > 0:
             base_quantity -= 1
             if base_quantity > 0:
@@ -1610,23 +1756,30 @@ def calculate_position_size(target_config, available_budget, stock_price):
         if base_quantity <= 0:
             return 0
         
-        # 최종 검증
+        # 10. 최종 검증
         final_amount = stock_price * base_quantity
         final_fee = calculate_trading_fee(stock_price, base_quantity, True)
         final_total = final_amount + final_fee
         
-        if final_total > allocated_budget:
+        # 🎯 추가 검증: 종목별 한도 재확인
+        current_invested = get_invested_amount_for_stock(stock_code, trading_state)
+        per_stock_limit = get_per_stock_budget_limit()
+        
+        if (current_invested + final_total) > per_stock_limit * 1.01:  # 1% 여유 허용
+            logger.warning(f"⚠️ 종목별 한도 초과 위험: {current_invested + final_total:,.0f}원 > {per_stock_limit:,.0f}원")
             return 0
         
-        logger.info(f"🚀 개선된 포지션 계산:")
-        logger.info(f"   기본 배분: {base_allocation*100:.1f}%")
-        logger.info(f"   신호 배수: {strength_multiplier:.2f} (강도: {signal_strength})")
-        logger.info(f"   최종 배분: {enhanced_allocation*100:.1f}% ({base_quantity}주, {final_total:,.0f}원)")
+        stock_name = target_config.get('name', stock_code)
+        logger.info(f"🎯 개선된 포지션 계산: {stock_name}({stock_code})")
+        logger.info(f"   종목별 남은예산: {remaining_budget_for_stock:,.0f}원")
+        logger.info(f"   배분율: {enhanced_allocation*100:.1f}% (기본: {base_allocation*100:.1f}% × {strength_multiplier:.2f})")
+        logger.info(f"   최종 수량: {base_quantity}주 ({final_total:,.0f}원)")
+        logger.info(f"   투자 후 종목별 총투자: {current_invested + final_total:,.0f}원 / {per_stock_limit:,.0f}원")
         
         return base_quantity
         
     except Exception as e:
-        logger.error(f"포지션 계산 중 에러: {str(e)}")
+        logger.error(f"개선된 포지션 계산 중 에러: {str(e)}")
         return 0
 
 def execute_buy_order(stock_code, target_config, quantity, price):
@@ -2035,43 +2188,58 @@ def process_positions(trading_state):
         return trading_state
 
 def execute_buy_opportunities(buy_opportunities, trading_state):
-    """매수 기회 실행 (분봉 타이밍 옵션 추가 - 수정된 버전)"""
+    """매수 기회 실행 - 예산 관리 강화 (개선됨)"""
     try:
         if not buy_opportunities:
             return trading_state
         
-        # 🎯 분봉 타이밍 사용 여부 확인
+        # 분봉 타이밍 사용 여부 확인
         use_intraday = trading_config.use_intraday_timing if hasattr(trading_config, 'use_intraday_timing') else False
         
-        # 새로운 예산 계산 함수 사용
-        available_budget = get_available_budget()
+        # 전체 사용 가능 예산 확인
+        total_available_budget = get_available_budget(trading_state)
         
-        if available_budget <= 0:
-            logger.info("사용 가능한 예산이 없습니다.")
+        if total_available_budget <= 0:
+            logger.info("💰 전체 사용 가능 예산이 없습니다.")
             return trading_state
         
-        # Config에서 일일 손실/수익 한도 확인
+        # 현재 포지션 수 확인 - 활성 종목 수 기반
+        current_positions = len(trading_state['positions'])
+        max_allowed_positions = get_active_target_stock_count()
+        max_new_positions = max_allowed_positions - current_positions
+        
+        if max_new_positions <= 0:
+            logger.info(f"📊 최대 보유 종목 수 도달: {current_positions}/{max_allowed_positions}")
+            return trading_state
+        
+        # 일일 손익 한도 확인
         daily_stats = trading_state['daily_stats']
         if daily_stats['start_balance'] > 0:
             daily_profit_rate = daily_stats['total_profit'] / daily_stats['start_balance']
             
             if daily_profit_rate <= trading_config.max_daily_loss:
-                logger.info(f"일일 손실 한도 도달: {daily_profit_rate*100:.1f}%")
+                logger.info(f"📉 일일 손실 한도 도달: {daily_profit_rate*100:.1f}%")
                 return trading_state
             
             if daily_profit_rate >= trading_config.max_daily_profit:
-                logger.info(f"일일 수익 한도 도달: {daily_profit_rate*100:.1f}%")
+                logger.info(f"📈 일일 수익 한도 도달: {daily_profit_rate*100:.1f}%")
                 return trading_state
         
-        current_positions = len(trading_state['positions'])
-        max_new_positions = trading_config.max_positions - current_positions
+        # 예산 현황 출력
+        total_invested = get_total_invested_amount(trading_state)
+        per_stock_limit = get_per_stock_budget_limit()
+        active_stock_count = get_active_target_stock_count()
         
-        logger.info(f"매수 실행 준비: (분봉타이밍: {'ON' if use_intraday else 'OFF'})")
-        logger.info(f"  - 사용 가능 예산: {available_budget:,.0f}원")
-        logger.info(f"  - 현재 보유 종목: {current_positions}개/{trading_config.max_positions}개")
-        logger.info(f"  - 추가 매수 가능: {max_new_positions}개")
+        logger.info(f"💰 매수 실행 준비 (개선된 예산 관리):")
+        logger.info(f"  - 전체 사용가능 예산: {total_available_budget:,.0f}원")
+        logger.info(f"  - 이미 투자된 금액: {total_invested:,.0f}원")
+        logger.info(f"  - 활성 타겟 종목 수: {active_stock_count}개")
+        logger.info(f"  - 종목별 예산 한도: {per_stock_limit:,.0f}원")
+        logger.info(f"  - 현재/최대 보유종목: {current_positions}/{max_allowed_positions}개")
+        logger.info(f"  - 분봉 타이밍: {'ON' if use_intraday else 'OFF'}")
         
-        # 상위 종목들에 대해 매수 실행
+        # 매수 실행
+        executed_count = 0
         for i, opportunity in enumerate(buy_opportunities[:max_new_positions]):
             try:
                 stock_code = opportunity['stock_code']
@@ -2079,15 +2247,19 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                 stock_price = opportunity['price']
                 target_config = opportunity['target_config']
                 
-                # 🎯 분봉 타이밍 체크 (옵션)
+                # 종목별 남은 예산 확인
+                remaining_budget = get_remaining_budget_for_stock(stock_code, trading_state)
+                if remaining_budget <= 10000:  # 최소 1만원 이상
+                    logger.info(f"⏭️ {stock_name}({stock_code}): 종목별 예산 부족 ({remaining_budget:,.0f}원)")
+                    continue
+                
+                # 분봉 타이밍 체크 (옵션)
                 if use_intraday:
                     logger.info(f"🔍 분봉 진입 타이밍 분석: {stock_name}({stock_code})")
                     timing_analysis = analyze_intraday_entry_timing(stock_code, target_config)
                     
                     if not timing_analysis['enter_now']:
-                        logger.info(f"⏳ 분봉 진입 타이밍 대기: {stock_name}({stock_code})")
-                        logger.info(f"   사유: {timing_analysis['reason']}")
-                        logger.info(f"   진입점수: {timing_analysis.get('entry_score', 0)}점")
+                        logger.info(f"⏳ 분봉 진입 타이밍 대기: {stock_name}({stock_code}) - {timing_analysis['reason']}")
                         
                         # 매수 대기 리스트에 추가
                         if 'buy_candidates' not in trading_state:
@@ -2100,36 +2272,18 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                             'last_intraday_score': timing_analysis.get('entry_score', 0),
                             'last_check_time': datetime.datetime.now().isoformat()
                         }
-                        
-                        logger.info(f"   → 매수 대기 리스트 등록 완료")
-                        continue  # 이번 루프는 스킵하고 다음 종목으로
-                    else:
-                        logger.info(f"✅ 분봉 진입 타이밍 양호: {stock_name}({stock_code})")
-                        logger.info(f"   사유: {timing_analysis['reason']}")
-                        logger.info(f"   진입점수: {timing_analysis.get('entry_score', 0)}점")
-                        for signal in timing_analysis.get('entry_signals', []):
-                            logger.info(f"   - {signal}")
-                else:
-                    logger.info(f"📊 일봉 신호 기반 즉시 매수: {stock_name}({stock_code})")
+                        continue
                 
-                # 매수 전 예산 재확인 (실시간)
-                current_budget = get_available_budget()
-                if current_budget <= 0:
-                    logger.info("예산 소진으로 매수 중단")
-                    break
-                
-                # 포지션 크기 계산 (현재 예산으로)
-                quantity = calculate_position_size(target_config, current_budget, stock_price)
+                # 개선된 포지션 크기 계산
+                quantity = calculate_position_size(target_config, stock_code, stock_price, trading_state)
                 
                 if quantity < 1:
-                    logger.info(f"매수 수량 부족: {stock_name}({stock_code})")
+                    logger.info(f"❌ {stock_name}({stock_code}): 매수 수량 부족")
                     continue
                 
                 logger.info(f"🔵 매수 시도: {stock_name}({stock_code})")
                 logger.info(f"   수량: {quantity}주, 가격: {stock_price:,.0f}원")
-                logger.info(f"   일봉점수: {opportunity['score']}/{opportunity['min_score']}점")
-                if use_intraday:
-                    logger.info(f"   분봉점수: {timing_analysis.get('entry_score', 0)}점")
+                logger.info(f"   투자금액: {stock_price * quantity:,.0f}원")
                 
                 # 매수 주문 실행
                 executed_price, executed_amount = execute_buy_order(
@@ -2140,7 +2294,7 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                     # 매수 수수료 계산
                     buy_fee = calculate_trading_fee(executed_price, executed_amount, True)
                     
-                    # 포지션 정보 저장 (종목별 설정 포함)
+                    # 포지션 정보 저장
                     position_info = {
                         'stock_code': stock_code,
                         'stock_name': stock_name,
@@ -2152,84 +2306,61 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                         'trailing_stop': executed_price * (1 - target_config.get('trailing_stop', trading_config.trailing_stop_ratio)),
                         'target_config': target_config,
                         'buy_analysis': opportunity['analysis'],
-                        'signal_strength': target_config.get('last_signal_strength', 'NORMAL')
+                        'signal_strength': target_config.get('last_signal_strength', 'NORMAL'),
+                        'entry_method': 'intraday_timing' if use_intraday else 'daily_signal'
                     }
                     
-                    # 분봉 타이밍 정보도 저장 (사용한 경우)
                     if use_intraday:
                         position_info['intraday_analysis'] = timing_analysis
-                        position_info['entry_method'] = 'intraday_timing'
-                    else:
-                        position_info['entry_method'] = 'daily_signal'
                     
                     trading_state['positions'][stock_code] = position_info
+                    executed_count += 1
                     
-                    # 🔥 개선된 매수 완료 알림 (매수 사유 포함)
+                    # 매수 완료 알림
+                    invested_amount = executed_price * executed_amount
+                    updated_total_invested = get_total_invested_amount(trading_state) + invested_amount
+                    active_stock_count = get_active_target_stock_count()
+                    total_target_budget = get_per_stock_budget_limit() * active_stock_count
+                    remaining_total_budget = total_target_budget - updated_total_invested
+                    
                     msg = f"✅ 매수 완료: {stock_name}({stock_code})\n"
-                    msg += f"매수가: {executed_price:,.0f}원\n"
-                    msg += f"수량: {executed_amount}주\n"
-                    msg += f"투자금액: {executed_price * executed_amount:,.0f}원\n"
+                    msg += f"매수가: {executed_price:,.0f}원 × {executed_amount}주\n"
+                    msg += f"투자금액: {invested_amount:,.0f}원\n"
                     msg += f"수수료: {buy_fee:,.0f}원\n"
-                    msg += f"목표수익률: {target_config.get('profit_target', trading_config.take_profit_ratio)*100:.1f}%\n"
-                    msg += f"손절률: {target_config.get('stop_loss', trading_config.stop_loss_ratio)*100:.1f}%\n"
+                    msg += f"\n📊 예산 현황:"
+                    msg += f"\n• 전체 투자: {updated_total_invested:,.0f}원"
+                    msg += f"\n• 남은 예산: {remaining_total_budget:,.0f}원"
+                    msg += f"\n• 종목별 한도: {per_stock_limit:,.0f}원"
+                    msg += f"\n• 활성 종목 수: {active_stock_count}개"
                     
-                    if use_intraday:
-                        msg += f"진입방식: 분봉 타이밍 ({timing_analysis.get('entry_score', 0)}점)\n"
-                    else:
-                        msg += f"진입방식: 일봉 신호 ({opportunity['score']}점)\n"
-                    
-                    # 📊 일봉 매수 사유 추가
-                    if opportunity.get('signals'):
-                        msg += f"\n📊 일봉 매수 사유:\n"
-                        # 상위 5개 신호만 표시 (Discord 메시지 길이 제한 고려)
-                        for signal in opportunity['signals'][:5]:
-                            msg += f"• {signal}\n"
-                    
-                    # 🕐 분봉 신호 추가 (분봉 타이밍 사용시)
-                    if use_intraday and timing_analysis.get('entry_signals'):
-                        msg += f"\n🕐 분봉 진입 신호:\n"
-                        # 상위 3개 신호만 표시
-                        for signal in timing_analysis['entry_signals'][:3]:
-                            msg += f"• {signal}\n"
-                    
-                    # 💰 예산 정보
-                    msg += f"\n💰 남은 예산: {get_available_budget():,.0f}원"
-                    
-                    # 📈 기술적 지표 요약 (간단히)
-                    analysis = opportunity.get('analysis', {})
-                    if analysis:
-                        msg += f"\n📈 기술적 지표:"
-                        msg += f"\n• RSI: {analysis.get('rsi', 0):.1f}"
-                        if analysis.get('price_position') is not None:
-                            msg += f" | 가격위치: {analysis.get('price_position', 0)*100:.0f}%"
-                        if analysis.get('volume_surge', 1) > 1:
-                            msg += f" | 거래량: {analysis.get('volume_surge', 1):.1f}배"
+                    # 종목별 투자 현황
+                    current_stock_invested = get_invested_amount_for_stock(stock_code, trading_state) + invested_amount
+                    msg += f"\n• {stock_name} 투자: {current_stock_invested:,.0f}원/{per_stock_limit:,.0f}원"
                     
                     logger.info(msg)
-                    
-                    # Discord 알림도 전송
                     if hasattr(trading_config, 'use_discord_alert') and trading_config.config.get('use_discord_alert', True):
                         discord_alert.SendMessage(msg)
+                    
+                    # 전체 예산 재확인 (다음 매수를 위해)
+                    total_available_budget = get_available_budget(trading_state)
+                    if total_available_budget < 10000:  # 1만원 미만이면 매수 중단
+                        logger.info("💰 전체 예산 부족으로 매수 중단")
+                        break
+                
                 else:
-                    logger.error(f"매수 주문 실패: {stock_name}({stock_code})")
+                    logger.error(f"❌ 매수 주문 실패: {stock_name}({stock_code})")
                 
             except Exception as e:
                 logger.error(f"매수 실행 중 에러 ({stock_code}): {str(e)}")
                 continue
         
-        # 매수 대기 리스트 상태 로깅
-        if use_intraday and 'buy_candidates' in trading_state and trading_state['buy_candidates']:
-            logger.info(f"📋 현재 매수 대기 종목: {len(trading_state['buy_candidates'])}개")
-            for code, info in trading_state['buy_candidates'].items():
-                wait_start = datetime.datetime.fromisoformat(info['wait_start_time'])
-                wait_minutes = (datetime.datetime.now() - wait_start).total_seconds() / 60
-                stock_name = info['opportunity']['stock_name']
-                logger.info(f"   - {stock_name}({code}): {wait_minutes:.0f}분 대기중 (분봉점수: {info['last_intraday_score']})")
+        if executed_count > 0:
+            logger.info(f"🎯 매수 실행 완료: {executed_count}개 종목")
         
         return trading_state
         
     except Exception as e:
-        logger.error(f"매수 기회 실행 중 에러: {str(e)}")
+        logger.error(f"개선된 매수 실행 중 에러: {str(e)}")
         return trading_state
 
 def create_config_file(config_path: str = "target_stock_config.json") -> None:
@@ -2374,7 +2505,7 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
             "trade_budget_ratio": 0.85,             # 0.90 → 0.85 (약간 보수적)
             
             # 포지션 관리 - 일부만 최적화
-            "max_positions": 3,                     # 🎯 3종목으로 설정
+            # "max_positions": 3,                     # 🎯 3종목으로 설정
             "min_stock_price": 3000,                # 기존 유지
             "max_stock_price": 200000,              # 기존 유지
             
@@ -2463,8 +2594,11 @@ def main():
     discord_alert.SendMessage(msg)
     
     # 타겟 종목 현황 출력 (Config 사용)
-    enabled_count = sum(1 for stock_config in config.target_stocks.values() if stock_config.get('enabled', True))
-    logger.info(f"활성화된 타겟 종목: {enabled_count}개")
+    # enabled_count = sum(1 for stock_config in config.target_stocks.values() if stock_config.get('enabled', True))
+    # logger.info(f"활성화된 타겟 종목: {enabled_count}개")
+    enabled_count = get_active_target_stock_count()
+    logger.info(f"활성화된 타겟 종목: {enabled_count}개 (자동 계산)")
+
     for stock_code, stock_config in config.target_stocks.items():
         if stock_config.get('enabled', True):
             logger.info(f"  - {stock_config.get('name', stock_code)}({stock_code}): "
