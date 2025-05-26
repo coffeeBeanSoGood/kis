@@ -2281,8 +2281,29 @@ def send_target_stock_status():
 ################################### 메인 로직 ##################################
 
 def scan_target_stocks(trading_state):
-    """타겟 종목 매수 기회 스캔 (Config 적용)"""
+    """타겟 종목 매수 기회 스캔 (Config 적용) - 재매수 방지 포함"""
     try:
+        # 🔥 추가: 만료된 재매수 방지 기록 정리
+        if 'recent_sells' in trading_state:
+            expired_stocks = []
+            now = datetime.datetime.now()
+            
+            for stock_code, sell_info in trading_state['recent_sells'].items():
+                try:
+                    sell_time = datetime.datetime.fromisoformat(sell_info['sell_time'])
+                    cooldown_hours = sell_info.get('cooldown_hours', 2)
+                    
+                    if (now - sell_time).total_seconds() / 3600 > cooldown_hours:
+                        expired_stocks.append(stock_code)
+                except:
+                    expired_stocks.append(stock_code)  # 파싱 오류시 제거
+            
+            for stock_code in expired_stocks:
+                del trading_state['recent_sells'][stock_code]
+            
+            if expired_stocks:
+                logger.info(f"재매수 방지 만료: {len(expired_stocks)}개 종목")
+        
         buy_opportunities = []
         current_positions = len(trading_state['positions'])
         
@@ -2299,9 +2320,25 @@ def scan_target_stocks(trading_state):
                 if not target_config.get('enabled', True):
                     continue
                     
-                # 이미 보유 중인 종목은 제외
+                # 이미 보유 중인 종목은 제외 (봇 기록 기준)
                 if stock_code in trading_state['positions']:
                     continue
+                
+                # 🔥 추가: 재매수 방지 체크
+                if 'recent_sells' in trading_state and stock_code in trading_state['recent_sells']:
+                    sell_info = trading_state['recent_sells'][stock_code]
+                    try:
+                        sell_time = datetime.datetime.fromisoformat(sell_info['sell_time'])
+                        cooldown_hours = sell_info.get('cooldown_hours', 2)
+                        elapsed_hours = (datetime.datetime.now() - sell_time).total_seconds() / 3600
+                        
+                        if elapsed_hours < cooldown_hours:
+                            remaining_hours = cooldown_hours - elapsed_hours
+                            stock_name = target_config.get('name', stock_code)
+                            logger.debug(f"재매수 방지: {stock_name}({stock_code}) - 남은시간 {remaining_hours:.1f}시간")
+                            continue
+                    except:
+                        pass  # 파싱 오류시 그냥 진행
                 
                 # Config에서 가격 필터링
                 current_price = KisKR.GetCurrentPrice(stock_code)
@@ -2365,35 +2402,57 @@ def update_trailing_stop(position, current_price, target_config):
         return position
 
 def process_positions(trading_state):
-    """보유 포지션 관리 (Config 적용)"""
+    """보유 포지션 관리 - API 보유 vs 봇 미기록 케이스 처리 추가"""
     try:
         my_stocks = KisKR.GetMyStockList()
         positions_to_remove = []
         
+        # 🔥 1단계: 봇 기록 종목들 처리 (기존 로직)
         for stock_code, position in trading_state['positions'].items():
             try:
                 # 타겟 종목이 아닌 경우 스킵
                 if stock_code not in trading_config.target_stocks:
                     continue
                 
-                # 실제 보유 여부 확인
+                # API에서 실제 보유 확인
                 actual_holding = None
-                for stock in my_stocks:
-                    if stock['StockCode'] == stock_code:
-                        actual_holding = stock
-                        break
-                
-                if not actual_holding:
-                    logger.warning(f"{stock_code}: 포지션 정보는 있으나 실제 보유하지 않음")
-                    positions_to_remove.append(stock_code)
-                    continue
+                if my_stocks:
+                    for stock in my_stocks:
+                        if stock['StockCode'] == stock_code:
+                            actual_holding = stock
+                            break
                 
                 target_config = trading_config.target_stocks[stock_code]
-                current_amount = int(actual_holding.get('StockAmt', 0))
+                stock_name = target_config.get('name', stock_code)
+                
+                # 🔥 봇 기록의 수량 사용 (API와 무관)
+                current_amount = position.get('amount', 0)
                 
                 if current_amount <= 0:
+                    logger.info(f"봇 기록상 보유 수량 0 - 포지션 제거: {stock_name}({stock_code})")
                     positions_to_remove.append(stock_code)
                     continue
+                
+                # 🔥 API 검증 결과 알림 + Discord 알림 (포지션 삭제 없음)
+                if my_stocks:  # API 조회 성공시에만 비교
+                    if not actual_holding:
+                        warning_msg = f"⚠️ API 불일치: {stock_name}({stock_code})\n봇 기록: 보유 중 ({current_amount}주)\n실제 계좌: 미보유\n→ 봇 기록 유지"
+                        logger.warning(warning_msg)
+                        discord_alert.SendMessage(warning_msg)
+                    else:
+                        actual_amount = int(actual_holding.get('StockAmt', 0))
+                        
+                        if actual_amount != current_amount:
+                            warning_msg = f"⚠️ 수량 불일치: {stock_name}({stock_code})\n봇 기록: {current_amount}주\n실제 계좌: {actual_amount}주\n→ 봇 기록 유지"
+                            logger.warning(warning_msg)
+                            discord_alert.SendMessage(warning_msg)
+                        
+                        if actual_amount <= 0:
+                            warning_msg = f"⚠️ 실제 보유량 0: {stock_name}({stock_code})\n봇 기록: {current_amount}주\n실제 계좌: 0주\n→ 봇 기록 유지"
+                            logger.warning(warning_msg)
+                            discord_alert.SendMessage(warning_msg)
+                else:
+                    logger.debug(f"API 조회 실패 - 봇 기록으로만 관리: {stock_name}({stock_code})")
                 
                 # 종목 데이터 조회
                 stock_data = get_stock_data(stock_code)
@@ -2410,11 +2469,11 @@ def process_positions(trading_state):
                 sell_analysis = analyze_sell_signal(stock_data, position, target_config)
                 
                 if sell_analysis['is_sell_signal']:
-                    logger.info(f"🔴 매도 신호 감지: {target_config.get('name', stock_code)}({stock_code})")
+                    logger.info(f"🔴 매도 신호 감지: {stock_name}({stock_code})")
                     logger.info(f"   유형: {sell_analysis['sell_type']}")
                     logger.info(f"   이유: {sell_analysis['reason']}")
                     
-                    # 매도 주문 실행
+                    # 매도 주문 실행 (봇 기록 수량으로)
                     executed_price, executed_amount = execute_sell_order(
                         stock_code, target_config, current_amount
                     )
@@ -2435,54 +2494,86 @@ def process_positions(trading_state):
                         if net_profit > 0:
                             trading_state['daily_stats']['winning_trades'] += 1
                         
+                        # 🔥 재매수 방지 기록
+                        if 'recent_sells' not in trading_state:
+                            trading_state['recent_sells'] = {}
+                        
+                        trading_state['recent_sells'][stock_code] = {
+                            'sell_time': datetime.datetime.now().isoformat(),
+                            'sell_reason': sell_analysis['sell_type'],
+                            'cooldown_hours': 2
+                        }
+                        
                         # 매도 완료 알림
-                        msg = f"💰 매도 완료: {target_config.get('name', stock_code)}({stock_code})\n"
+                        msg = f"💰 매도 완료: {stock_name}({stock_code})\n"
                         msg += f"매도가: {executed_price:,.0f}원\n"
                         msg += f"수량: {executed_amount}주\n"
                         msg += f"순손익: {net_profit:,.0f}원 ({profit_rate:.2f}%)\n"
-                        msg += f"매도사유: {sell_analysis['reason']}"
+                        msg += f"매도사유: {sell_analysis['reason']}\n"
+                        msg += f"재매수 방지: 2시간"
                         
                         logger.info(msg)
                         discord_alert.SendMessage(msg)
                         
-                        # 🔥 새로 추가: 적응형 전략 학습
+                        # 적응형 전략 학습
                         if trading_config.use_adaptive_strategy:
                             try:
-                                # 매도 시점의 시장 환경 확인
                                 stock_env = sell_analysis.get('stock_environment', 'sideways')
-                                
-                                # 적응형 전략 업데이트
                                 adaptive_strategy = AdaptiveMarketStrategy("bb_adaptive_strategy.json")
                                 adaptive_strategy.update_performance(
                                     stock_code, 
                                     stock_env, 
                                     win=(net_profit > 0)
                                 )
-                                
                                 win_lose = "승리" if net_profit > 0 else "패배"
-                                logger.info(f"🧠 적응형 전략 학습 완료: {stock_code} ({stock_env}) - {win_lose}")
-                                
+                                logger.info(f"🧠 적응형 전략 학습: {stock_code} ({stock_env}) - {win_lose}")
                             except Exception as e:
-                                logger.error(f"적응형 전략 학습 중 오류: {str(e)}")
+                                logger.error(f"적응형 전략 학습 오류: {str(e)}")
+                        
                         # 포지션 제거
                         positions_to_remove.append(stock_code)
                     else:
-                        logger.error(f"매도 주문 실패: {target_config.get('name', stock_code)}({stock_code})")
+                        logger.error(f"매도 주문 실패: {stock_name}({stock_code})")
                 
             except Exception as e:
-                logger.error(f"포지션 처리 중 에러 ({stock_code}): {str(e)}")
+                logger.error(f"포지션 처리 오류 ({stock_code}): {str(e)}")
                 continue
+        
+        # 🔥 2단계: API에는 있지만 봇 기록에 없는 종목 체크 (새로 추가)
+        if my_stocks:  # API 조회 성공시에만
+            bot_tracked_stocks = set(trading_state['positions'].keys())
+            
+            for stock in my_stocks:
+                stock_code = stock['StockCode']
+                actual_amount = int(stock.get('StockAmt', 0))
+                
+                # 타겟 종목이고, 실제 보유량이 있고, 봇 기록에 없는 경우
+                if (stock_code in trading_config.target_stocks and 
+                    actual_amount > 0 and 
+                    stock_code not in bot_tracked_stocks):
+                    
+                    stock_name = trading_config.target_stocks[stock_code].get('name', stock_code)
+                    current_price = float(stock.get('NowPrice', 0))
+                    
+                    warning_msg = f"📊 외부 보유 감지: {stock_name}({stock_code})\n"
+                    warning_msg += f"실제 계좌: {actual_amount}주 (현재가: {current_price:,.0f}원)\n"
+                    warning_msg += f"봇 기록: 없음\n"
+                    warning_msg += f"→ 다른 앱에서 매수한 것으로 추정\n"
+                    warning_msg += f"→ 봇 관리 대상 아님 (독립 운영)"
+                    
+                    logger.info(warning_msg)
+                    discord_alert.SendMessage(warning_msg)
         
         # 제거할 포지션 정리
         for stock_code in positions_to_remove:
             if stock_code in trading_state['positions']:
                 del trading_state['positions'][stock_code]
-                logger.info(f"포지션 제거: {stock_code}")
+                logger.info(f"포지션 제거 완료: {stock_code}")
         
         return trading_state
         
     except Exception as e:
-        logger.error(f"포지션 관리 중 에러: {str(e)}")
+        logger.error(f"포지션 관리 오류: {str(e)}")
         return trading_state
 
 def execute_buy_opportunities(buy_opportunities, trading_state):
@@ -2923,16 +3014,19 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
             "max_daily_loss": -0.06,                # -0.04 → -0.06 (완화)
             "max_daily_profit": 0.08,               # 0.06 → 0.08 (기회 확대)
             
-            # 🎯 기술적 분석 설정 - 매수 기회 확대
-            "rsi_period": 14,                       # 기존 유지
-            "rsi_oversold": 35,                     # 30 → 35 (기회 증가)
-            "rsi_overbought": 75,                   # 70 → 75 (매도 늦춤)
-            "macd_fast": 12,                        # 기존 유지
-            "macd_slow": 26,                        # 기존 유지
-            "macd_signal": 9,                       # 기존 유지
-            "bb_period": 20,                        # 기존 유지
-            "bb_std": 2.0,                          # 기존 유지
-            
+            # 🎯 기술적 분석 설정 - 매수 기회 확대 → 제한
+            "rsi_period": 14,
+            "rsi_oversold": 35,
+            "rsi_overbought": 75,
+            "macd_fast": 12,
+            "macd_slow": 26,
+            "macd_signal": 9,
+            "bb_period": 20,
+            "bb_std": 2.0,
+
+            # 🔥 전역 기본 매수 기준 상향
+            "default_min_score": 40,  # 새로 추가
+
             # 적응형 전략 사용 설정 - 기존 유지
             "use_adaptive_strategy": True,
             "use_trend_filter": True,
