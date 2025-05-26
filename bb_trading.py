@@ -345,12 +345,12 @@ logger.setLevel(logging.INFO)
 if logger.handlers:
     logger.handlers.clear()
 
-log_file = os.path.join(log_directory, 'target_stock_trading.log')
+log_file = os.path.join(log_directory, 'bb_trading.log')
 file_handler = TimedRotatingFileHandler(
     log_file,
     when='midnight',
     interval=1,
-    backupCount=7,
+    backupCount=3,
     encoding='utf-8'
 )
 file_handler.suffix = "%Y%m%d"
@@ -2164,7 +2164,7 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                     
                     trading_state['positions'][stock_code] = position_info
                     
-                    # 매수 완료 알림
+                    # 🔥 개선된 매수 완료 알림 (매수 사유 포함)
                     msg = f"✅ 매수 완료: {stock_name}({stock_code})\n"
                     msg += f"매수가: {executed_price:,.0f}원\n"
                     msg += f"수량: {executed_amount}주\n"
@@ -2178,7 +2178,32 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                     else:
                         msg += f"진입방식: 일봉 신호 ({opportunity['score']}점)\n"
                     
-                    msg += f"남은 예산: {get_available_budget():,.0f}원"
+                    # 📊 일봉 매수 사유 추가
+                    if opportunity.get('signals'):
+                        msg += f"\n📊 일봉 매수 사유:\n"
+                        # 상위 5개 신호만 표시 (Discord 메시지 길이 제한 고려)
+                        for signal in opportunity['signals'][:5]:
+                            msg += f"• {signal}\n"
+                    
+                    # 🕐 분봉 신호 추가 (분봉 타이밍 사용시)
+                    if use_intraday and timing_analysis.get('entry_signals'):
+                        msg += f"\n🕐 분봉 진입 신호:\n"
+                        # 상위 3개 신호만 표시
+                        for signal in timing_analysis['entry_signals'][:3]:
+                            msg += f"• {signal}\n"
+                    
+                    # 💰 예산 정보
+                    msg += f"\n💰 남은 예산: {get_available_budget():,.0f}원"
+                    
+                    # 📈 기술적 지표 요약 (간단히)
+                    analysis = opportunity.get('analysis', {})
+                    if analysis:
+                        msg += f"\n📈 기술적 지표:"
+                        msg += f"\n• RSI: {analysis.get('rsi', 0):.1f}"
+                        if analysis.get('price_position') is not None:
+                            msg += f" | 가격위치: {analysis.get('price_position', 0)*100:.0f}%"
+                        if analysis.get('volume_surge', 1) > 1:
+                            msg += f" | 거래량: {analysis.get('volume_surge', 1):.1f}배"
                     
                     logger.info(msg)
                     
