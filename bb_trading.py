@@ -1013,7 +1013,7 @@ def get_stock_data(stock_code):
 ################################### 매매 신호 분석 ##################################
 
 def analyze_buy_signal(stock_data, target_config):
-    """매수 신호 분석 - 조건부 차단 방식 (균형잡힌 버전)"""
+    """매수 신호 분석 - 조건부 차단 방식 (균형잡힌 버전) - 디버깅 추가"""
     try:
         signals = []
         score = 0
@@ -1022,7 +1022,12 @@ def analyze_buy_signal(stock_data, target_config):
         current_price = stock_data['current_price']
         rsi = stock_data['rsi']
         df = stock_data['ohlcv_data']
-
+        
+        # ========== 디버깅 로그 시작 ==========
+        stock_name = target_config.get('name', stock_code)
+        logger.info(f"🎯 [{stock_code}] {stock_name} 매수 신호 분석 시작")
+        logger.info(f"📊 [{stock_code}] 기본 데이터: 현재가 {current_price:,}원, RSI {rsi:.1f}")
+        
         # 🔍 극한 조건들 미리 계산
         
         # 1) 가격 위치 계산
@@ -1033,11 +1038,15 @@ def analyze_buy_signal(stock_data, target_config):
             if recent_high_20d > recent_low_20d:
                 price_position = (current_price - recent_low_20d) / (recent_high_20d - recent_low_20d)
         
+        logger.info(f"📍 [{stock_code}] 가격 위치: {price_position*100:.1f}% (20일 구간)")
+        
         # 2) 볼린저밴드 위치 계산
         bb_upper = stock_data.get('bb_upper', 0)
         bb_position_ratio = 0.5  # 기본값
         if bb_upper > 0:
             bb_position_ratio = current_price / bb_upper
+        
+        logger.info(f"📈 [{stock_code}] 볼린저밴드: 상단 {bb_upper:,.0f}원, 비율 {bb_position_ratio:.3f}")
         
         # 3) 거래량 비율 계산
         volume_ratio = 1.0
@@ -1045,6 +1054,8 @@ def analyze_buy_signal(stock_data, target_config):
             recent_volume = df['volume'].iloc[-1]
             avg_volume_20d = df['volume'].rolling(20).mean().iloc[-1]
             volume_ratio = recent_volume / avg_volume_20d if avg_volume_20d > 0 else 1
+        
+        logger.info(f"📊 [{stock_code}] 거래량: 최근 {recent_volume:,}주, 평균 대비 {volume_ratio:.2f}배")
         
         # 4) 연속 상승 일수 계산
         consecutive_up_days = 0
@@ -1056,6 +1067,8 @@ def analyze_buy_signal(stock_data, target_config):
                 else:
                     break
         
+        logger.info(f"📈 [{stock_code}] 연속 상승: {consecutive_up_days}일")
+        
         # 🚨 극한 조건 정의 (4개 중 2개 이상시 차단)
         extreme_conditions = [
             rsi >= 90,                      # RSI 90% 이상 (일진파워 94% 해당)
@@ -1066,6 +1079,8 @@ def analyze_buy_signal(stock_data, target_config):
         
         extreme_count = sum(extreme_conditions)
         
+        logger.info(f"⚠️ [{stock_code}] 극한 조건: {extreme_count}/4개 (RSI≥90: {extreme_conditions[0]}, 고점≥90%: {extreme_conditions[1]}, 볼밴돌파: {extreme_conditions[2]}, 거래량≥4배: {extreme_conditions[3]})")
+        
         # 🚨 2개 이상 극한 조건 만족시 차단
         if extreme_count >= 2:
             extreme_reasons = []
@@ -1073,6 +1088,8 @@ def analyze_buy_signal(stock_data, target_config):
             if extreme_conditions[1]: extreme_reasons.append(f"고점권({price_position*100:.1f}%)")
             if extreme_conditions[2]: extreme_reasons.append(f"볼밴상단돌파({bb_position_ratio:.3f})")
             if extreme_conditions[3]: extreme_reasons.append(f"거래량급증({volume_ratio:.1f}배)")
+            
+            logger.info(f"❌ [{stock_code}] 극한 조건 차단: {', '.join(extreme_reasons)}")
             
             return {
                 'is_buy_signal': False,
@@ -1094,151 +1111,188 @@ def analyze_buy_signal(stock_data, target_config):
             }
 
         # 🔥 동적 파라미터 적용
+        logger.info(f"🧠 [{stock_code}] 동적 파라미터 적용 시작...")
+        
         if trading_config.use_adaptive_strategy:
             try:
                 from technical_analysis import AdaptiveMarketStrategy
                 adaptive_strategy = AdaptiveMarketStrategy("bb_adaptive_strategy.json")
                 market_env = detect_stock_environment(stock_code)
                 
+                logger.info(f"🌍 [{stock_code}] 시장 환경: {market_env}")
+                
                 if hasattr(adaptive_strategy, 'get_dynamic_parameters'):
                     dynamic_params = adaptive_strategy.get_dynamic_parameters(stock_code, market_env)
                     rsi_threshold = dynamic_params['rsi_threshold']
                     min_score = dynamic_params['min_score']
-                    logger.info(f"🧠 {stock_code} 동적 파라미터 적용: RSI기준 {rsi_threshold}, 점수기준 {min_score} (환경: {market_env})")
+                    logger.info(f"🧠 [{stock_code}] 동적 파라미터: RSI기준 {rsi_threshold}, 점수기준 {min_score} (환경: {market_env})")
                 else:
                     rsi_threshold = target_config.get('rsi_oversold', trading_config.rsi_oversold)
-                    min_score = target_config.get('min_score', 42)  # 🎯 40 → 42 (적당히 상향)
+                    min_score = target_config.get('min_score', 42)
+                    logger.info(f"🔧 [{stock_code}] 기본 파라미터 (동적 메서드 없음): RSI기준 {rsi_threshold}, 점수기준 {min_score}")
                     
             except Exception as e:
-                logger.warning(f"동적 파라미터 적용 실패, 기본값 사용: {e}")
+                logger.warning(f"⚠️ [{stock_code}] 동적 파라미터 적용 실패: {e}")
                 rsi_threshold = target_config.get('rsi_oversold', trading_config.rsi_oversold)
                 min_score = target_config.get('min_score', 42)
+                logger.info(f"🔧 [{stock_code}] 기본 파라미터 (예외 발생): RSI기준 {rsi_threshold}, 점수기준 {min_score}")
         else:
             rsi_threshold = target_config.get('rsi_oversold', trading_config.rsi_oversold)
             min_score = target_config.get('min_score', 42)
+            logger.info(f"🔧 [{stock_code}] 기본 파라미터 (적응형 비활성): RSI기준 {rsi_threshold}, 점수기준 {min_score}")
     
-        # 🎯 매수 신호 점수 계산 (페널티 포함)
+        # 🎯 매수 신호 점수 계산 시작
+        logger.info(f"🎯 [{stock_code}] 점수 계산 시작...")
         
         # 1) RSI 신호 (과매수 페널티 포함)
+        rsi_score = 0
         if rsi <= 20:  # 극과매도
-            score += 40
+            rsi_score = 40
             signals.append(f"RSI 극과매도 {rsi:.1f} (+40)")
         elif rsi <= 25:  # 강과매도  
-            score += 35
+            rsi_score = 35
             signals.append(f"RSI 강과매도 {rsi:.1f} (+35)")
         elif rsi <= 30:  # 과매도
-            score += 30
+            rsi_score = 30
             signals.append(f"RSI 과매도 {rsi:.1f} (+30)")
         elif rsi <= rsi_threshold:  # 동적 기준
-            score += 20
+            rsi_score = 20
             signals.append(f"RSI 조정구간 {rsi:.1f} (+20)")
         elif rsi >= 85:  # 🔥 극과매수 페널티 (차단 아닌 페널티)
-            score -= 30
+            rsi_score = -30
             signals.append(f"RSI 극과매수 페널티 {rsi:.1f} (-30)")
         elif rsi >= 75:  # 과매수 페널티
-            score -= 20
+            rsi_score = -20
             signals.append(f"RSI 과매수 페널티 {rsi:.1f} (-20)")
         elif rsi >= 70:  # 과매수 주의
-            score -= 10
+            rsi_score = -10
             signals.append(f"RSI 과매수 주의 {rsi:.1f} (-10)")
+        
+        score += rsi_score
+        logger.info(f"📊 [{stock_code}] RSI 점수: {rsi_score}점 (누적: {score}점)")
 
         # 2) 볼린저밴드 신호 (상단 근처 페널티 포함)
         bb_lower = stock_data.get('bb_lower', 0)
         bb_middle = stock_data.get('bb_middle', 0)
         bb_position = "middle"
+        bb_score = 0
         
         if bb_lower > 0:
             bb_lower_distance = (current_price - bb_lower) / bb_lower * 100
             
             if bb_lower_distance <= -2:  # 하단 돌파
-                score += 35
+                bb_score = 35
                 signals.append("볼린저밴드 하단 돌파 (+35)")
                 bb_position = "breakthrough"
             elif bb_lower_distance <= 3:  # 하단 근처
-                score += 25
+                bb_score = 25
                 signals.append("볼린저밴드 하단 근처 (+25)")
                 bb_position = "lower"
             elif current_price <= bb_middle:
-                score += 15
+                bb_score = 15
                 signals.append("볼린저밴드 중간선 하단 (+15)")
                 bb_position = "below_middle"
             elif bb_position_ratio >= 1.0:  # 🔥 상단 돌파 페널티 (차단 아닌 페널티)
-                score -= 25
+                bb_score = -25
                 signals.append(f"볼린저밴드 상단 돌파 페널티 (-25)")
                 bb_position = "upper_break"
             elif bb_position_ratio >= 0.97:  # 상단 근접 페널티
-                score -= 15
+                bb_score = -15
                 signals.append(f"볼린저밴드 상단 근접 페널티 (-15)")
                 bb_position = "upper_near"
+        
+        score += bb_score
+        logger.info(f"📈 [{stock_code}] 볼린저밴드 점수: {bb_score}점 (누적: {score}점)")
         
         # 3) 이동평균선 추세 (기존 로직 유지)
         ma5 = stock_data['ma5']
         ma20 = stock_data['ma20']
         ma60 = stock_data['ma60']
         
+        ma_score = 0
         if ma5 > ma20:
             if ma20 > ma60:
-                score += 20
+                ma_score = 20
                 signals.append("완전 정배열 (+20)")
             else:
-                score += 15
+                ma_score = 15
                 signals.append("단기 상승 추세 (+15)")
         elif ma5 > ma20 * 0.995:
-            score += 12
+            ma_score = 12
             signals.append("골든크로스 임박 (+12)")
         
+        score += ma_score
+        logger.info(f"📊 [{stock_code}] 이동평균 점수: {ma_score}점 (누적: {score}점)")
+
         # 4) 가격 위치 기반 점수 (페널티 포함)
+        price_score = 0
         if price_position >= 0.85:  # 85% 이상 고점권 페널티
-            score -= 20
+            price_score = -20
             signals.append(f"20일 고점권 페널티 {price_position*100:.1f}% (-20)")
         elif price_position >= 0.75:  # 75% 이상 페널티
-            score -= 10
+            price_score = -10
             signals.append(f"20일 상위권 페널티 {price_position*100:.1f}% (-10)")
         elif price_position <= 0.2:  # 20일 저점 근처
-            score += 25
+            price_score = 25
             signals.append("20일 저점 근처 (+25)")
         elif price_position <= 0.3:
-            score += 20
+            price_score = 20
             signals.append("20일 하위 30% 구간 (+20)")
         elif price_position <= 0.4:
-            score += 15
+            price_score = 15
             signals.append("20일 하위 40% 구간 (+15)")
+        
+        score += price_score
+        logger.info(f"📍 [{stock_code}] 가격위치 점수: {price_score}점 (누적: {score}점)")
         
         # 5) MACD 신호 (기존 로직 유지)
         macd = stock_data['macd']
         macd_signal = stock_data['macd_signal']
         macd_histogram = stock_data['macd_histogram']
         
+        macd_score = 0
         if macd > macd_signal and macd_histogram > 0:
-            score += 15
+            macd_score = 15
             signals.append("MACD 골든크로스 + 상승 (+15)")
         elif macd > macd_signal:
-            score += 10
+            macd_score = 10
             signals.append("MACD 골든크로스 (+10)")
         elif macd_histogram > 0:
-            score += 8
+            macd_score = 8
             signals.append("MACD 모멘텀 상승 (+8)")
         
+        score += macd_score
+        logger.info(f"📊 [{stock_code}] MACD 점수: {macd_score}점 (누적: {score}점)")
+        
         # 6) 거래량 신호 (과열 페널티 포함)
+        volume_score = 0
         if volume_ratio >= 3.0:  # 🔥 3배 이상 급등시 페널티 (과열 우려)
-            score -= 15
+            volume_score = -15
             signals.append(f"거래량 과열 페널티 {volume_ratio:.1f}배 (-15)")
         elif volume_ratio >= 1.5:  # 거래량 증가
-            score += 12
+            volume_score = 12
             signals.append(f"거래량 증가 {volume_ratio:.1f}배 (+12)")
         elif volume_ratio >= 1.2:
-            score += 8
+            volume_score = 8
             signals.append(f"거래량 증가 {volume_ratio:.1f}배 (+8)")
         
+        score += volume_score
+        logger.info(f"📊 [{stock_code}] 거래량 점수: {volume_score}점 (누적: {score}점)")
+        
         # 7) 연속 상승 페널티
+        consecutive_score = 0
         if consecutive_up_days >= 4:  # 4일 연속 급등 페널티
-            score -= 20
+            consecutive_score = -20
             signals.append(f"연속 급등 페널티 {consecutive_up_days}일 (-20)")
         elif consecutive_up_days >= 3:  # 3일 연속 상승 주의
-            score -= 10
+            consecutive_score = -10
             signals.append(f"연속 상승 주의 {consecutive_up_days}일 (-10)")
         
+        score += consecutive_score
+        logger.info(f"📈 [{stock_code}] 연속상승 점수: {consecutive_score}점 (누적: {score}점)")
+        
         # 8) 연속 하락 후 반등 신호 (기존 로직 유지)
+        reversal_score = 0
         if len(df) >= 5:
             consecutive_down = 0
             for i in range(1, 4):
@@ -1248,8 +1302,11 @@ def analyze_buy_signal(stock_data, target_config):
                     break
             
             if consecutive_down >= 2 and df['close'].iloc[-1] > df['close'].iloc[-2]:
-                score += 20
+                reversal_score = 20
                 signals.append(f"연속하락 후 반등 ({consecutive_down}일) (+20)")
+        
+        score += reversal_score
+        logger.info(f"🔄 [{stock_code}] 반등신호 점수: {reversal_score}점 (누적: {score}점)")
         
         # 🎯 최종 매수 판단
         signal_strength = 'NORMAL'
@@ -1268,17 +1325,22 @@ def analyze_buy_signal(stock_data, target_config):
             signal_strength = 'STRONG'
 
         is_buy_signal = score >= min_score
+        
+        logger.info(f"🎯 [{stock_code}] 최종 판정: 점수 {score}/{min_score}점, 신호강도 {signal_strength}")
 
         # 🎯 특별조건 할인 (조건 완화)
         if rsi <= 18 and bb_position == "breakthrough" and price_position <= 0.3:  # 정말 극한 상황에만
             discounted_score = max(25, min_score * 0.75)  # 할인 폭 적당히
             if score >= discounted_score and not is_buy_signal:
                 signals.append(f"극한조건 점수할인: {discounted_score:.0f}점")
-                is_buy_signal = True        
+                is_buy_signal = True
+                logger.info(f"🎁 [{stock_code}] 극한조건 할인 적용: {discounted_score:.0f}점")
 
         # target_config에 신호 강도 저장
         target_config['last_signal_strength'] = signal_strength
         target_config['last_signal_score'] = score
+
+        logger.info(f"{'🎯' if is_buy_signal else '⏳'} [{stock_code}] 최종 결과: {'매수 신호' if is_buy_signal else '대기'} (점수: {score}/{min_score}점, 강도: {signal_strength})")
 
         return {
             'is_buy_signal': is_buy_signal,
@@ -1307,11 +1369,13 @@ def analyze_buy_signal(stock_data, target_config):
                 'market_env': detect_stock_environment(stock_code) if trading_config.use_adaptive_strategy else 'unknown'
             }
         }
+        # ========== 디버깅 로그 끝 ==========
         
     except Exception as e:
-        logger.error(f"매수 신호 분석 중 에러: {str(e)}")
-        return {'is_buy_signal': False, 'score': 0, 'signals': [f"분석 오류: {str(e)}"]}
-
+        logger.error(f"❌ [{stock_data.get('stock_code', 'UNKNOWN')}] 매수 신호 분석 중 에러: {str(e)}")
+        logger.exception(f"❌ [{stock_data.get('stock_code', 'UNKNOWN')}] 상세 에러 정보:")
+        return {'is_buy_signal': False, 'score': 0, 'min_score': 0, 'signals': [f"분석 오류: {str(e)}"]}
+    
 # 🎯 분봉 타이밍도 조건부 차단으로 수정
 def analyze_intraday_entry_timing(stock_code, target_config):
     """분봉 기준 최적 진입 타이밍 분석 - 조건부 차단 방식"""
@@ -2744,7 +2808,6 @@ def send_target_stock_status():
         logger.error(f"타겟 종목 현황 보고서 생성 중 에러: {str(e)}")
 
 ################################### 메인 로직 ##################################
-
 def scan_target_stocks(trading_state):
     """타겟 종목 매수 기회 스캔 - 미체결 주문 체크 추가"""
     try:
@@ -2773,21 +2836,27 @@ def scan_target_stocks(trading_state):
         current_positions = len(trading_state['positions'])
         
         if current_positions >= get_active_target_stock_count():
-            logger.info(f"최대 보유 종목 수qh({get_active_target_stock_count()}개) 도달")
+            logger.info(f"최대 보유 종목 수 도달({get_active_target_stock_count()}개)")
             return []
         
         logger.info(f"타겟 종목 매수 기회 스캔 시작: {len(trading_config.target_stocks)}개 종목 분석")
         
         for stock_code, target_config in trading_config.target_stocks.items():
+            # ========== 디버깅 코드 시작 ==========
+            logger.info(f"🔍 [{stock_code}] 스캔 시작")
+            
             try:
                 if not target_config.get('enabled', True):
+                    logger.info(f"❌ [{stock_code}] 비활성화됨")
                     continue
                     
                 if stock_code in trading_state['positions']:
+                    logger.info(f"❌ [{stock_code}] 이미 보유 중")
                     continue
                 
                 # 🆕 미체결 주문 체크 (라이브러리 사용)
                 if pending_manager.check_pending_orders(stock_code, trading_state):
+                    logger.info(f"❌ [{stock_code}] 미체결 주문 있음")
                     continue
                 
                 # 재매수 방지 체크
@@ -2801,25 +2870,43 @@ def scan_target_stocks(trading_state):
                         if elapsed_hours < cooldown_hours:
                             remaining_hours = cooldown_hours - elapsed_hours
                             stock_name = target_config.get('name', stock_code)
-                            logger.debug(f"재매수 방지: {stock_name}({stock_code}) - 남은시간 {remaining_hours:.1f}시간")
+                            logger.info(f"❌ [{stock_code}] 재매수 방지: 남은시간 {remaining_hours:.1f}시간")
                             continue
                     except:
                         pass
                 
-                # 가격 필터링
+                # 가격 필터링 - 디버깅 추가
+                logger.info(f"📊 [{stock_code}] 현재가 조회 중...")
                 current_price = KisKR.GetCurrentPrice(stock_code)
-                if not current_price or current_price < trading_config.min_stock_price or current_price > trading_config.max_stock_price:
+                logger.info(f"📊 [{stock_code}] 현재가: {current_price}")
+                
+                if not current_price:
+                    logger.info(f"❌ [{stock_code}] 현재가 조회 실패 (None)")
+                    continue
+                    
+                if current_price < trading_config.min_stock_price:
+                    logger.info(f"❌ [{stock_code}] 최소가격 미달: {current_price} < {trading_config.min_stock_price}")
+                    continue
+                    
+                if current_price > trading_config.max_stock_price:
+                    logger.info(f"❌ [{stock_code}] 최대가격 초과: {current_price} > {trading_config.max_stock_price}")
                     continue
                 
-                # 종목 데이터 분석
+                # 종목 데이터 분석 - 디버깅 추가
+                logger.info(f"📈 [{stock_code}] 종목 데이터 조회 시작...")
                 stock_data = get_stock_data(stock_code)
+                
                 if not stock_data:
+                    logger.info(f"❌ [{stock_code}] 종목 데이터 조회 실패")
                     continue
+                
+                logger.info(f"✅ [{stock_code}] 매수 신호 분석 시작")
                 
                 # 매수 신호 분석
                 buy_analysis = analyze_buy_signal(stock_data, target_config)
                 
                 if buy_analysis['is_buy_signal']:
+                    logger.info(f"🎯 [{stock_code}] 매수 기회 발견! (점수: {buy_analysis.get('score', 0)})")
                     buy_opportunities.append({
                         'stock_code': stock_code,
                         'stock_name': target_config.get('name', stock_code),
@@ -2835,10 +2922,13 @@ def scan_target_stocks(trading_state):
                     logger.info(f"   점수: {buy_analysis['score']}/{buy_analysis['min_score']}점")
                     for signal in buy_analysis['signals']:
                         logger.info(f"   - {signal}")
-            
+                else:
+                    logger.info(f"⏳ [{stock_code}] 매수 신호 없음 (점수: {buy_analysis.get('score', 0)}/{buy_analysis.get('min_score', 40)})")
+                
             except Exception as e:
-                logger.error(f"종목 분석 중 에러 ({stock_code}): {str(e)}")
+                logger.error(f"❌ [{stock_code}] 예외 발생: {str(e)}")
                 continue
+            # ========== 디버깅 코드 끝 ==========
         
         # 점수 순으로 정렬
         buy_opportunities.sort(key=lambda x: x['score'], reverse=True)
@@ -2849,7 +2939,7 @@ def scan_target_stocks(trading_state):
     except Exception as e:
         logger.error(f"매수 기회 스캔 중 에러: {str(e)}")
         return []
-
+    
 def update_trailing_stop(position, current_price, target_config):
     """트레일링 스탑 업데이트 (Config 적용)"""
     try:
@@ -3361,7 +3451,7 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
         logger.info("분봉 타이밍 옵션 포함한 개선 설정 파일 생성 시작...")
         
         # 기본 타겟 종목들 정의 (거래량 확보를 위해 확대)
-        sample_codes = ["007660", "010140", "094820"]  # 이수페타시스, 삼성중공업, 일진파워
+        sample_codes = ["272210", "034020", "010140"]  # 한화시스템, 두산에너빌리티, 삼성중공업
 
         # 🎯 특성별 파라미터 수정 (모든 타입의 min_score 상향)
         characteristic_params = {
@@ -3488,7 +3578,7 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
             # 예산 설정 - 기존 구조 유지하되 일부 값만 최적화
             "use_absolute_budget": True,
             "absolute_budget_strategy": "proportional",
-            "absolute_budget": 300000,              # 🎯 30만원으로 설정
+            "absolute_budget": 600000,              # 🎯 60만원으로 설정
             "initial_total_asset": 0,
             "budget_loss_tolerance": 0.2,
             "trade_budget_ratio": 0.85,             # 0.90 → 0.85 (약간 보수적)
