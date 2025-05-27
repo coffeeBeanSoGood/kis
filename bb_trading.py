@@ -35,6 +35,8 @@ from technical_analysis import TechnicalIndicators, AdaptiveMarketStrategy, Tren
 import requests
 from bs4 import BeautifulSoup
 
+from pending_order_manager import PendingOrderManager, enhance_trading_state
+
 ################################### 설정 클래스 ##################################
 
 class TradingConfig:
@@ -377,6 +379,21 @@ technical_analysis.set_logger(logger)
 
 # =========================== 전역 설정 인스턴스 ===========================
 trading_config = None
+pending_manager = None
+
+def initialize_pending_manager():
+    """미체결 주문 관리자 초기화"""
+    global pending_manager
+    
+    pending_manager = PendingOrderManager(
+        kis_api=KisKR,
+        trading_config=trading_config, 
+        discord_alert=discord_alert,
+        logger=logger,
+        fee_calculator=calculate_trading_fee  # 🎯 초기화시 바로 전달
+    )
+    
+    logger.info("🔧 미체결 주문 관리자 초기화 완료")
 
 def initialize_config(config_path: str = "target_stock_config.json"):
     """설정 초기화"""
@@ -648,20 +665,25 @@ def get_available_budget(trading_state=None):
         return 0
 
 def get_remaining_budget_for_stock(stock_code, trading_state):
-    """특정 종목의 남은 투자 가능 예산 계산"""
+    """특정 종목의 남은 투자 가능 예산 계산 - 미체결 주문 금액 포함"""
     try:
         per_stock_limit = get_per_stock_budget_limit()
-        already_invested = get_invested_amount_for_stock(stock_code, trading_state)
-        remaining = per_stock_limit - already_invested
+        
+        # 🆕 라이브러리 사용해서 미체결 주문 금액 포함 계산
+        committed_amount = pending_manager.get_committed_budget_for_stock(
+            stock_code, trading_state, get_invested_amount_for_stock
+        )
+        
+        remaining = per_stock_limit - committed_amount
         
         stock_name = trading_config.target_stocks.get(stock_code, {}).get('name', stock_code)
-        logger.debug(f"💰 {stock_name}({stock_code}) 남은 예산: {remaining:,.0f}원 (한도: {per_stock_limit:,.0f}원, 투자됨: {already_invested:,.0f}원)")
+        logger.debug(f"💰 {stock_name}({stock_code}) 남은 예산: {remaining:,}원 (한도: {per_stock_limit:,}원, 사용중: {committed_amount:,}원)")
         
         return max(0, remaining)
         
     except Exception as e:
         logger.error(f"종목별 남은 예산 계산 중 오류 ({stock_code}): {str(e)}")
-        return 0    
+        return 0
 
 def get_budget_info_message():
     """예산 정보 메시지 생성 - 종목별 분배 현황 포함 (개선됨)"""
@@ -1621,13 +1643,18 @@ def analyze_intraday_entry_timing(stock_code, target_config):
 ################################### 상태 관리 ##################################
 
 def load_trading_state():
-    """트레이딩 상태 로드"""
+    """트레이딩 상태 로드 - pending_orders 필드 추가"""
     try:
         bot_name = get_bot_name()
         with open(f"TargetStockBot_{bot_name}.json", 'r') as f:
-            return json.load(f)
+            state = json.load(f)
+        
+        # 🆕 pending_orders 필드 추가 (라이브러리 사용)
+        state = enhance_trading_state(state)
+        return state
+        
     except:
-        return {
+        return enhance_trading_state({
             'positions': {},
             'daily_stats': {
                 'date': '',
@@ -1636,7 +1663,7 @@ def load_trading_state():
                 'winning_trades': 0,
                 'start_balance': 0
             }
-        }
+        })
 
 def save_trading_state(state):
     """트레이딩 상태 저장"""
@@ -1738,19 +1765,65 @@ def calculate_position_size(target_config, stock_code, stock_price, trading_stat
         return 0
 
 def execute_buy_order(stock_code, target_config, quantity, price):
-    """매수 주문 실행"""
+    """매수 주문 실행 - 미체결 주문 추적 추가"""
     try:
         stock_name = target_config.get('name', stock_code)
+        trading_state = load_trading_state()
+        
+        # 🆕 1. 중복 주문 방지 (라이브러리 사용)
+        if pending_manager.check_pending_orders(stock_code, trading_state):
+            logger.warning(f"❌ 중복 주문 방지: {stock_name}({stock_code}) - 이미 미체결 주문 있음")
+            return None, None
+        
+        # 🆕 2. 주문 추적 시작 (라이브러리 사용)
+        order_info = {
+            'quantity': quantity,
+            'price': price,
+            'target_config': target_config,
+            'signal_strength': target_config.get('last_signal_strength', 'NORMAL'),
+            'daily_score': target_config.get('last_signal_score', 0)
+        }
+        
+        pending_manager.track_pending_order(trading_state, stock_code, order_info)
+        save_trading_state(trading_state)
+        
+        # 🆕 3. 주문 접수 알림 (라이브러리 사용)
+        order_amount = quantity * price
+        estimated_fee = calculate_trading_fee(price, quantity, True)
+        
+        order_info['order_amount'] = order_amount
+        order_info['estimated_fee'] = estimated_fee
+        pending_manager.send_order_alert('submit', stock_code, order_info)
+        
+        # 4. 실제 주문 실행 (기존 로직)
         logger.info(f"{stock_name}({stock_code}) 매수 주문: {quantity}주 @ {price:,.0f}원")
         
-        # 지정가 매수 주문
         order_result = KisKR.MakeBuyLimitOrder(stock_code, quantity, int(price))
         
         if not order_result or isinstance(order_result, str):
-            logger.error(f"매수 주문 실패: {order_result}")
+            # 🆕 주문 실패시 pending 제거 (라이브러리 사용)
+            trading_state = load_trading_state()
+            pending_manager.remove_pending_order(trading_state, stock_code, "주문 실패")
+            save_trading_state(trading_state)
+            
+            error_msg = f"❌ 매수 주문 실패: {stock_name}({stock_code}) - {order_result}"
+            logger.error(error_msg)
+            if hasattr(trading_config, 'use_discord_alert') and trading_config.config.get('use_discord_alert', True):
+                discord_alert.SendMessage(error_msg)
             return None, None
         
-        # 체결 확인 (최대 60초 대기)
+        # 5. 주문 성공시 order_id 업데이트
+        if isinstance(order_result, dict):
+            order_id = order_result.get('OrderNum', order_result.get('OrderNo', ''))
+            if order_id:
+                trading_state = load_trading_state()
+                if stock_code in trading_state.get('pending_orders', {}):
+                    trading_state['pending_orders'][stock_code]['order_id'] = order_id
+                    trading_state['pending_orders'][stock_code]['status'] = 'submitted'
+                    save_trading_state(trading_state)
+                    logger.info(f"📋 주문번호 등록: {stock_name}({stock_code}) - {order_id}")
+        
+        # 6. 체결 확인 (기존 로직)
         start_time = time.time()
         while time.time() - start_time < 60:
             my_stocks = KisKR.GetMyStockList()
@@ -1759,14 +1832,37 @@ def execute_buy_order(stock_code, target_config, quantity, price):
                     executed_amount = int(stock.get('StockAmt', 0))
                     if executed_amount > 0:
                         avg_price = float(stock.get('AvrPrice', price))
+                        
+                        # 🆕 체결 완료시 pending 제거 (라이브러리 사용)
+                        trading_state = load_trading_state()
+                        pending_manager.remove_pending_order(trading_state, stock_code, "체결 완료")
+                        save_trading_state(trading_state)
+                        
+                        # 🆕 체결 완료 알림 (라이브러리 사용)
+                        pending_manager.send_order_alert('fill', stock_code, {
+                            'executed_price': avg_price,
+                            'executed_amount': executed_amount
+                        })
+                        
                         logger.info(f"매수 체결 확인: {executed_amount}주 @ {avg_price:,.0f}원")
                         return avg_price, executed_amount
             time.sleep(3)
         
-        logger.warning(f"매수 체결 확인 실패: {stock_code}")
+        # 🆕 미체결시 알림 (라이브러리 사용)
+        logger.warning(f"체결 확인 실패: {stock_code}")
+        pending_manager.send_order_alert('pending', stock_code, order_info)
+        
         return None, None
         
     except Exception as e:
+        # 🆕 예외 발생시 pending 정리 (라이브러리 사용)
+        try:
+            trading_state = load_trading_state()
+            pending_manager.remove_pending_order(trading_state, stock_code, f"오류 발생: {str(e)}")
+            save_trading_state(trading_state)
+        except:
+            pass
+        
         logger.error(f"매수 주문 실행 중 에러: {str(e)}")
         return None, None
 
@@ -2316,9 +2412,9 @@ def send_target_stock_status():
 ################################### 메인 로직 ##################################
 
 def scan_target_stocks(trading_state):
-    """타겟 종목 매수 기회 스캔 (Config 적용) - 재매수 방지 포함"""
+    """타겟 종목 매수 기회 스캔 - 미체결 주문 체크 추가"""
     try:
-        # 🔥 추가: 만료된 재매수 방지 기록 정리
+        # 기존 로직들...
         if 'recent_sells' in trading_state:
             expired_stocks = []
             now = datetime.datetime.now()
@@ -2331,7 +2427,7 @@ def scan_target_stocks(trading_state):
                     if (now - sell_time).total_seconds() / 3600 > cooldown_hours:
                         expired_stocks.append(stock_code)
                 except:
-                    expired_stocks.append(stock_code)  # 파싱 오류시 제거
+                    expired_stocks.append(stock_code)
             
             for stock_code in expired_stocks:
                 del trading_state['recent_sells'][stock_code]
@@ -2342,7 +2438,6 @@ def scan_target_stocks(trading_state):
         buy_opportunities = []
         current_positions = len(trading_state['positions'])
         
-        # Config에서 최대 보유 종목 수 확인
         if current_positions >= get_active_target_stock_count():
             logger.info(f"최대 보유 종목 수({get_active_target_stock_count()}개) 도달")
             return []
@@ -2351,15 +2446,17 @@ def scan_target_stocks(trading_state):
         
         for stock_code, target_config in trading_config.target_stocks.items():
             try:
-                # 비활성화된 종목 제외
                 if not target_config.get('enabled', True):
                     continue
                     
-                # 이미 보유 중인 종목은 제외 (봇 기록 기준)
                 if stock_code in trading_state['positions']:
                     continue
                 
-                # 🔥 추가: 재매수 방지 체크
+                # 🆕 미체결 주문 체크 (라이브러리 사용)
+                if pending_manager.check_pending_orders(stock_code, trading_state):
+                    continue
+                
+                # 재매수 방지 체크
                 if 'recent_sells' in trading_state and stock_code in trading_state['recent_sells']:
                     sell_info = trading_state['recent_sells'][stock_code]
                     try:
@@ -2373,9 +2470,9 @@ def scan_target_stocks(trading_state):
                             logger.debug(f"재매수 방지: {stock_name}({stock_code}) - 남은시간 {remaining_hours:.1f}시간")
                             continue
                     except:
-                        pass  # 파싱 오류시 그냥 진행
+                        pass
                 
-                # Config에서 가격 필터링
+                # 가격 필터링
                 current_price = KisKR.GetCurrentPrice(stock_code)
                 if not current_price or current_price < trading_config.min_stock_price or current_price > trading_config.max_stock_price:
                     continue
@@ -2385,7 +2482,7 @@ def scan_target_stocks(trading_state):
                 if not stock_data:
                     continue
                 
-                # 매수 신호 분석 (종목별 설정 적용)
+                # 매수 신호 분석
                 buy_analysis = analyze_buy_signal(stock_data, target_config)
                 
                 if buy_analysis['is_buy_signal']:
@@ -2468,25 +2565,46 @@ def process_positions(trading_state):
                     positions_to_remove.append(stock_code)
                     continue
                 
-                # 🔥 API 검증 결과 알림 + Discord 알림 (포지션 삭제 없음)
-                if my_stocks:  # API 조회 성공시에만 비교
-                    if not actual_holding:
-                        warning_msg = f"⚠️ API 불일치: {stock_name}({stock_code})\n봇 기록: 보유 중 ({current_amount}주)\n실제 계좌: 미보유\n→ 봇 기록 유지"
+                # 🔥 ========== 여기에 수량 검증 로직 추가 ==========
+                # API 조회 성공시 실제 보유량 검증
+                actual_amount = 0
+                if my_stocks and actual_holding:
+                    actual_amount = int(actual_holding.get('StockAmt', 0))
+                
+                # 실제 보유량이 봇 기록보다 적으면 매도 불가
+                sell_amount = current_amount  # 기본값: 봇 기록 수량
+                
+                if my_stocks:  # API 조회 성공시에만 검증
+                    if actual_amount == 0:
+                        # 실제 보유 없음 - 매도 불가, 포지션만 정리
+                        warning_msg = f"⚠️ 실제 보유량 0으로 매도 불가: {stock_name}({stock_code})\n"
+                        warning_msg += f"봇 기록: {current_amount}주 → 포지션 정리"
                         logger.warning(warning_msg)
                         discord_alert.SendMessage(warning_msg)
-                    else:
-                        actual_amount = int(actual_holding.get('StockAmt', 0))
+                        positions_to_remove.append(stock_code)
+                        continue
                         
-                        if actual_amount != current_amount:
-                            warning_msg = f"⚠️ 수량 불일치: {stock_name}({stock_code})\n봇 기록: {current_amount}주\n실제 계좌: {actual_amount}주\n→ 봇 기록 유지"
-                            logger.warning(warning_msg)
-                            discord_alert.SendMessage(warning_msg)
+                    elif actual_amount < current_amount:
+                        # 실제 보유량이 적음 - 실제 보유량만큼만 매도
+                        sell_amount = actual_amount
+                        warning_msg = f"⚠️ 보유량 불일치로 매도량 조정: {stock_name}({stock_code})\n"
+                        warning_msg += f"봇 기록: {current_amount}주 → 실제: {actual_amount}주\n"
+                        warning_msg += f"매도 예정: {sell_amount}주"
+                        logger.warning(warning_msg)
+                        discord_alert.SendMessage(warning_msg)
                         
-                        if actual_amount <= 0:
-                            warning_msg = f"⚠️ 실제 보유량 0: {stock_name}({stock_code})\n봇 기록: {current_amount}주\n실제 계좌: 0주\n→ 봇 기록 유지"
-                            logger.warning(warning_msg)
-                            discord_alert.SendMessage(warning_msg)
-                else:
+                        # 봇 기록도 실제 수량으로 조정
+                        position['amount'] = actual_amount
+                        trading_state['positions'][stock_code] = position
+                
+                # 🔥 ========== 검증 로직 끝 ==========
+                
+                # API 검증 결과 알림 (기존 로직 유지하되 더 간단하게)
+                if my_stocks and actual_holding:
+                    if actual_amount != current_amount and actual_amount > 0:
+                        logger.debug(f"수량 차이 감지 (이미 조정됨): {stock_name}({stock_code}) "
+                                   f"봇:{current_amount}주 → 실제:{actual_amount}주")
+                elif not my_stocks:
                     logger.debug(f"API 조회 실패 - 봇 기록으로만 관리: {stock_name}({stock_code})")
                 
                 # 종목 데이터 조회
@@ -2508,13 +2626,14 @@ def process_positions(trading_state):
                     logger.info(f"   유형: {sell_analysis['sell_type']}")
                     logger.info(f"   이유: {sell_analysis['reason']}")
                     
-                    # 매도 주문 실행 (봇 기록 수량으로)
+                    # 🔥 검증된 수량으로 매도 주문 실행
+                    logger.info(f"   매도 수량: {sell_amount}주 (검증완료)")
                     executed_price, executed_amount = execute_sell_order(
-                        stock_code, target_config, current_amount
+                        stock_code, target_config, sell_amount  # 검증된 수량 사용
                     )
                     
                     if executed_price and executed_amount:
-                        # 손익 계산
+                        # 손익 계산 (기존 로직 유지)
                         entry_price = position['entry_price']
                         buy_fee = position.get('buy_fee', 0)
                         sell_fee = calculate_trading_fee(executed_price, executed_amount, False)
@@ -2547,10 +2666,14 @@ def process_positions(trading_state):
                         msg += f"매도사유: {sell_analysis['reason']}\n"
                         msg += f"재매수 방지: 2시간"
                         
+                        # 🔥 수량 조정이 있었다면 추가 안내
+                        if sell_amount != current_amount:
+                            msg += f"\n⚠️ 수량 조정: 봇기록 {current_amount}주 → 실제매도 {executed_amount}주"
+                        
                         logger.info(msg)
                         discord_alert.SendMessage(msg)
                         
-                        # 적응형 전략 학습
+                        # 적응형 전략 학습 (기존 로직 유지)
                         if trading_config.use_adaptive_strategy:
                             try:
                                 stock_env = sell_analysis.get('stock_environment', 'sideways')
@@ -2574,7 +2697,7 @@ def process_positions(trading_state):
                 logger.error(f"포지션 처리 오류 ({stock_code}): {str(e)}")
                 continue
         
-        # 🔥 2단계: API에는 있지만 봇 기록에 없는 종목 체크 (새로 추가)
+        # 🔥 2단계: API에는 있지만 봇 기록에 없는 종목 체크 (기존 로직 유지)
         if my_stocks:  # API 조회 성공시에만
             bot_tracked_stocks = set(trading_state['positions'].keys())
             
@@ -3114,6 +3237,9 @@ def main():
     
     # Config 클래스 초기화
     config = initialize_config(config_path)
+
+    # 🆕 미체결 주문 관리자 초기화
+    initialize_pending_manager()
     
     # 섹터 정보 업데이트 (날짜가 바뀌었거나 처음 실행시)
     today = datetime.datetime.now().strftime('%Y%m%d')
@@ -3145,6 +3271,7 @@ def main():
     daily_report_sent = False
     market_open_notified = False
     last_status_report = datetime.datetime.now()
+    last_pending_check = datetime.datetime.now()  # 🆕 미체결 주문 체크 시간
     
     while True:
         try:
@@ -3178,6 +3305,12 @@ def main():
                 msg = f"🔔 장 시작!\n"
                 msg += get_budget_info_message()
                 msg += f"\n타겟 종목: {enabled_count}개"
+
+                # 🆕 미체결 주문 현황 추가 (라이브러리 사용)
+                pending_status = pending_manager.get_pending_orders_status(trading_state)
+                if pending_status['count'] > 0:
+                    msg += f"\n미체결 주문: {pending_status['count']}개 (자동 관리 중)"
+ 
                 logger.info(msg)
                 discord_alert.SendMessage(msg)
                 market_open_notified = True
@@ -3187,6 +3320,13 @@ def main():
                 logger.info("장 시간 외입니다.")
                 time.sleep(300)  # 5분 대기
                 continue
+
+            # 🆕 미체결 주문 자동 관리 (5분마다) - 라이브러리 사용
+            if (now - last_pending_check).total_seconds() >= 300:
+                logger.info("🔍 미체결 주문 자동 관리 실행")
+                trading_state = pending_manager.auto_cancel_pending_orders(trading_state, max_pending_minutes=15)
+                save_trading_state(trading_state)
+                last_pending_check = now
             
             # 포지션 관리 (매도 신호 체크)
             logger.info("=== 타겟 종목 포지션 관리 ===")
@@ -3202,8 +3342,6 @@ def main():
             if now.hour < 15:
                 logger.info("=== 타겟 종목 매수 기회 스캔 ===")
                 buy_opportunities = scan_target_stocks(trading_state)
-                trading_state = execute_buy_opportunities(buy_opportunities, trading_state)  # 🎯 함수명 그대로
-                save_trading_state(trading_state)
 
                 if buy_opportunities:
                     # 매수 실행
@@ -3211,15 +3349,38 @@ def main():
                     save_trading_state(trading_state)
             
             # 1시간마다 타겟 종목 현황 보고
-            if (now - last_status_report).seconds >= 3600:  # 1시간마다
+            if (now - last_status_report).seconds >= 3600:
                 send_target_stock_status()
+                
+                # 🆕 미체결 주문 현황 보고 (라이브러리 사용)
+                pending_status = pending_manager.get_pending_orders_status(trading_state)
+                if pending_status['count'] > 0:
+                    pending_msg = f"\n📋 미체결 주문 현황: {pending_status['count']}개\n"
+                    for order in pending_status['orders']:
+                        pending_msg += f"• {order['stock_name']}: {order['quantity']}주 ({order['elapsed_minutes']:.0f}분 경과)\n"
+                    
+                    logger.info(pending_msg)
+                    discord_alert.SendMessage(pending_msg)
+                
                 last_status_report = now
             
-            # 장 마감 후 일일 보고서 (15:30 이후)
+            # 장 마감 후 일일 보고서
             if now.hour >= 15 and now.minute >= 30 and not daily_report_sent:
                 send_daily_report(trading_state)
+                
+                # 🆕 미체결 주문 정리 보고서 (라이브러리 사용)
+                pending_status = pending_manager.get_pending_orders_status(trading_state)
+                if pending_status['count'] > 0:
+                    final_pending_msg = f"📋 장 마감 미체결 주문 현황: {pending_status['count']}개\n"
+                    for order in pending_status['orders']:
+                        final_pending_msg += f"• {order['stock_name']}: {order['quantity']}주 @ {order['price']:,}원\n"
+                    final_pending_msg += "→ 내일 장 시작 전 자동 정리됩니다."
+                    
+                    logger.info(final_pending_msg)
+                    discord_alert.SendMessage(final_pending_msg)
+                
                 daily_report_sent = True
-            
+
             # 30초 대기
             # time.sleep(30)
 
