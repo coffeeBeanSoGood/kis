@@ -377,6 +377,9 @@ Common.set_logger(logger)
 import technical_analysis
 technical_analysis.set_logger(logger)
 
+# import news_analysis
+# news_analysis.set_logger(logger)
+
 # =========================== 전역 설정 인스턴스 ===========================
 trading_config = None
 pending_manager = None
@@ -2808,8 +2811,9 @@ def send_target_stock_status():
         logger.error(f"타겟 종목 현황 보고서 생성 중 에러: {str(e)}")
 
 ################################### 메인 로직 ##################################
+
 def scan_target_stocks(trading_state):
-    """타겟 종목 매수 기회 스캔 - 미체결 주문 체크 추가"""
+    """타겟 종목 매수 기회 스캔 - 뉴스 분석 통합 (캐시 적용)"""
     try:
         # 기존 로직들...
         if 'recent_sells' in trading_state:
@@ -2832,6 +2836,28 @@ def scan_target_stocks(trading_state):
             if expired_stocks:
                 logger.info(f"재매수 방지 만료: {len(expired_stocks)}개 종목")
         
+        # 🔥 뉴스 캐시 초기화
+        if 'news_cache' not in trading_state:
+            trading_state['news_cache'] = {}
+        
+        # 만료된 뉴스 캐시 정리
+        news_cache_hours = trading_config.config.get('news_cache_hours', 6)
+        expired_news = []
+        for stock_code, cache_data in trading_state['news_cache'].items():
+            try:
+                last_check = datetime.datetime.fromisoformat(cache_data['last_check'])
+                if (datetime.datetime.now() - last_check).total_seconds() / 3600 > news_cache_hours:
+                    expired_news.append(stock_code)
+            except:
+                expired_news.append(stock_code)
+        
+        for stock_code in expired_news:
+            del trading_state['news_cache'][stock_code]
+        
+        if expired_news:
+            logger.info(f"뉴스 캐시 만료: {len(expired_news)}개 종목")
+            save_trading_state(trading_state)  # 캐시 정리 저장
+        
         buy_opportunities = []
         current_positions = len(trading_state['positions'])
         
@@ -2841,6 +2867,12 @@ def scan_target_stocks(trading_state):
         
         logger.info(f"타겟 종목 매수 기회 스캔 시작: {len(trading_config.target_stocks)}개 종목 분석")
         
+        # 🔥 뉴스 분석을 위한 종목 리스트 준비
+        stocks_for_news = []
+        technical_results = {}  # 기술적 분석 결과 저장
+        cached_news_count = 0  # 캐시 히트 카운트
+        
+        # 1단계: 기술적 분석 먼저 수행
         for stock_code, target_config in trading_config.target_stocks.items():
             # ========== 디버깅 코드 시작 ==========
             logger.info(f"🔍 [{stock_code}] 스캔 시작")
@@ -2905,23 +2937,52 @@ def scan_target_stocks(trading_state):
                 # 매수 신호 분석
                 buy_analysis = analyze_buy_signal(stock_data, target_config)
                 
+                # 기술적 분석 결과 저장
+                technical_results[stock_code] = {
+                    'stock_data': stock_data,
+                    'target_config': target_config,
+                    'buy_analysis': buy_analysis,
+                    'current_price': current_price
+                }
+                
+                # 뉴스 체크가 필요한 종목 선별
+                if trading_config.config.get('use_news_analysis', False):
+                    news_threshold = trading_config.config.get('news_check_threshold', 35)
+                    if buy_analysis['score'] >= news_threshold:
+                        # 🔥 캐시 확인
+                        if stock_code in trading_state['news_cache']:
+                            cache_data = trading_state['news_cache'][stock_code]
+                            try:
+                                last_check = datetime.datetime.fromisoformat(cache_data['last_check'])
+                                cache_age_hours = (datetime.datetime.now() - last_check).total_seconds() / 3600
+                                
+                                if cache_age_hours < news_cache_hours:
+                                    # 캐시 유효 - 바로 사용
+                                    cached_news_count += 1
+                                    logger.info(f"📰 [{stock_code}] 뉴스 캐시 사용 (캐시 나이: {cache_age_hours:.1f}시간)")
+                                else:
+                                    # 캐시 만료 - 새로 분석 필요
+                                    stocks_for_news.append({
+                                        'StockCode': stock_code,
+                                        'StockName': target_config.get('name', stock_code)
+                                    })
+                                    logger.info(f"📰 [{stock_code}] 뉴스 캐시 만료 - 재분석 필요")
+                            except:
+                                # 캐시 데이터 오류 - 새로 분석
+                                stocks_for_news.append({
+                                    'StockCode': stock_code,
+                                    'StockName': target_config.get('name', stock_code)
+                                })
+                        else:
+                            # 캐시 없음 - 새로 분석
+                            stocks_for_news.append({
+                                'StockCode': stock_code,
+                                'StockName': target_config.get('name', stock_code)
+                            })
+                            logger.info(f"📰 [{stock_code}] 뉴스 분석 대상 추가 (점수: {buy_analysis['score']})")
+                
                 if buy_analysis['is_buy_signal']:
                     logger.info(f"🎯 [{stock_code}] 매수 기회 발견! (점수: {buy_analysis.get('score', 0)})")
-                    buy_opportunities.append({
-                        'stock_code': stock_code,
-                        'stock_name': target_config.get('name', stock_code),
-                        'price': current_price,
-                        'score': buy_analysis['score'],
-                        'min_score': buy_analysis['min_score'],
-                        'signals': buy_analysis['signals'],
-                        'analysis': buy_analysis['analysis'],
-                        'target_config': target_config
-                    })
-                    
-                    logger.info(f"✅ 매수 기회 발견: {target_config.get('name', stock_code)}({stock_code})")
-                    logger.info(f"   점수: {buy_analysis['score']}/{buy_analysis['min_score']}점")
-                    for signal in buy_analysis['signals']:
-                        logger.info(f"   - {signal}")
                 else:
                     logger.info(f"⏳ [{stock_code}] 매수 신호 없음 (점수: {buy_analysis.get('score', 0)}/{buy_analysis.get('min_score', 40)})")
                 
@@ -2930,8 +2991,124 @@ def scan_target_stocks(trading_state):
                 continue
             # ========== 디버깅 코드 끝 ==========
         
+        # 2단계: 뉴스 분석 (캐시되지 않은 종목만)
+        news_results = {}
+        
+        # 🔥 캐시된 뉴스 먼저 로드
+        if cached_news_count > 0:
+            logger.info(f"📰 캐시에서 {cached_news_count}개 종목 뉴스 로드")
+            for stock_code in technical_results:
+                if stock_code in trading_state['news_cache']:
+                    cache_data = trading_state['news_cache'][stock_code]
+                    if 'news_score' in cache_data:
+                        news_results[stock_code] = cache_data['news_score']
+        
+        # 🔥 새로운 뉴스 분석 수행
+        if stocks_for_news and trading_config.config.get('use_news_analysis', False):
+            logger.info(f"📰 {len(stocks_for_news)}개 종목 뉴스 신규 분석 시작")
+            try:
+                import news_analysis
+                news_analysis.set_logger(logger)  # logger 설정
+                news_data = news_analysis.analyze_all_stocks_news(stocks_for_news)
+                
+                # 뉴스 결과를 종목별로 매핑 및 캐시 저장
+                if news_data and 'stocks' in news_data:
+                    for stock_name, stock_news in news_data['stocks'].items():
+                        stock_code = stock_news.get('stock_code')
+                        if stock_code and 'analysis' in stock_news:
+                            news_score = stock_news['analysis']
+                            news_results[stock_code] = news_score
+                            
+                            # 🔥 캐시에 저장
+                            trading_state['news_cache'][stock_code] = {
+                                'last_check': datetime.datetime.now().isoformat(),
+                                'news_score': news_score,
+                                'articles': stock_news.get('articles', [])[:2]  # 최근 2개 기사 제목만 저장
+                            }
+                            
+                            logger.info(f"📰 {stock_name}({stock_code}): {news_score['decision']} "
+                                      f"({news_score['percentage']}%) - 캐시 저장")
+                    
+                    # 캐시 업데이트 저장
+                    save_trading_state(trading_state)
+                            
+            except Exception as e:
+                logger.error(f"뉴스 일괄 분석 실패: {str(e)}")
+        
+        # 3단계: 기술적 분석과 뉴스 분석 결합
+        for stock_code, tech_result in technical_results.items():
+            buy_analysis = tech_result['buy_analysis']
+            target_config = tech_result['target_config']
+            stock_name = target_config.get('name', stock_code)
+            
+            # 뉴스 점수 반영
+            if stock_code in news_results:
+                news_impact = news_results[stock_code]
+                decision = news_impact.get('decision', 'NEUTRAL')
+                percentage = news_impact.get('percentage', 0)
+                reason = news_impact.get('reason', '')
+                
+                # 뉴스 점수 계산
+                news_weight = trading_config.config.get('news_weight', {})
+                positive_mult = news_weight.get('positive_multiplier', 0.3)
+                negative_mult = news_weight.get('negative_multiplier', 0.5)
+                
+                original_score = buy_analysis['score']
+                
+                if decision == 'POSITIVE':
+                    news_score = int(percentage * positive_mult)
+                    buy_analysis['score'] += news_score
+                    buy_analysis['signals'].append(f"긍정 뉴스 +{news_score}점: {reason[:50]}")
+                    logger.info(f"📰 {stock_name}: 긍정 뉴스 +{news_score}점 (기존 {original_score} → {buy_analysis['score']})")
+                    
+                    # 매우 긍정적 뉴스는 신호 강도 상향
+                    if percentage >= 70 and buy_analysis.get('signal_strength') == 'NORMAL':
+                        buy_analysis['signal_strength'] = 'STRONG'
+                        target_config['last_signal_strength'] = 'STRONG'
+                    
+                elif decision == 'NEGATIVE':
+                    news_score = -int(percentage * negative_mult)
+                    
+                    # 매우 부정적 뉴스는 스킵
+                    if percentage >= 70:
+                        logger.info(f"❌ {stock_name}: 강한 부정 뉴스로 제외")
+                        continue
+                    
+                    buy_analysis['score'] += news_score
+                    buy_analysis['signals'].append(f"부정 뉴스 {news_score}점: {reason[:50]}")
+                    logger.info(f"📰 {stock_name}: 부정 뉴스 {news_score}점 (기존 {original_score} → {buy_analysis['score']})")
+                
+                buy_analysis['news_impact'] = news_impact
+                
+                # 뉴스 반영 후 재판단
+                buy_analysis['is_buy_signal'] = buy_analysis['score'] >= buy_analysis['min_score']
+            
+            # 최종 매수 신호 판단
+            if buy_analysis['is_buy_signal']:
+                buy_opportunities.append({
+                    'stock_code': stock_code,
+                    'stock_name': stock_name,
+                    'price': tech_result['current_price'],
+                    'score': buy_analysis['score'],
+                    'min_score': buy_analysis['min_score'],
+                    'signals': buy_analysis['signals'],
+                    'analysis': buy_analysis['analysis'],
+                    'target_config': target_config,
+                    'signal_strength': buy_analysis.get('signal_strength', 'NORMAL'),
+                    'news_impact': buy_analysis.get('news_impact')
+                })
+                
+                logger.info(f"✅ 매수 기회 발견: {stock_name}({stock_code})")
+                logger.info(f"   점수: {buy_analysis['score']}/{buy_analysis['min_score']}점")
+                for signal in buy_analysis['signals'][:3]:
+                    logger.info(f"   - {signal}")
+        
         # 점수 순으로 정렬
         buy_opportunities.sort(key=lambda x: x['score'], reverse=True)
+        
+        # 🔥 캐시 상태 로깅
+        total_cache_entries = len(trading_state.get('news_cache', {}))
+        logger.info(f"📰 뉴스 캐시 현황: 총 {total_cache_entries}개 종목, 이번 스캔에서 {cached_news_count}개 재사용")
         
         logger.info(f"매수 기회 스캔 완료: {len(buy_opportunities)}개 발견")
         return buy_opportunities
@@ -3446,9 +3623,9 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
         return trading_state
 
 def create_config_file(config_path: str = "target_stock_config.json") -> None:
-    """기본 설정 파일 생성 (분봉 타이밍 옵션 포함한 개선 버전)"""
+    """기본 설정 파일 생성 (분봉 타이밍 옵션 + 뉴스 분석 포함한 개선 버전)"""
     try:
-        logger.info("분봉 타이밍 옵션 포함한 개선 설정 파일 생성 시작...")
+        logger.info("분봉 타이밍 + 뉴스 분석 옵션 포함한 개선 설정 파일 생성 시작...")
         
         # 기본 타겟 종목들 정의 (거래량 확보를 위해 확대)
         sample_codes = ["272210", "034020", "010140"]  # 한화시스템, 두산에너빌리티, 삼성중공업
@@ -3562,7 +3739,7 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
                     "characteristic_type": "growth"
                 })
         
-        # 전체 설정 구성 (분봉 타이밍 옵션 포함)
+        # 전체 설정 구성 (분봉 타이밍 + 뉴스 분석 옵션 포함)
         config = {
             "target_stocks": target_stocks,
             
@@ -3574,6 +3751,16 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
             "intraday_data_period": "5m",           # 분봉 데이터 주기 (5분봉)
             "intraday_data_count": 24,              # 분봉 데이터 개수 (2시간치)
             "force_buy_after_wait": True,           # 최대 대기시간 후 강제 매수 여부
+            
+            # 🔥 뉴스 분석 설정 (새로 추가)
+            "use_news_analysis": False,             # 뉴스 분석 기능 사용 여부 (기본값 False)
+            "news_check_threshold": 35,             # 이 점수 이상일 때만 뉴스 체크
+            "always_check_news": False,             # 점수와 관계없이 항상 뉴스 체크
+            "news_cache_hours": 6,                  # 뉴스 캐시 유효 시간
+            "news_weight": {
+                "positive_multiplier": 0.3,         # 긍정 뉴스 가중치 (최대 30점)
+                "negative_multiplier": 0.5          # 부정 뉴스 가중치 (최대 50점)
+            },
             
             # 예산 설정 - 기존 구조 유지하되 일부 값만 최적화
             "use_absolute_budget": True,
@@ -3628,12 +3815,14 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, ensure_ascii=False, indent=4)
         
-        logger.info(f"🎯 분봉 타이밍 옵션 포함 설정 파일 생성 완료: {config_path}")
+        logger.info(f"🎯 분봉 타이밍 + 뉴스 분석 옵션 포함 설정 파일 생성 완료: {config_path}")
         logger.info(f"주요 설정:")
         logger.info(f"  - 분봉 타이밍: {'ON' if config['use_intraday_timing'] else 'OFF'}")
+        logger.info(f"  - 뉴스 분석: {'ON' if config['use_news_analysis'] else 'OFF'}")
         logger.info(f"  - 예산: {config['absolute_budget']:,}원")
         # logger.info(f"  - 최대 종목수: {config['max_positions']}개")
         logger.info(f"  - 체크 주기: {config['intraday_check_interval']}초 (분봉 사용시)")
+        logger.info(f"  - 뉴스 캐시: {config['news_cache_hours']}시간")
         logger.info(f"  - 모든 종목: 성장주 전략 적용")
         
         # 적응형 전략 파일 초기화
