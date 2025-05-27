@@ -1534,112 +1534,174 @@ def analyze_sell_signal(stock_data, position, target_config):
         return {'is_sell_signal': False, 'sell_type': None, 'reason': f'분석 오류: {str(e)}'}
 
 def analyze_intraday_entry_timing(stock_code, target_config):
-    """분봉 기준 최적 진입 타이밍 분석"""
+    """분봉 기준 최적 진입 타이밍 분석 - API 호출 방식 수정"""
     try:
-        # 5분봉 데이터 조회 (최근 2시간)
-        df_5m = Common.GetOhlcv("KR", stock_code, period='5m', count=24)
+        # 🔥 KIS API 정확한 사용법으로 수정
+        try:
+            # 방법 1: KisKR.GetOhlcvNew 사용 (분봉)
+            # 'M' = 분봉, 개수, adj_ok=1 (수정주가 적용)
+            df_5m = KisKR.GetOhlcvNew(stock_code, 'M', 24, adj_ok=1)
+            
+            if df_5m is None or len(df_5m) < 10:
+                logger.debug(f"KisKR.GetOhlcvNew 분봉 조회 실패: {stock_code}")
+                
+                # 방법 2: Common.GetOhlcv 기본 호출 (일봉을 짧게)
+                df_5m = Common.GetOhlcv("KR", stock_code, 24)  # period 파라미터 제거
+                
+        except Exception as api_e:
+            logger.debug(f"분봉 API 호출 실패: {str(api_e)}, 일봉으로 대체")
+            # 방법 3: 일봉 데이터로 대체 (기존 방식)
+            df_5m = Common.GetOhlcv("KR", stock_code, 24)
         
         if df_5m is None or len(df_5m) < 10:
-            return {'enter_now': True, 'reason': '분봉 데이터 부족'}
+            logger.debug(f"모든 데이터 조회 실패: {stock_code}")
+            return {'enter_now': True, 'reason': '데이터 부족으로 즉시 진입'}
         
         current_price = KisKR.GetCurrentPrice(stock_code)
+        if not current_price:
+            return {'enter_now': True, 'reason': '현재가 조회 실패로 즉시 진입'}
         
-        # 분봉 기술적 지표 계산
-        df_5m['RSI_5m'] = TechnicalIndicators.calculate_rsi(df_5m, 14)
-        df_5m['MA5_5m'] = df_5m['close'].rolling(5).mean()
-        df_5m['MA20_5m'] = df_5m['close'].rolling(20).mean()
+        # 🔥 데이터 길이에 따른 적응적 분석
+        data_length = len(df_5m)
+        logger.debug(f"{stock_code} 데이터 길이: {data_length}")
         
-        # 볼린저밴드 (5분봉)
-        bb_5m = TechnicalIndicators.calculate_bollinger_bands(df_5m, 20, 2.0)
-        df_5m[['BB_Mid', 'BB_Upper', 'BB_Lower']] = bb_5m
+        # 기술적 지표 계산 (데이터 길이에 맞게 조정)
+        rsi_period = min(14, data_length // 2)
+        ma_short = min(5, data_length // 4)
+        ma_long = min(20, data_length // 2)
+        bb_period = min(20, data_length // 2)
+        
+        if rsi_period < 3:
+            return {'enter_now': True, 'reason': '데이터 부족으로 즉시 진입'}
+        
+        # 기술적 지표 계산
+        df_5m['RSI'] = TechnicalIndicators.calculate_rsi(df_5m, rsi_period)
+        df_5m['MA_Short'] = df_5m['close'].rolling(window=ma_short).mean()
+        df_5m['MA_Long'] = df_5m['close'].rolling(window=ma_long).mean()
+        
+        # 볼린저밴드 (데이터가 충분할 때만)
+        if data_length >= bb_period:
+            bb_data = TechnicalIndicators.calculate_bollinger_bands(df_5m, bb_period, 2.0)
+            df_5m[['BB_Mid', 'BB_Upper', 'BB_Lower']] = bb_data
+        else:
+            # 볼린저밴드 계산 불가시 더미 값
+            df_5m['BB_Mid'] = df_5m['close']
+            df_5m['BB_Upper'] = df_5m['close'] * 1.02
+            df_5m['BB_Lower'] = df_5m['close'] * 0.98
         
         entry_signals = []
         entry_score = 0
         
-        # 🎯 진입 타이밍 신호들
+        # 🎯 1) RSI 기반 신호
+        try:
+            rsi_current = df_5m['RSI'].iloc[-1]
+            if not pd.isna(rsi_current):
+                if rsi_current <= 30:
+                    entry_score += 30
+                    entry_signals.append(f"RSI 과매도 {rsi_current:.1f} (+30)")
+                elif rsi_current <= 40:
+                    entry_score += 20
+                    entry_signals.append(f"RSI 조정 {rsi_current:.1f} (+20)")
+                elif rsi_current >= 70:
+                    entry_score -= 20
+                    entry_signals.append(f"RSI 과매수 {rsi_current:.1f} (-20)")
+        except:
+            pass
         
-        # 1) RSI 과매도 반등
-        rsi_5m = df_5m['RSI_5m'].iloc[-1]
-        if rsi_5m <= 30:
-            entry_score += 30
-            entry_signals.append(f"분봉 RSI 과매도 {rsi_5m:.1f} (+30)")
-        elif rsi_5m <= 40:
-            entry_score += 20
-            entry_signals.append(f"분봉 RSI 조정 {rsi_5m:.1f} (+20)")
-        
-        # 2) 볼린저밴드 하단 터치
-        bb_lower = df_5m['BB_Lower'].iloc[-1]
-        if current_price <= bb_lower * 1.02:  # 하단 2% 이내
-            entry_score += 25
-            entry_signals.append("볼린저 하단 근접 (+25)")
-        
-        # 3) 단기 이평선 지지
-        ma5_5m = df_5m['MA5_5m'].iloc[-1]
-        if abs(current_price - ma5_5m) / ma5_5m <= 0.01:  # 1% 이내
-            entry_score += 20
-            entry_signals.append("5분봉 5MA 지지 (+20)")
-        
-        # 4) 거래량 증가 + 가격 안정
-        recent_volume = df_5m['volume'].iloc[-3:].mean()
-        avg_volume = df_5m['volume'].iloc[-20:-3].mean()
-        volume_ratio = recent_volume / avg_volume if avg_volume > 0 else 1
-        
-        if volume_ratio >= 1.2:
-            entry_score += 15
-            entry_signals.append(f"분봉 거래량 증가 {volume_ratio:.1f}배 (+15)")
-        
-        # 5) 연속 하락 후 반등 (5분봉)
-        if len(df_5m) >= 5:
-            recent_changes = df_5m['close'].pct_change().iloc[-4:-1]
-            consecutive_down = sum(1 for x in recent_changes if x < 0)
-            last_change = df_5m['close'].pct_change().iloc[-1]
+        # 🎯 2) 볼린저밴드 기반 신호
+        try:
+            bb_lower = df_5m['BB_Lower'].iloc[-1]
+            bb_upper = df_5m['BB_Upper'].iloc[-1]
             
-            if consecutive_down >= 2 and last_change > 0:
-                entry_score += 20
-                entry_signals.append("분봉 반등 신호 (+20)")
+            if not pd.isna(bb_lower) and current_price <= bb_lower * 1.02:
+                entry_score += 25
+                entry_signals.append("볼린저 하단 근접 (+25)")
+            elif not pd.isna(bb_upper) and current_price >= bb_upper * 0.98:
+                entry_score -= 15
+                entry_signals.append("볼린저 상단 근접 (-15)")
+        except:
+            pass
         
-        # 📉 진입 지연 신호들
+        # 🎯 3) 이동평균선 지지
+        try:
+            ma_short_current = df_5m['MA_Short'].iloc[-1]
+            if not pd.isna(ma_short_current):
+                distance_ratio = abs(current_price - ma_short_current) / ma_short_current
+                if distance_ratio <= 0.01:  # 1% 이내
+                    entry_score += 20
+                    entry_signals.append(f"{ma_short}MA 지지 (+20)")
+        except:
+            pass
         
-        # 1) 과매수 구간
-        if rsi_5m >= 70:
-            entry_score -= 20
-            entry_signals.append(f"분봉 과매수 {rsi_5m:.1f} (-20)")
+        # 🎯 4) 거래량 신호
+        try:
+            if data_length >= 10:
+                recent_volume = df_5m['volume'].iloc[-3:].mean()
+                past_volume = df_5m['volume'].iloc[-10:-3].mean()
+                
+                if past_volume > 0:
+                    volume_ratio = recent_volume / past_volume
+                    if volume_ratio >= 1.2:
+                        entry_score += 15
+                        entry_signals.append(f"거래량 증가 {volume_ratio:.1f}배 (+15)")
+        except:
+            pass
         
-        # 2) 볼린저밴드 상단
-        bb_upper = df_5m['BB_Upper'].iloc[-1]
-        if current_price >= bb_upper * 0.98:
-            entry_score -= 15
-            entry_signals.append("볼린저 상단 근접 (-15)")
-        
-        # 3) 급등 후 고점
-        if len(df_5m) >= 10:
-            recent_high = df_5m['high'].iloc[-10:].max()
-            if current_price >= recent_high * 0.98:
-                entry_score -= 10
-                entry_signals.append("단기 고점 근처 (-10)")
+        # 🎯 5) 가격 추세 신호
+        try:
+            if data_length >= 5:
+                # 최근 변화율 계산
+                recent_changes = df_5m['close'].pct_change().iloc[-4:]
+                down_count = sum(1 for x in recent_changes if x < -0.01)  # 1% 이상 하락
+                last_change = df_5m['close'].pct_change().iloc[-1]
+                
+                if down_count >= 2 and last_change > 0.005:  # 연속 하락 후 반등
+                    entry_score += 20
+                    entry_signals.append("반등 신호 (+20)")
+                
+                # 고점 근처 체크
+                recent_high = df_5m['high'].iloc[-min(10, data_length):].max()
+                if current_price >= recent_high * 0.98:
+                    entry_score -= 10
+                    entry_signals.append("단기 고점 근처 (-10)")
+        except:
+            pass
         
         # 🎯 진입 결정
-        min_entry_score = target_config.get('min_entry_score', 30)
+        min_entry_score = target_config.get('min_entry_score', 20)  # 기준 완화
         
-        if entry_score >= min_entry_score:
-            return {
-                'enter_now': True,
-                'entry_score': entry_score,
-                'entry_signals': entry_signals,
-                'reason': f"좋은 진입 타이밍 (점수: {entry_score})"
+        # 데이터 부족시 기준 완화
+        if data_length < 20:
+            min_entry_score = max(10, min_entry_score - 10)
+            entry_signals.append(f"데이터 부족으로 기준 완화 ({data_length}개)")
+        
+        enter_now = entry_score >= min_entry_score
+        
+        result = {
+            'enter_now': enter_now,
+            'entry_score': entry_score,
+            'entry_signals': entry_signals,
+            'reason': f"{'진입 타이밍 양호' if enter_now else '진입 대기'} (점수: {entry_score}/{min_entry_score})",
+            'data_info': {
+                'data_length': data_length,
+                'rsi_period': rsi_period,
+                'ma_periods': [ma_short, ma_long]
             }
-        else:
-            return {
-                'enter_now': False,
-                'entry_score': entry_score,
-                'entry_signals': entry_signals,
-                'reason': f"진입 타이밍 대기 (점수: {entry_score}/{min_entry_score})"
-            }
+        }
+        
+        logger.debug(f"{stock_code} 분봉 분석 결과: {result['reason']}")
+        return result
             
     except Exception as e:
         logger.error(f"분봉 진입 타이밍 분석 중 오류: {str(e)}")
-        return {'enter_now': True, 'reason': '분석 오류로 즉시 진입'}
-
+        # 오류 발생시에도 매수 기회를 놓치지 않도록 즉시 진입
+        return {
+            'enter_now': True, 
+            'entry_score': 0,
+            'entry_signals': [f"분석 오류: {str(e)}"],
+            'reason': '분석 오류로 즉시 진입'
+        }
+    
 ################################### 상태 관리 ##################################
 
 def load_trading_state():
@@ -1718,7 +1780,11 @@ def calculate_position_size(target_config, stock_code, stock_price, trading_stat
         
         # 8. 기본 수량 계산
         base_quantity = int(allocated_budget / stock_price)
-        
+
+        # 🆕 임시 디버깅 로그 추가
+        stock_name = target_config.get('name', stock_code)
+        logger.info(f"🔍 임시 디버깅 - {stock_name}({stock_code}): 사용예산 {usable_budget:,}원, 배분율 {enhanced_allocation*100:.1f}%, 배분예산 {allocated_budget:,}원, 현재가 {stock_price:,}원, 계산수량 {base_quantity}주, 최소주문금액 {min_order_amount:,}원")
+            
         if base_quantity <= 0:
             return 0
         
@@ -2439,7 +2505,7 @@ def scan_target_stocks(trading_state):
         current_positions = len(trading_state['positions'])
         
         if current_positions >= get_active_target_stock_count():
-            logger.info(f"최대 보유 종목 수({get_active_target_stock_count()}개) 도달")
+            logger.info(f"최대 보유 종목 수qh({get_active_target_stock_count()}개) 도달")
             return []
         
         logger.info(f"타겟 종목 매수 기회 스캔 시작: {len(trading_config.target_stocks)}개 종목 분석")
@@ -3032,7 +3098,7 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
         # 🎯 특성별 파라미터 수정 (모든 타입의 min_score 상향)
         characteristic_params = {
             "growth": {
-                "allocation_ratio": 0.30,
+                "allocation_ratio": 1,
                 "profit_target": 0.12,
                 "stop_loss": -0.08,           # -0.12 → -0.08
                 "rsi_oversold": 55,
@@ -3054,7 +3120,7 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
                 "ma_support_margin": 0.01
             },
             "balanced": {
-                "allocation_ratio": 0.25,
+                "allocation_ratio": 0.5,
                 "profit_target": 0.10,
                 "stop_loss": -0.07,           # -0.12 → -0.07
                 "rsi_oversold": 55,
@@ -3074,7 +3140,7 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
                 "ma_support_margin": 0.015
             },
             "value": {
-                "allocation_ratio": 0.22,
+                "allocation_ratio": 0.5,
                 "profit_target": 0.08,
                 "stop_loss": -0.06,           # -0.10 → -0.06
                 "rsi_oversold": 60,
