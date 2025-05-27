@@ -2447,6 +2447,25 @@ def process_buy_candidates(trading_state):
                                     msg += f"대기시간: {wait_hours:.1f}시간\n"
                                     msg += f"일봉점수: {daily_score}점 ({signal_strength})\n"
                                     msg += f"매수사유: {force_reason}"
+
+                                    # 🆕 뉴스 분석 정보 추가
+                                    if opportunity.get('news_impact'):
+                                        news_impact = opportunity['news_impact']
+                                        decision = news_impact.get('decision', 'NEUTRAL')
+                                        percentage = news_impact.get('percentage', 0)
+                                        reason = news_impact.get('reason', '')
+                                        
+                                        msg += f"\n📰 뉴스 분석:\n"
+                                        if decision == 'POSITIVE':
+                                            msg += f"• ✅ 긍정 뉴스 ({percentage}% 신뢰도)\n"
+                                            if reason:
+                                                msg += f"• 내용: {reason[:80]}...\n"
+                                        elif decision == 'NEGATIVE': 
+                                            msg += f"• ❌ 부정 뉴스 ({percentage}% 신뢰도)\n"
+                                            if reason:
+                                                msg += f"• 내용: {reason[:80]}...\n"
+                                        else:
+                                            msg += f"• ⚪ 중립 뉴스 (영향 없음)\n"
                                     
                                     logger.info(msg)
                                     if hasattr(trading_config, 'use_discord_alert') and trading_config.config.get('use_discord_alert', True):
@@ -2603,7 +2622,25 @@ def process_buy_candidates(trading_state):
                             msg += f"일봉점수: {daily_score}점 ({signal_strength})\n"
                             msg += f"분봉점수: {current_intraday_score}점\n"
                             msg += f"진입사유: {timing_analysis['reason']}"
-                            
+
+                            if opportunity.get('news_impact'):
+                                news_impact = opportunity['news_impact']
+                                decision = news_impact.get('decision', 'NEUTRAL')
+                                percentage = news_impact.get('percentage', 0)
+                                reason = news_impact.get('reason', '')
+                                
+                                msg += f"\n📰 뉴스 분석:\n"
+                                if decision == 'POSITIVE':
+                                    msg += f"• ✅ 긍정 뉴스 ({percentage}% 신뢰도)\n"
+                                    if reason:
+                                        msg += f"• 내용: {reason[:80]}...\n"
+                                elif decision == 'NEGATIVE': 
+                                    msg += f"• ❌ 부정 뉴스 ({percentage}% 신뢰도)\n"
+                                    if reason:
+                                        msg += f"• 내용: {reason[:80]}...\n"
+                                else:
+                                    msg += f"• ⚪ 중립 뉴스 (영향 없음)\n"
+
                             logger.info(msg)
                             if hasattr(trading_config, 'use_discord_alert') and trading_config.config.get('use_discord_alert', True):
                                 discord_alert.SendMessage(msg)
@@ -3551,7 +3588,25 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                     msg += f"• 투자금액: {current_stock_invested:,.0f}원\n"
                     msg += f"• 종목별 한도: {per_stock_limit:,.0f}원\n"
                     msg += f"• 사용률: {stock_usage_rate:.1f}%\n"
-                    
+
+                    if opportunity.get('news_impact'):
+                        news_impact = opportunity['news_impact']
+                        decision = news_impact.get('decision', 'NEUTRAL')
+                        percentage = news_impact.get('percentage', 0)
+                        reason = news_impact.get('reason', '')
+                        
+                        msg += f"\n📰 뉴스 분석:\n"
+                        if decision == 'POSITIVE':
+                            msg += f"• ✅ 긍정 뉴스 ({percentage}% 신뢰도)\n"
+                            if reason:
+                                msg += f"• 내용: {reason[:80]}...\n"  # 80자까지만
+                        elif decision == 'NEGATIVE': 
+                            msg += f"• ❌ 부정 뉴스 ({percentage}% 신뢰도)\n"
+                            if reason:
+                                msg += f"• 내용: {reason[:80]}...\n"
+                        else:
+                            msg += f"• ⚪ 중립 뉴스 (영향 없음)\n"
+
                     # 주요 매수 사유 (상위 3개)
                     if opportunity.get('signals'):
                         msg += f"\n📈 주요 매수 사유:\n"
@@ -3753,13 +3808,13 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
             "force_buy_after_wait": True,           # 최대 대기시간 후 강제 매수 여부
             
             # 🔥 뉴스 분석 설정 (새로 추가)
-            "use_news_analysis": False,             # 뉴스 분석 기능 사용 여부 (기본값 False)
+            "use_news_analysis": True,             # 뉴스 분석 기능 사용 여부 (기본값 False)
             "news_check_threshold": 35,             # 이 점수 이상일 때만 뉴스 체크
             "always_check_news": False,             # 점수와 관계없이 항상 뉴스 체크
             "news_cache_hours": 6,                  # 뉴스 캐시 유효 시간
             "news_weight": {
-                "positive_multiplier": 0.3,         # 긍정 뉴스 가중치 (최대 30점)
-                "negative_multiplier": 0.5          # 부정 뉴스 가중치 (최대 50점)
+                "positive_multiplier": 0.15,         # 긍정 뉴스 가중치 (최대 15점)
+                "negative_multiplier": 0.25          # 부정 뉴스 가중치 (최대 25점)
             },
             
             # 예산 설정 - 기존 구조 유지하되 일부 값만 최적화
@@ -3768,7 +3823,7 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
             "absolute_budget": 600000,              # 🎯 60만원으로 설정
             "initial_total_asset": 0,
             "budget_loss_tolerance": 0.2,
-            "trade_budget_ratio": 0.85,             # 0.90 → 0.85 (약간 보수적)
+            "trade_budget_ratio": 0.9,             
             
             # 포지션 관리 - 일부만 최적화
             # "max_positions": 3,                     # 🎯 3종목으로 설정
