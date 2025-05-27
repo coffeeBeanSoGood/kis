@@ -12,7 +12,7 @@ import logging
 import datetime
 import numpy as np
 import pandas as pd
-from typing import Dict, any
+from typing import Dict, Any
 import KIS_API_Helper_KR as KisKR
 
 # 여기에 trend_trading.py에서 다음 클래스들을 그대로 복사:
@@ -318,27 +318,43 @@ class AdaptiveMarketStrategy:
         """초기화"""
         self.strategy_file = strategy_file
         self.stock_performance = {}  # 종목별 시장 환경 성과 데이터
+
+        # 🔥 동적 파라미터 데이터 추가
+        self.dynamic_parameters = {}  # 종목별 동적 파라미터
+        
         self.load_strategy()
-    
+
     def load_strategy(self):
         """전략 데이터 로드"""
         try:
             if os.path.exists(self.strategy_file):
                 with open(self.strategy_file, 'r', encoding='utf-8') as f:
-                    self.stock_performance = json.load(f)
+                    data = json.load(f)
+                    self.stock_performance = data.get('stock_performance', {})
+                    # 🔥 동적 파라미터 로드 추가
+                    self.dynamic_parameters = data.get('dynamic_parameters', {})
                 logger.info(f"적응형 전략 데이터 로드 완료: {len(self.stock_performance)}개 종목")
             else:
                 logger.info("적응형 전략 데이터 파일이 없습니다. 새로 생성합니다.")
                 self.stock_performance = {}
+                self.dynamic_parameters = {}  # 🔥 추가
         except Exception as e:
             logger.exception(f"적응형 전략 데이터 로드 중 오류: {str(e)}")
             self.stock_performance = {}
-    
+            self.dynamic_parameters = {}  # 🔥 추가
+
     def save_strategy(self):
         """전략 데이터 저장"""
         try:
+            # 🔥 동적 파라미터도 함께 저장
+            data = {
+                'stock_performance': self.stock_performance,
+                'dynamic_parameters': self.dynamic_parameters,
+                'last_updated': datetime.datetime.now().isoformat()
+            }
+            
             with open(self.strategy_file, 'w', encoding='utf-8') as f:
-                json.dump(self.stock_performance, f, ensure_ascii=False, indent=4)
+                json.dump(data, f, ensure_ascii=False, indent=4)
             logger.info(f"적응형 전략 데이터 저장 완료")
         except Exception as e:
             logger.exception(f"적응형 전략 데이터 저장 중 오류: {str(e)}")
@@ -488,6 +504,122 @@ class AdaptiveMarketStrategy:
                 adaptive_strategy["profit_target_multiplier"] = 0.6  # 목표 수익률 40% 감소
                 adaptive_strategy["stop_loss_multiplier"] = 0.4  # 60% 감소 (매우 타이트하게)
                 adaptive_strategy["required_signals"] = 5  # 매우 확실한 시그널만
+
+    def get_dynamic_parameters(self, stock_code: str, market_env: str = "sideways") -> Dict:
+        """동적 파라미터 조회"""
+        
+        # 종목별 동적 파라미터 초기화
+        if stock_code not in self.dynamic_parameters:
+            self.dynamic_parameters[stock_code] = {
+                'rsi_threshold': 55,
+                'min_score': 40,
+                'performance_data': {
+                    'total_trades': 0,
+                    'winning_trades': 0,
+                    'recent_results': []
+                },
+                'last_updated': datetime.datetime.now().isoformat()
+            }
+        
+        base_params = self.dynamic_parameters[stock_code]
+        
+        # 시장 환경별 조정
+        market_adjustments = {
+            'uptrend': {'rsi_adjust': +10, 'score_adjust': -5},
+            'downtrend': {'rsi_adjust': -15, 'score_adjust': +10},
+            'sideways': {'rsi_adjust': -5, 'score_adjust': -2}
+        }
+        
+        adjust = market_adjustments.get(market_env, {'rsi_adjust': 0, 'score_adjust': 0})
+        
+        # 성과 기반 조정
+        perf_data = base_params['performance_data']
+        if len(perf_data['recent_results']) >= 5:
+            recent_win_rate = sum(perf_data['recent_results'][-5:]) / 5
+            if recent_win_rate >= 0.8:
+                adjust['rsi_adjust'] += 5
+                adjust['score_adjust'] -= 5
+            elif recent_win_rate <= 0.2:
+                adjust['rsi_adjust'] -= 10
+                adjust['score_adjust'] += 10
+        
+        # 최종 파라미터
+        final_params = {
+            'rsi_threshold': max(25, min(70, base_params['rsi_threshold'] + adjust['rsi_adjust'])),
+            'min_score': max(25, min(70, base_params['min_score'] + adjust['score_adjust']))
+        }
+        
+        logger.info(f"🧠 {stock_code} 동적 파라미터 ({market_env}): "
+                f"RSI {final_params['rsi_threshold']}, 점수 {final_params['min_score']}")
+        
+        return final_params
+
+    def update_dynamic_performance(self, stock_code: str, trade_result: Dict):
+        """거래 결과로 동적 파라미터 성과 업데이트"""
+        
+        if stock_code not in self.dynamic_parameters:
+            self.get_dynamic_parameters(stock_code)  # 초기화
+        
+        perf_data = self.dynamic_parameters[stock_code]['performance_data']
+        
+        # 통계 업데이트
+        perf_data['total_trades'] += 1
+        if trade_result.get('profit', 0) > 0:
+            perf_data['winning_trades'] += 1
+            perf_data['recent_results'].append(1)
+        else:
+            perf_data['recent_results'].append(0)
+        
+        # 최근 결과 10개만 유지
+        if len(perf_data['recent_results']) > 10:
+            perf_data['recent_results'].pop(0)
+        
+        # 연속 결과에 따른 기본 파라미터 조정
+        if len(perf_data['recent_results']) >= 5:
+            last_5 = perf_data['recent_results'][-5:]
+            base_params = self.dynamic_parameters[stock_code]
+            
+            if sum(last_5) == 0:  # 5연패
+                base_params['rsi_threshold'] = max(25, base_params['rsi_threshold'] - 5)
+                base_params['min_score'] = min(65, base_params['min_score'] + 5)
+                logger.warning(f"🔴 {stock_code} 5연패로 기본 파라미터 보수적 조정")
+            elif sum(last_5) == 5:  # 5연승
+                base_params['rsi_threshold'] = min(65, base_params['rsi_threshold'] + 3)
+                base_params['min_score'] = max(25, base_params['min_score'] - 3)
+                logger.info(f"🟢 {stock_code} 5연승으로 기본 파라미터 공격적 조정")
+        
+        # 기존 시장 환경 학습도 함께 호출
+        market_env = trade_result.get('market_env', 'sideways')
+        win = trade_result.get('profit', 0) > 0
+        self.update_performance(stock_code, market_env, win)  # 기존 메서드 호출
+        
+        # 업데이트 시간 기록
+        self.dynamic_parameters[stock_code]['last_updated'] = datetime.datetime.now().isoformat()
+        
+        self.save_strategy()
+        logger.info(f"📊 {stock_code} 동적 파라미터 성과 업데이트 완료")
+
+    def get_parameter_report(self, stock_code: str) -> str:
+        """동적 파라미터 보고서"""
+        
+        if stock_code not in self.dynamic_parameters:
+            return f"{stock_code}: 동적 파라미터 데이터 없음"
+        
+        data = self.dynamic_parameters[stock_code]
+        perf_data = data['performance_data']
+        
+        report = f"🧠 {stock_code} 동적 파라미터:\n"
+        report += f"기본 RSI: {data['rsi_threshold']}, 점수: {data['min_score']}\n"
+        
+        if perf_data['total_trades'] > 0:
+            win_rate = perf_data['winning_trades'] / perf_data['total_trades'] * 100
+            report += f"거래: {perf_data['total_trades']}회 (승률: {win_rate:.1f}%)\n"
+            
+            if len(perf_data['recent_results']) > 0:
+                recent_pattern = ''.join(['🟢' if x else '🔴' for x in perf_data['recent_results'][-5:]])
+                report += f"최근: {recent_pattern}\n"
+        
+        return report
 
 # 추세 필터 클래스 추가
 class TrendFilter:

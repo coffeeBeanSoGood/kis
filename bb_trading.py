@@ -1012,7 +1012,29 @@ def analyze_buy_signal(stock_data, target_config):
         current_price = stock_data['current_price']
         rsi = stock_data['rsi']
         df = stock_data['ohlcv_data']
-        
+
+        # 🔥 동적 파라미터 적용 (새로 추가)
+        if trading_config.use_adaptive_strategy:
+            try:
+                from technical_analysis import AdaptiveMarketStrategy
+                adaptive_strategy = AdaptiveMarketStrategy("bb_adaptive_strategy.json")
+                market_env = detect_stock_environment(stock_code)
+                dynamic_params = adaptive_strategy.get_dynamic_parameters(stock_code, market_env)
+                
+                # 동적 파라미터 사용
+                rsi_threshold = dynamic_params['rsi_threshold']
+                min_score = dynamic_params['min_score']
+                
+                logger.info(f"🧠 {stock_code} 동적 파라미터 적용: RSI기준 {rsi_threshold}, 점수기준 {min_score} (환경: {market_env})")
+            except Exception as e:
+                logger.warning(f"동적 파라미터 적용 실패, 기본값 사용: {e}")
+                rsi_threshold = target_config.get('rsi_oversold', trading_config.rsi_oversold)
+                min_score = target_config.get('min_score', 40)
+        else:
+            # 기존 고정값 사용
+            rsi_threshold = target_config.get('rsi_oversold', trading_config.rsi_oversold)
+            min_score = target_config.get('min_score', 40)
+    
         # 🎯 1단계: 기본 진입 조건 완화
         # RSI 기준 대폭 완화 (실제 과매도 구간)
         if rsi <= 25:  # 극과매도
@@ -1024,10 +1046,10 @@ def analyze_buy_signal(stock_data, target_config):
         elif rsi <= 35:  # 과매도
             score += 25
             signals.append(f"RSI 과매도 {rsi:.1f} (+25)")
-        elif rsi <= 45:  # 조정 구간
+        elif rsi <= rsi_threshold:  # 🔥 동적 기준 적용 (기존 45 대신)
             score += 15
-            signals.append(f"RSI 조정구간 {rsi:.1f} (+15)")
-        
+            signals.append(f"RSI 조정구간 {rsi:.1f} (+15, 기준:{rsi_threshold})")
+
         # 🎯 2단계: 볼린저밴드 기준 완화
         bb_position = "middle"
         bb_lower_distance = (current_price - stock_data['bb_lower']) / stock_data['bb_lower'] * 100
@@ -1123,7 +1145,7 @@ def analyze_buy_signal(stock_data, target_config):
                 signals.append(f"연속하락 후 반등 ({consecutive_down}일) (+20)")
         
         # 🎯 매수 기준 대폭 완화
-        min_score = target_config.get('min_score', 40)  # 35 → 25
+        # min_score = target_config.get('min_score', 40)  # 35 → 25
 
         # 강력한 매수 신호 조건 (기준 강화)
         strong_conditions = [
@@ -1134,15 +1156,16 @@ def analyze_buy_signal(stock_data, target_config):
         ]
 
         signal_strength = 'STRONG' if any(strong_conditions) else 'NORMAL'
-        is_buy_signal = score >= min_score
+        is_buy_signal = score >= min_score  # 🔥 동적 min_score 사용
+
 
         # 🔥 특별조건 할인 기준 강화
         if rsi <= 20 or bb_position == "breakthrough":  # 🔥 25 → 20 (더 극한 상황에만)
-            discounted_score = max(25, min_score * 0.6)  # 🔥 40% 할인 (30%→40%)
+            discounted_score = max(25, min_score * 0.6)  # 🔥 동적 min_score 사용
             if score >= discounted_score and not is_buy_signal:
                 signals.append(f"극한조건 점수할인: {discounted_score:.0f}점")
                 is_buy_signal = True        
-        
+
         # target_config에 신호 강도 저장 (포지션 크기 계산시 사용)
         target_config['last_signal_strength'] = signal_strength
         target_config['last_signal_score'] = score  # 🔥 새로 추가
@@ -1151,7 +1174,7 @@ def analyze_buy_signal(stock_data, target_config):
             'is_buy_signal': is_buy_signal,
             'signal_strength': signal_strength,
             'score': score,
-            'min_score': min_score,
+            'min_score': min_score,  # 🔥 동적 min_score 반환
             'signals': signals if signals else ["매수 신호 부족"],
             'bb_position': bb_position,
             'analysis': {
@@ -1159,6 +1182,12 @@ def analyze_buy_signal(stock_data, target_config):
                 'price_position': price_position,
                 'volume_surge': volume_ratio,
                 'trend_strength': 'strong' if ma5 > ma20 > ma60 else 'weak'
+            },
+            # 🔥 사용된 파라미터 기록 (새로 추가)
+            'used_parameters': {
+                'rsi_threshold': rsi_threshold,
+                'min_score': min_score,
+                'market_env': detect_stock_environment(stock_code) if trading_config.use_adaptive_strategy else 'unknown'
             }
         }
         
@@ -2875,7 +2904,7 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
         logger.info("분봉 타이밍 옵션 포함한 개선 설정 파일 생성 시작...")
         
         # 기본 타겟 종목들 정의 (거래량 확보를 위해 확대)
-        sample_codes = ["034020", "272210", "267250"]  # 두산에너빌리티, 한화시스템, 일진파워
+        sample_codes = ["007660", "010140", "094820"]  # 이수페타시스, 삼성중공업, 일진파워
 
         # 🎯 특성별 파라미터 수정 (모든 타입의 min_score 상향)
         characteristic_params = {
@@ -3002,7 +3031,7 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
             # 예산 설정 - 기존 구조 유지하되 일부 값만 최적화
             "use_absolute_budget": True,
             "absolute_budget_strategy": "proportional",
-            "absolute_budget": 500000,              # 🎯 50만원으로 설정
+            "absolute_budget": 300000,              # 🎯 30만원으로 설정
             "initial_total_asset": 0,
             "budget_loss_tolerance": 0.2,
             "trade_budget_ratio": 0.85,             # 0.90 → 0.85 (약간 보수적)
