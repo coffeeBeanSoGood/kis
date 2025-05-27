@@ -83,21 +83,16 @@ TargetStockList = list()
 
 InvestDataDict = dict()
 InvestDataDict['stock_code'] = "449450" # PLUS K방산
-InvestDataDict['invest_rate'] = 0.3
-TargetStockList.append(InvestDataDict)
-
-InvestDataDict = dict()
-InvestDataDict['stock_code'] = "034020" # 두산에너빌러티
-InvestDataDict['invest_rate'] = 0.3
+InvestDataDict['invest_rate'] = 0.5
 TargetStockList.append(InvestDataDict)
 
 InvestDataDict = dict()
 InvestDataDict['stock_code'] = "042660" # 한화오션
-InvestDataDict['invest_rate'] = 0.4
+InvestDataDict['invest_rate'] = 0.5
 TargetStockList.append(InvestDataDict)
 
 
-DivNum = 7.0 # 분할 수 설정!!!!! 즉 1차수 매수후 2차수부터 7차수까지 6계좌가 존재
+DivNum = 5.0 # 분할 수 설정!!!!! 즉 1차수 매수후 2차수부터 5차수까지 4계좌가 존재
 
 #혹시 이 봇을 장 시작하자 마자 돌린다면 20초르 쉬어준다.
 #그 이유는 20초는 지나야 오늘의 일봉 정보를 제대로 가져오는데
