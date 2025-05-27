@@ -1013,7 +1013,7 @@ def get_stock_data(stock_code):
 ################################### 매매 신호 분석 ##################################
 
 def analyze_buy_signal(stock_data, target_config):
-    """매수 신호 분석 - 개선된 버전 (백테스팅 결과 반영)"""
+    """매수 신호 분석 - 조건부 차단 방식 (균형잡힌 버전)"""
     try:
         signals = []
         score = 0
@@ -1023,96 +1023,188 @@ def analyze_buy_signal(stock_data, target_config):
         rsi = stock_data['rsi']
         df = stock_data['ohlcv_data']
 
-        # 🔥 동적 파라미터 적용 (새로 추가)
-        if trading_config.use_adaptive_strategy:
-            try:
-                from technical_analysis import AdaptiveMarketStrategy
-                adaptive_strategy = AdaptiveMarketStrategy("bb_adaptive_strategy.json")
-                market_env = detect_stock_environment(stock_code)
-                dynamic_params = adaptive_strategy.get_dynamic_parameters(stock_code, market_env)
-                
-                # 동적 파라미터 사용
-                rsi_threshold = dynamic_params['rsi_threshold']
-                min_score = dynamic_params['min_score']
-                
-                logger.info(f"🧠 {stock_code} 동적 파라미터 적용: RSI기준 {rsi_threshold}, 점수기준 {min_score} (환경: {market_env})")
-            except Exception as e:
-                logger.warning(f"동적 파라미터 적용 실패, 기본값 사용: {e}")
-                rsi_threshold = target_config.get('rsi_oversold', trading_config.rsi_oversold)
-                min_score = target_config.get('min_score', 40)
-        else:
-            # 기존 고정값 사용
-            rsi_threshold = target_config.get('rsi_oversold', trading_config.rsi_oversold)
-            min_score = target_config.get('min_score', 40)
-    
-        # 🎯 1단계: 기본 진입 조건 완화
-        # RSI 기준 대폭 완화 (실제 과매도 구간)
-        if rsi <= 25:  # 극과매도
-            score += 40
-            signals.append(f"RSI 극과매도 {rsi:.1f} (+40)")
-        elif rsi <= 30:  # 강과매도  
-            score += 35
-            signals.append(f"RSI 강과매도 {rsi:.1f} (+35)")
-        elif rsi <= 35:  # 과매도
-            score += 25
-            signals.append(f"RSI 과매도 {rsi:.1f} (+25)")
-        elif rsi <= rsi_threshold:  # 🔥 동적 기준 적용 (기존 45 대신)
-            score += 15
-            signals.append(f"RSI 조정구간 {rsi:.1f} (+15, 기준:{rsi_threshold})")
-
-        # 🎯 2단계: 볼린저밴드 기준 완화
-        bb_position = "middle"
-        bb_lower_distance = (current_price - stock_data['bb_lower']) / stock_data['bb_lower'] * 100
+        # 🔍 극한 조건들 미리 계산
         
-        if bb_lower_distance <= -2:  # 하단 돌파
-            score += 35
-            signals.append("볼린저밴드 하단 돌파 (+35)")
-            bb_position = "breakthrough"
-        elif bb_lower_distance <= 3:  # 하단 근처 (3% 이내)
-            score += 25
-            signals.append("볼린저밴드 하단 근처 (+25)")
-            bb_position = "lower"
-        elif current_price <= stock_data['bb_middle']:
-            score += 15
-            signals.append("볼린저밴드 중간선 하단 (+15)")
-            bb_position = "below_middle"
-        
-        # 🎯 3단계: 추세 조건 유연화
-        ma5 = stock_data['ma5']
-        ma20 = stock_data['ma20']
-        ma60 = stock_data['ma60']
-        
-        # 정배열이 아니어도 단기 상승 조건만으로 점수 부여
-        if ma5 > ma20:
-            if ma20 > ma60:
-                score += 20  # 완전 정배열
-                signals.append("완전 정배열 (+20)")
-            else:
-                score += 15  # 부분 정배열
-                signals.append("단기 상승 추세 (+15)")
-        elif ma5 > ma20 * 0.995:  # 거의 근접 (0.5% 이내)
-            score += 12
-            signals.append("골든크로스 임박 (+12)")
-        
-        # 🎯 4단계: 가격 위치 기반 점수 (새로 추가)
+        # 1) 가격 위치 계산
         price_position = 0.5  # 기본값
         if len(df) >= 20:
             recent_low_20d = df['low'].iloc[-20:].min()
             recent_high_20d = df['high'].iloc[-20:].max()
             if recent_high_20d > recent_low_20d:
                 price_position = (current_price - recent_low_20d) / (recent_high_20d - recent_low_20d)
-                
-                if price_position <= 0.2:  # 20일 저점 근처
-                    score += 20
-                    signals.append("20일 저점 근처 (+20)")
-                elif price_position <= 0.3:
-                    score += 15
-                    signals.append("20일 하위 30% 구간 (+15)")
-                elif price_position <= 0.4:
-                    score += 10
-                    signals.append("20일 하위 40% 구간 (+10)")
         
-        # 🎯 5단계: 모멘텀 신호 (기존 MACD 등)
+        # 2) 볼린저밴드 위치 계산
+        bb_upper = stock_data.get('bb_upper', 0)
+        bb_position_ratio = 0.5  # 기본값
+        if bb_upper > 0:
+            bb_position_ratio = current_price / bb_upper
+        
+        # 3) 거래량 비율 계산
+        volume_ratio = 1.0
+        if len(df) >= 20:
+            recent_volume = df['volume'].iloc[-1]
+            avg_volume_20d = df['volume'].rolling(20).mean().iloc[-1]
+            volume_ratio = recent_volume / avg_volume_20d if avg_volume_20d > 0 else 1
+        
+        # 4) 연속 상승 일수 계산
+        consecutive_up_days = 0
+        if len(df) >= 5:
+            recent_changes = df['close'].pct_change().iloc[-5:]
+            for change in recent_changes:
+                if change > 0.025:  # 2.5% 이상 상승
+                    consecutive_up_days += 1
+                else:
+                    break
+        
+        # 🚨 극한 조건 정의 (4개 중 2개 이상시 차단)
+        extreme_conditions = [
+            rsi >= 90,                      # RSI 90% 이상 (일진파워 94% 해당)
+            price_position >= 0.90,         # 20일 구간 90% 이상 고점  
+            bb_position_ratio >= 1.01,      # 볼밴 상단 1% 돌파
+            volume_ratio >= 4.0,            # 거래량 4배 이상 급증
+        ]
+        
+        extreme_count = sum(extreme_conditions)
+        
+        # 🚨 2개 이상 극한 조건 만족시 차단
+        if extreme_count >= 2:
+            extreme_reasons = []
+            if extreme_conditions[0]: extreme_reasons.append(f"RSI 극과매수({rsi:.1f}%)")
+            if extreme_conditions[1]: extreme_reasons.append(f"고점권({price_position*100:.1f}%)")
+            if extreme_conditions[2]: extreme_reasons.append(f"볼밴상단돌파({bb_position_ratio:.3f})")
+            if extreme_conditions[3]: extreme_reasons.append(f"거래량급증({volume_ratio:.1f}배)")
+            
+            return {
+                'is_buy_signal': False,
+                'signal_strength': 'REJECTED',
+                'score': 0,
+                'min_score': 0,
+                'signals': [f"❌ 극한 조건 {extreme_count}개로 매수 차단: {', '.join(extreme_reasons)}"],
+                'analysis': {
+                    'rejection_reason': 'multiple_extreme_conditions',
+                    'extreme_count': extreme_count,
+                    'extreme_details': {
+                        'rsi': rsi,
+                        'price_position': price_position,
+                        'bb_ratio': bb_position_ratio,
+                        'volume_ratio': volume_ratio
+                    }
+                },
+                'bb_position': 'rejected'
+            }
+
+        # 🔥 동적 파라미터 적용
+        if trading_config.use_adaptive_strategy:
+            try:
+                from technical_analysis import AdaptiveMarketStrategy
+                adaptive_strategy = AdaptiveMarketStrategy("bb_adaptive_strategy.json")
+                market_env = detect_stock_environment(stock_code)
+                
+                if hasattr(adaptive_strategy, 'get_dynamic_parameters'):
+                    dynamic_params = adaptive_strategy.get_dynamic_parameters(stock_code, market_env)
+                    rsi_threshold = dynamic_params['rsi_threshold']
+                    min_score = dynamic_params['min_score']
+                    logger.info(f"🧠 {stock_code} 동적 파라미터 적용: RSI기준 {rsi_threshold}, 점수기준 {min_score} (환경: {market_env})")
+                else:
+                    rsi_threshold = target_config.get('rsi_oversold', trading_config.rsi_oversold)
+                    min_score = target_config.get('min_score', 42)  # 🎯 40 → 42 (적당히 상향)
+                    
+            except Exception as e:
+                logger.warning(f"동적 파라미터 적용 실패, 기본값 사용: {e}")
+                rsi_threshold = target_config.get('rsi_oversold', trading_config.rsi_oversold)
+                min_score = target_config.get('min_score', 42)
+        else:
+            rsi_threshold = target_config.get('rsi_oversold', trading_config.rsi_oversold)
+            min_score = target_config.get('min_score', 42)
+    
+        # 🎯 매수 신호 점수 계산 (페널티 포함)
+        
+        # 1) RSI 신호 (과매수 페널티 포함)
+        if rsi <= 20:  # 극과매도
+            score += 40
+            signals.append(f"RSI 극과매도 {rsi:.1f} (+40)")
+        elif rsi <= 25:  # 강과매도  
+            score += 35
+            signals.append(f"RSI 강과매도 {rsi:.1f} (+35)")
+        elif rsi <= 30:  # 과매도
+            score += 30
+            signals.append(f"RSI 과매도 {rsi:.1f} (+30)")
+        elif rsi <= rsi_threshold:  # 동적 기준
+            score += 20
+            signals.append(f"RSI 조정구간 {rsi:.1f} (+20)")
+        elif rsi >= 85:  # 🔥 극과매수 페널티 (차단 아닌 페널티)
+            score -= 30
+            signals.append(f"RSI 극과매수 페널티 {rsi:.1f} (-30)")
+        elif rsi >= 75:  # 과매수 페널티
+            score -= 20
+            signals.append(f"RSI 과매수 페널티 {rsi:.1f} (-20)")
+        elif rsi >= 70:  # 과매수 주의
+            score -= 10
+            signals.append(f"RSI 과매수 주의 {rsi:.1f} (-10)")
+
+        # 2) 볼린저밴드 신호 (상단 근처 페널티 포함)
+        bb_lower = stock_data.get('bb_lower', 0)
+        bb_middle = stock_data.get('bb_middle', 0)
+        bb_position = "middle"
+        
+        if bb_lower > 0:
+            bb_lower_distance = (current_price - bb_lower) / bb_lower * 100
+            
+            if bb_lower_distance <= -2:  # 하단 돌파
+                score += 35
+                signals.append("볼린저밴드 하단 돌파 (+35)")
+                bb_position = "breakthrough"
+            elif bb_lower_distance <= 3:  # 하단 근처
+                score += 25
+                signals.append("볼린저밴드 하단 근처 (+25)")
+                bb_position = "lower"
+            elif current_price <= bb_middle:
+                score += 15
+                signals.append("볼린저밴드 중간선 하단 (+15)")
+                bb_position = "below_middle"
+            elif bb_position_ratio >= 1.0:  # 🔥 상단 돌파 페널티 (차단 아닌 페널티)
+                score -= 25
+                signals.append(f"볼린저밴드 상단 돌파 페널티 (-25)")
+                bb_position = "upper_break"
+            elif bb_position_ratio >= 0.97:  # 상단 근접 페널티
+                score -= 15
+                signals.append(f"볼린저밴드 상단 근접 페널티 (-15)")
+                bb_position = "upper_near"
+        
+        # 3) 이동평균선 추세 (기존 로직 유지)
+        ma5 = stock_data['ma5']
+        ma20 = stock_data['ma20']
+        ma60 = stock_data['ma60']
+        
+        if ma5 > ma20:
+            if ma20 > ma60:
+                score += 20
+                signals.append("완전 정배열 (+20)")
+            else:
+                score += 15
+                signals.append("단기 상승 추세 (+15)")
+        elif ma5 > ma20 * 0.995:
+            score += 12
+            signals.append("골든크로스 임박 (+12)")
+        
+        # 4) 가격 위치 기반 점수 (페널티 포함)
+        if price_position >= 0.85:  # 85% 이상 고점권 페널티
+            score -= 20
+            signals.append(f"20일 고점권 페널티 {price_position*100:.1f}% (-20)")
+        elif price_position >= 0.75:  # 75% 이상 페널티
+            score -= 10
+            signals.append(f"20일 상위권 페널티 {price_position*100:.1f}% (-10)")
+        elif price_position <= 0.2:  # 20일 저점 근처
+            score += 25
+            signals.append("20일 저점 근처 (+25)")
+        elif price_position <= 0.3:
+            score += 20
+            signals.append("20일 하위 30% 구간 (+20)")
+        elif price_position <= 0.4:
+            score += 15
+            signals.append("20일 하위 40% 구간 (+15)")
+        
+        # 5) MACD 신호 (기존 로직 유지)
         macd = stock_data['macd']
         macd_signal = stock_data['macd_signal']
         macd_histogram = stock_data['macd_histogram']
@@ -1127,21 +1219,26 @@ def analyze_buy_signal(stock_data, target_config):
             score += 8
             signals.append("MACD 모멘텀 상승 (+8)")
         
-        # 🎯 6단계: 거래량 신호 (기준 완화)
-        volume_ratio = 1.0
-        if len(df) >= 20:
-            recent_volume = df['volume'].iloc[-1]
-            avg_volume_20d = df['volume'].rolling(20).mean().iloc[-1]
-            volume_ratio = recent_volume / avg_volume_20d if avg_volume_20d > 0 else 1
-            
-            if volume_ratio >= 1.3:  # 1.5 → 1.3 완화
-                score += 12
-                signals.append(f"거래량 급증 {volume_ratio:.1f}배 (+12)")
-            elif volume_ratio >= 1.1:  # 1.2 → 1.1 완화
-                score += 8
-                signals.append(f"거래량 증가 {volume_ratio:.1f}배 (+8)")
+        # 6) 거래량 신호 (과열 페널티 포함)
+        if volume_ratio >= 3.0:  # 🔥 3배 이상 급등시 페널티 (과열 우려)
+            score -= 15
+            signals.append(f"거래량 과열 페널티 {volume_ratio:.1f}배 (-15)")
+        elif volume_ratio >= 1.5:  # 거래량 증가
+            score += 12
+            signals.append(f"거래량 증가 {volume_ratio:.1f}배 (+12)")
+        elif volume_ratio >= 1.2:
+            score += 8
+            signals.append(f"거래량 증가 {volume_ratio:.1f}배 (+8)")
         
-        # 🎯 7단계: 연속 하락 후 반등 신호
+        # 7) 연속 상승 페널티
+        if consecutive_up_days >= 4:  # 4일 연속 급등 페널티
+            score -= 20
+            signals.append(f"연속 급등 페널티 {consecutive_up_days}일 (-20)")
+        elif consecutive_up_days >= 3:  # 3일 연속 상승 주의
+            score -= 10
+            signals.append(f"연속 상승 주의 {consecutive_up_days}일 (-10)")
+        
+        # 8) 연속 하락 후 반등 신호 (기존 로직 유지)
         if len(df) >= 5:
             consecutive_down = 0
             for i in range(1, 4):
@@ -1154,46 +1251,56 @@ def analyze_buy_signal(stock_data, target_config):
                 score += 20
                 signals.append(f"연속하락 후 반등 ({consecutive_down}일) (+20)")
         
-        # 🎯 매수 기준 대폭 완화
-        # min_score = target_config.get('min_score', 40)  # 35 → 25
-
-        # 강력한 매수 신호 조건 (기준 강화)
+        # 🎯 최종 매수 판단
+        signal_strength = 'NORMAL'
+        
+        # 강력한 매수 신호 조건 (적당히 강화)
         strong_conditions = [
             rsi <= 25,  # RSI 극과매도
             bb_position in ["breakthrough", "lower"],  # 볼린저밴드 하단권
-            score >= 70,  # 🔥 50 → 70 (높은 점수 기준 상향)
+            score >= 75,  # 🎯 70 → 75 (적당히 상향)
             any("연속하락 후 반등" in s for s in signals),  # 반등 신호
+            price_position <= 0.4,  # 🎯 하위 40% 구간
         ]
 
-        signal_strength = 'STRONG' if any(strong_conditions) else 'NORMAL'
-        is_buy_signal = score >= min_score  # 🔥 동적 min_score 사용
+        # 강력한 신호는 2개 이상 조건 만족시
+        if sum(strong_conditions) >= 2:
+            signal_strength = 'STRONG'
 
+        is_buy_signal = score >= min_score
 
-        # 🔥 특별조건 할인 기준 강화
-        if rsi <= 20 or bb_position == "breakthrough":  # 🔥 25 → 20 (더 극한 상황에만)
-            discounted_score = max(25, min_score * 0.6)  # 🔥 동적 min_score 사용
+        # 🎯 특별조건 할인 (조건 완화)
+        if rsi <= 18 and bb_position == "breakthrough" and price_position <= 0.3:  # 정말 극한 상황에만
+            discounted_score = max(25, min_score * 0.75)  # 할인 폭 적당히
             if score >= discounted_score and not is_buy_signal:
                 signals.append(f"극한조건 점수할인: {discounted_score:.0f}점")
                 is_buy_signal = True        
 
-        # target_config에 신호 강도 저장 (포지션 크기 계산시 사용)
+        # target_config에 신호 강도 저장
         target_config['last_signal_strength'] = signal_strength
-        target_config['last_signal_score'] = score  # 🔥 새로 추가
+        target_config['last_signal_score'] = score
 
         return {
             'is_buy_signal': is_buy_signal,
             'signal_strength': signal_strength,
             'score': score,
-            'min_score': min_score,  # 🔥 동적 min_score 반환
+            'min_score': min_score,
             'signals': signals if signals else ["매수 신호 부족"],
             'bb_position': bb_position,
             'analysis': {
                 'rsi': rsi,
                 'price_position': price_position,
                 'volume_surge': volume_ratio,
-                'trend_strength': 'strong' if ma5 > ma20 > ma60 else 'weak'
+                'trend_strength': 'strong' if ma5 > ma20 > ma60 else 'weak',
+                'extreme_count': extreme_count,
+                'safety_checks': {
+                    'rsi_extreme': rsi >= 90,
+                    'position_extreme': price_position >= 0.90,
+                    'bb_extreme': bb_position_ratio >= 1.01,
+                    'volume_extreme': volume_ratio >= 4.0,
+                    'consecutive_surge': consecutive_up_days >= 4
+                }
             },
-            # 🔥 사용된 파라미터 기록 (새로 추가)
             'used_parameters': {
                 'rsi_threshold': rsi_threshold,
                 'min_score': min_score,
@@ -1204,6 +1311,179 @@ def analyze_buy_signal(stock_data, target_config):
     except Exception as e:
         logger.error(f"매수 신호 분석 중 에러: {str(e)}")
         return {'is_buy_signal': False, 'score': 0, 'signals': [f"분석 오류: {str(e)}"]}
+
+# 🎯 분봉 타이밍도 조건부 차단으로 수정
+def analyze_intraday_entry_timing(stock_code, target_config):
+    """분봉 기준 최적 진입 타이밍 분석 - 조건부 차단 방식"""
+    try:
+        current_price = KisKR.GetCurrentPrice(stock_code)
+        if not current_price:
+            return {'enter_now': True, 'reason': '현재가 조회 실패로 즉시 진입'}
+        
+        # 분봉 데이터 조회 (기존 로직)
+        try:
+            df_5m = KisKR.GetOhlcvNew(stock_code, 'M', 24, adj_ok=1)
+            
+            if df_5m is None or len(df_5m) < 10:
+                df_5m = Common.GetOhlcv("KR", stock_code, 24)
+                
+        except Exception as api_e:
+            logger.debug(f"분봉 API 호출 실패: {str(api_e)}, 일봉으로 대체")
+            df_5m = Common.GetOhlcv("KR", stock_code, 24)
+        
+        if df_5m is None or len(df_5m) < 10:
+            return {'enter_now': True, 'reason': '데이터 부족으로 즉시 진입'}
+        
+        data_length = len(df_5m)
+        
+        # 기술적 지표 계산
+        rsi_period = min(14, data_length // 2)
+        ma_short = min(5, data_length // 4)
+        ma_long = min(20, data_length // 2)
+        bb_period = min(20, data_length // 2)
+        
+        if rsi_period < 3:
+            return {'enter_now': True, 'reason': '데이터 부족으로 즉시 진입'}
+        
+        df_5m['RSI'] = TechnicalIndicators.calculate_rsi(df_5m, rsi_period)
+        df_5m['MA_Short'] = df_5m['close'].rolling(window=ma_short).mean()
+        df_5m['MA_Long'] = df_5m['close'].rolling(window=ma_long).mean()
+        
+        if data_length >= bb_period:
+            bb_data = TechnicalIndicators.calculate_bollinger_bands(df_5m, bb_period, 2.0)
+            df_5m[['BB_Mid', 'BB_Upper', 'BB_Lower']] = bb_data
+        else:
+            df_5m['BB_Mid'] = df_5m['close']
+            df_5m['BB_Upper'] = df_5m['close'] * 1.02
+            df_5m['BB_Lower'] = df_5m['close'] * 0.98
+        
+        # 🚨 분봉 극한 조건 계산
+        intraday_rsi = df_5m['RSI'].iloc[-1] if not pd.isna(df_5m['RSI'].iloc[-1]) else 50
+        bb_upper_5m = df_5m['BB_Upper'].iloc[-1]
+        intraday_bb_ratio = current_price / bb_upper_5m if bb_upper_5m > 0 else 0.5
+        
+        # 분봉 극한 조건 (2개 이상시 진입 거부)
+        intraday_extreme = [
+            intraday_rsi >= 85,           # 분봉 RSI 85% 이상
+            intraday_bb_ratio >= 1.02,    # 분봉 볼밴 상단 2% 돌파
+        ]
+        
+        intraday_extreme_count = sum(intraday_extreme)
+        
+        # 🚨 분봉 극한 조건 2개 만족시 진입 거부
+        if intraday_extreme_count >= 2:
+            return {
+                'enter_now': False,
+                'entry_score': 0,
+                'entry_signals': [f'분봉 극한 조건 {intraday_extreme_count}개로 진입 거부'],
+                'reason': f'분봉 과열(RSI:{intraday_rsi:.1f}%, BB:{intraday_bb_ratio:.3f})로 진입 거부'
+            }
+        
+        # 🎯 분봉 진입 점수 계산 (페널티 포함)
+        entry_signals = []
+        entry_score = 0
+        
+        # RSI 신호 (페널티 포함)
+        if intraday_rsi <= 30:
+            entry_score += 30
+            entry_signals.append(f"분봉 RSI 과매도 {intraday_rsi:.1f} (+30)")
+        elif intraday_rsi <= 45:
+            entry_score += 20
+            entry_signals.append(f"분봉 RSI 조정 {intraday_rsi:.1f} (+20)")
+        elif intraday_rsi >= 80:  # 🔥 페널티 (차단 아님)
+            entry_score -= 20
+            entry_signals.append(f"분봉 RSI 과매수 페널티 {intraday_rsi:.1f} (-20)")
+        elif intraday_rsi >= 70:
+            entry_score -= 10
+            entry_signals.append(f"분봉 RSI 과매수 주의 {intraday_rsi:.1f} (-10)")
+        
+        # 볼린저밴드 신호 (페널티 포함)
+        bb_lower_5m = df_5m['BB_Lower'].iloc[-1]
+        if not pd.isna(bb_lower_5m) and current_price <= bb_lower_5m * 1.02:
+            entry_score += 25
+            entry_signals.append("분봉 볼린저 하단 근접 (+25)")
+        elif intraday_bb_ratio >= 1.0:  # 🔥 페널티 (차단 아님)
+            entry_score -= 15
+            entry_signals.append(f"분봉 볼밴 상단 페널티 (-15)")
+        elif intraday_bb_ratio >= 0.98:
+            entry_score -= 8
+            entry_signals.append(f"분봉 볼밴 상단 주의 (-8)")
+        
+        # 나머지 신호들 (기존 로직)
+        try:
+            ma_short_current = df_5m['MA_Short'].iloc[-1]
+            if not pd.isna(ma_short_current):
+                distance_ratio = abs(current_price - ma_short_current) / ma_short_current
+                if distance_ratio <= 0.01:
+                    entry_score += 20
+                    entry_signals.append(f"{ma_short}MA 지지 (+20)")
+        except:
+            pass
+        
+        try:
+            if data_length >= 10:
+                recent_volume = df_5m['volume'].iloc[-3:].mean()
+                past_volume = df_5m['volume'].iloc[-10:-3].mean()
+                
+                if past_volume > 0:
+                    volume_ratio = recent_volume / past_volume
+                    if volume_ratio >= 1.3:
+                        entry_score += 15
+                        entry_signals.append(f"분봉 거래량 증가 {volume_ratio:.1f}배 (+15)")
+        except:
+            pass
+        
+        try:
+            if data_length >= 5:
+                recent_changes = df_5m['close'].pct_change().iloc[-4:]
+                down_count = sum(1 for x in recent_changes if x < -0.01)
+                last_change = df_5m['close'].pct_change().iloc[-1]
+                
+                if down_count >= 2 and last_change > 0.005:
+                    entry_score += 20
+                    entry_signals.append("분봉 반등 신호 (+20)")
+                
+                recent_high = df_5m['high'].iloc[-min(10, data_length):].max()
+                if current_price >= recent_high * 0.98:  # 🔥 페널티 (차단 아님)
+                    entry_score -= 10
+                    entry_signals.append("분봉 단기 고점 페널티 (-10)")
+        except:
+            pass
+        
+        # 🎯 분봉 진입 기준 (적당히 강화)
+        min_entry_score = target_config.get('min_entry_score', 22)  # 20 → 22 (적당히 상향)
+        
+        if data_length < 20:
+            min_entry_score = max(12, min_entry_score - 8)  # 할인 폭 적당히
+            entry_signals.append(f"데이터 부족으로 기준 완화 ({data_length}개)")
+        
+        enter_now = entry_score >= min_entry_score
+        
+        result = {
+            'enter_now': enter_now,
+            'entry_score': entry_score,
+            'entry_signals': entry_signals,
+            'reason': f"{'분봉 진입 타이밍 양호' if enter_now else '분봉 진입 대기'} (점수: {entry_score}/{min_entry_score})",
+            'data_info': {
+                'data_length': data_length,
+                'rsi_period': rsi_period,
+                'ma_periods': [ma_short, ma_long],
+                'intraday_extreme_count': intraday_extreme_count
+            }
+        }
+        
+        logger.debug(f"{stock_code} 균형잡힌 분봉 분석 결과: {result['reason']}")
+        return result
+            
+    except Exception as e:
+        logger.error(f"균형잡힌 분봉 진입 타이밍 분석 중 오류: {str(e)}")
+        # 🎯 오류 발생시 중립적 처리
+        return {
+            'enter_now': True,  # 분석 오류시에는 기회를 놓치지 않도록
+            'entry_score': 0,
+            'entry_signals': [f"분석 오류로 즉시 진입: {str(e)}"],
+            'reason': '분석 오류로 즉시 진입 (기회 보존)'
+        }
 
 def should_use_intraday_timing(opportunity, target_config):
     """신호 강도별 분봉 타이밍 사용 여부 결정"""
