@@ -761,33 +761,21 @@ def get_safe_config_value(target_config, key, default_value):
         return default_value        
 
 def calculate_trading_fee(price, quantity, is_buy=True):
-    """거래 수수료 및 세금 계산 (개선된 버전)"""
-    try:
-        if price <= 0 or quantity <= 0:
-            return 0
-            
-        trade_amount = price * quantity
-        
-        # 증권사 수수료 (통상 0.015%, 최소 1000원)
-        commission_rate = 0.00015  # 0.015%
-        commission = max(trade_amount * commission_rate, 1000)  # 최소 1000원
-        
-        total_fee = commission
-        
-        if not is_buy:  # 매도시에만 추가 세금
-            # 증권거래세 (0.23%)
-            securities_tax = trade_amount * 0.0023
-            
-            # 농어촌특별세 (증권거래세의 20%, 즉 거래금액의 0.046%)
-            special_tax = securities_tax * 0.2
-            
-            total_fee += securities_tax + special_tax
-        
-        return round(total_fee, 0)  # 원 단위로 반올림
-        
-    except Exception as e:
-        logger.error(f"거래 수수료 계산 중 에러: {str(e)}")
-        return 0
+    """거래 수수료 및 세금 계산"""
+    commission_rate = 0.0000156  # 수수료 0.00156%
+    tax_rate = 0  # 매도 시 거래세 0%
+    special_tax_rate = 0.0015  # 농어촌특별세 (매도금액의 0.15%)
+    
+    commission = price * quantity * commission_rate
+    if not is_buy:  # 매도 시에만 세금 부과
+        tax = price * quantity * tax_rate
+        special_tax = price * quantity * special_tax_rate
+    else:
+        tax = 0
+        special_tax = 0
+    
+    return commission + tax + special_tax
+
 
 def check_trading_time():
     """장중 거래 가능한 시간대인지 체크 (개선된 버전)"""
