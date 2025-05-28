@@ -3972,6 +3972,148 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
         logger.exception(f"설정 파일 생성 중 오류: {str(e)}")
         raise
 
+def end_of_day_candidate_management(trading_state):
+    """장마감시 대기 종목 관리 - 하이브리드 방식"""
+    try:
+        if 'buy_candidates' not in trading_state or not trading_state['buy_candidates']:
+            return trading_state
+        
+        now = datetime.datetime.now()
+        kept_candidates = {}
+        removed_candidates = []
+        
+        logger.info("🕐 장마감 대기 종목 관리 시작")
+        
+        for stock_code, candidate in trading_state['buy_candidates'].items():
+            try:
+                opportunity = candidate['opportunity']
+                stock_name = opportunity['stock_name']
+                daily_score = candidate.get('daily_score', 0)
+                signal_strength = candidate.get('signal_strength', 'NORMAL')
+                
+                # 뉴스 영향 확인
+                has_positive_news = False
+                news_impact = opportunity.get('news_impact')
+                if news_impact and news_impact.get('decision') == 'POSITIVE':
+                    news_percentage = news_impact.get('percentage', 0)
+                    has_positive_news = news_percentage >= 60
+                
+                # 대기 유지/해제 결정
+                keep_candidate = False
+                keep_reason = ""
+                
+                if signal_strength == 'STRONG' and daily_score >= 60:
+                    keep_candidate = True
+                    keep_reason = f"매우 강한 신호 (STRONG + {daily_score}점)"
+                elif signal_strength == 'STRONG' and daily_score >= 50:
+                    keep_candidate = True
+                    keep_reason = f"강한 신호 (STRONG + {daily_score}점)"
+                elif daily_score >= 55 and has_positive_news:
+                    keep_candidate = True
+                    news_score = news_impact.get('percentage', 0)
+                    keep_reason = f"중간신호+호재 ({daily_score}점 + 뉴스{news_score}%)"
+                elif daily_score >= 50 and has_positive_news:
+                    news_score = news_impact.get('percentage', 0)
+                    if news_score >= 70:
+                        keep_candidate = True
+                        keep_reason = f"보통신호+강한호재 ({daily_score}점 + 뉴스{news_score}%)"
+                
+                if keep_candidate:
+                    # 익일 우선 검토 표시
+                    candidate['carry_over'] = True
+                    candidate['carry_over_reason'] = keep_reason
+                    candidate['carry_over_date'] = now.strftime('%Y-%m-%d')
+                    candidate['priority'] = 'HIGH' if signal_strength == 'STRONG' else 'NORMAL'
+                    candidate['extended_wait'] = True
+                    candidate['max_wait_hours'] = 24.5  # 다음날 09:30까지
+                    
+                    kept_candidates[stock_code] = candidate
+                    logger.info(f"✅ 대기 유지: {stock_name}({stock_code}) - {keep_reason}")
+                else:
+                    remove_reason = f"신호 약화 ({daily_score}점, {signal_strength}"
+                    if not has_positive_news:
+                        remove_reason += ", 뉴스 없음"
+                    remove_reason += ")"
+                    
+                    removed_candidates.append({
+                        'stock_code': stock_code,
+                        'stock_name': stock_name,
+                        'reason': remove_reason
+                    })
+                    logger.info(f"❌ 대기 해제: {stock_name}({stock_code}) - {remove_reason}")
+                
+            except Exception as e:
+                logger.error(f"대기 종목 처리 중 오류 ({stock_code}): {str(e)}")
+        
+        # 상태 업데이트
+        trading_state['buy_candidates'] = kept_candidates
+        
+        # 결과 요약
+        kept_count = len(kept_candidates)
+        removed_count = len(removed_candidates)
+        
+        logger.info(f"📊 장마감 대기 종목 관리 완료: 유지 {kept_count}개, 해제 {removed_count}개")
+        
+        # Discord 알림
+        if kept_count > 0 or removed_count > 0:
+            msg = f"🕐 장마감 대기 종목 관리\n"
+            msg += f"========== {now.strftime('%Y-%m-%d %H:%M')} ==========\n"
+            
+            if kept_count > 0:
+                msg += f"✅ 익일 우선 검토 ({kept_count}개):\n"
+                for stock_code, candidate in kept_candidates.items():
+                    stock_name = candidate['opportunity']['stock_name']
+                    reason = candidate['carry_over_reason']
+                    msg += f"• {stock_name}: {reason}\n"
+            
+            if removed_count > 0:
+                msg += f"❌ 대기 해제 ({removed_count}개):\n"
+                for removed in removed_candidates:
+                    msg += f"• {removed['stock_name']}: {removed['reason']}\n"
+            
+            msg += f"📅 익일 장 시작시 우선 검토 예정"
+            
+            if hasattr(trading_config, 'use_discord_alert') and trading_config.config.get('use_discord_alert', True):
+                discord_alert.SendMessage(msg)
+        
+        return trading_state
+        
+    except Exception as e:
+        logger.error(f"장마감 대기 종목 관리 중 전체 오류: {str(e)}")
+        return trading_state
+
+def next_day_priority_check(trading_state):
+    """익일 장 시작시 우선 검토"""
+    try:
+        if 'buy_candidates' not in trading_state or not trading_state['buy_candidates']:
+            return trading_state
+        
+        logger.info("🌅 익일 우선 검토 시작")
+        
+        carry_over_count = 0
+        for stock_code, candidate in trading_state['buy_candidates'].items():
+            if candidate.get('carry_over', False):
+                stock_name = candidate['opportunity']['stock_name']
+                priority = candidate.get('priority', 'NORMAL')
+                reason = candidate.get('carry_over_reason', '전일 대기')
+                
+                logger.info(f"🎯 우선 검토: {stock_name}({stock_code}) - {reason} ({priority})")
+                carry_over_count += 1
+        
+        if carry_over_count > 0:
+            msg = f"🌅 익일 우선 검토 대상: {carry_over_count}개\n"
+            msg += "상세 내용은 로그를 확인하세요."
+            
+            logger.info(msg)
+            if hasattr(trading_config, 'use_discord_alert') and trading_config.config.get('use_discord_alert', True):
+                discord_alert.SendMessage(msg)
+        
+        return trading_state
+        
+    except Exception as e:
+        logger.error(f"익일 우선 검토 중 오류: {str(e)}")
+        return trading_state
+
 def main():
     """메인 함수 (Config 적용)"""
     
@@ -4020,7 +4162,11 @@ def main():
     market_open_notified = False
     last_status_report = datetime.datetime.now()
     last_pending_check = datetime.datetime.now()  # 🆕 미체결 주문 체크 시간
-    
+
+    # 🆕 하이브리드 관리를 위한 변수들
+    end_of_day_managed = False
+    next_day_priority_checked = False
+
     while True:
         try:
             now = datetime.datetime.now()
@@ -4046,8 +4192,29 @@ def main():
                 }
                 daily_report_sent = False
                 market_open_notified = False
+
+                # 🆕 날짜 변경시 플래그 리셋 (여기에 추가)
+                end_of_day_managed = False
+                next_day_priority_checked = False
                 save_trading_state(trading_state)
+
+            # 🆕 ===== 여기부터 새로운 코드 삽입 시작 =====
             
+            # 장마감 대기 종목 관리 (15:25~15:35 사이 한 번)
+            if (now.hour == 15 and 25 <= now.minute <= 35 and not end_of_day_managed):
+                logger.info("🕐 장마감 대기 종목 관리 실행")
+                trading_state = end_of_day_candidate_management(trading_state)
+                save_trading_state(trading_state)
+                end_of_day_managed = True
+            
+            # 익일 우선 검토 (09:00~09:05 사이 한 번)
+            if (now.hour == 9 and now.minute <= 5 and is_trading_time and not next_day_priority_checked):
+                logger.info("🌅 익일 우선 검토 실행")
+                trading_state = next_day_priority_check(trading_state)
+                next_day_priority_checked = True
+                end_of_day_managed = False  # 다음 장마감을 위해 리셋
+            # 🆕 ===== 새로운 코드 삽입 끝 =====
+
             # 장 시작 알림 (Config 사용)
             if is_market_open and not market_open_notified:
                 msg = f"🔔 장 시작!\n"
