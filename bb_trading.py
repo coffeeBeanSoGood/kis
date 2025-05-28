@@ -2063,28 +2063,48 @@ def load_trading_state():
         })
 
 def save_trading_state(state):
-    """트레이딩 상태 저장 - numpy 타입 변환 추가"""
-    def convert_numpy(obj):
-        """numpy 타입을 Python 기본 타입으로 변환"""
-        if isinstance(obj, np.integer):
+    """트레이딩 상태 저장 - numpy 타입 처리 및 에러 로깅"""
+        
+    def json_serializer(obj):
+        """numpy 타입을 JSON 호환 타입으로 변환"""
+        if isinstance(obj, (np.integer, np.int64, np.int32)):
             return int(obj)
-        elif isinstance(obj, np.floating):
+        elif isinstance(obj, (np.floating, np.float64, np.float32)):
             return float(obj)
+        elif isinstance(obj, (np.bool_, np.bool)):
+            return bool(obj)
         elif isinstance(obj, np.ndarray):
             return obj.tolist()
-        elif isinstance(obj, dict):
-            return {key: convert_numpy(value) for key, value in obj.items()}
-        elif isinstance(obj, list):
-            return [convert_numpy(item) for item in obj]
-        else:
-            return obj
+        elif hasattr(obj, 'item'):  # numpy scalar
+            return obj.item()
+        raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
     
-    # numpy 타입 변환 후 저장
-    cleaned_state = convert_numpy(state)
     bot_name = get_bot_name()
-
-    with open(f"TargetStockBot_{bot_name}.json", 'w') as f:
-        json.dump(cleaned_state, f, indent=2)
+    filename = f"TargetStockBot_{bot_name}.json"
+    
+    try:
+        logger.info("💾 트레이딩 상태 저장 시작")
+        
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(state, f, indent=2, ensure_ascii=False, default=json_serializer)
+        
+        logger.info(f"✅ 트레이딩 상태 저장 완료: {filename}")
+        
+        # 저장 내용 요약 로그
+        logger.info(f"📊 저장된 데이터:")
+        logger.info(f"  - 보유 포지션: {len(state.get('positions', {}))}개")
+        logger.info(f"  - 매수 대기: {len(state.get('buy_candidates', {}))}개")
+        
+    except Exception as e:
+        error_msg = f"❌ 트레이딩 상태 저장 실패: {str(e)}"
+        logger.error(error_msg)
+        logger.exception("저장 실패 상세 정보:")
+        
+        # Discord 알림으로 중요한 에러 통지
+        if hasattr(trading_config, 'use_discord_alert') and trading_config.config.get('use_discord_alert', True):
+            discord_alert.SendMessage(f"⚠️ 상태 저장 실패\n{error_msg}\n수동 확인 필요")
+        
+        raise e  # 에러를 다시 발생시켜 호출자가 인지할 수 있도록
 
 ################################### 매매 실행 ##################################
 
@@ -2206,18 +2226,44 @@ def execute_buy_order(stock_code, target_config, quantity, price):
         pending_manager.track_pending_order(trading_state, stock_code, order_info)
         save_trading_state(trading_state)
         
-        # 🆕 3. 주문 접수 알림 (라이브러리 사용)
-        order_amount = quantity * price
-        estimated_fee = calculate_trading_fee(price, quantity, True)
+        # 🆕 3. 현재가 재조회 (중요!)
+        old_price = price
+        try:
+            current_price = KisKR.GetCurrentPrice(stock_code)
+            if current_price and current_price > 0:
+                actual_price = current_price
+                price_diff = actual_price - old_price
+                logger.info(f"💰 매수 전 현재가 재조회: {stock_name}")
+                logger.info(f"   대기시 가격: {old_price:,}원")
+                logger.info(f"   현재 가격: {actual_price:,}원")
+                logger.info(f"   가격 변화: {price_diff:+,}원")
+                
+                # 가격 변화가 클 경우 추가 검증
+                price_change_rate = abs(price_diff) / old_price
+                if price_change_rate > 0.02:  # 2% 이상 변화
+                    logger.warning(f"⚠️ 가격 변화 {price_change_rate*100:.1f}% 감지")
+                    
+            else:
+                actual_price = old_price
+                logger.warning(f"⚠️ 현재가 조회 실패, 대기시 가격 사용: {actual_price:,}원")
+                
+        except Exception as price_error:
+            actual_price = old_price
+            logger.error(f"❌ 현재가 조회 중 오류: {str(price_error)}")
         
+        # 🆕 4. 주문 접수 알림 (실제 주문가격으로)
+        order_amount = quantity * actual_price
+        estimated_fee = calculate_trading_fee(actual_price, quantity, True)
+        
+        order_info['price'] = actual_price  # 실제 주문가격으로 업데이트
         order_info['order_amount'] = order_amount
         order_info['estimated_fee'] = estimated_fee
         pending_manager.send_order_alert('submit', stock_code, order_info)
         
-        # 4. 실제 주문 실행 (기존 로직)
-        logger.info(f"{stock_name}({stock_code}) 매수 주문: {quantity}주 @ {price:,.0f}원")
+        # 5. 실제 주문 실행 (실제 현재가로)
+        logger.info(f"🔵 {stock_name}({stock_code}) 매수 주문: {quantity}주 @ {actual_price:,.0f}원")
         
-        order_result = KisKR.MakeBuyLimitOrder(stock_code, quantity, int(price))
+        order_result = KisKR.MakeBuyLimitOrder(stock_code, quantity, int(actual_price))
         
         if not order_result or isinstance(order_result, str):
             # 🆕 주문 실패시 pending 제거 (라이브러리 사용)
@@ -2250,7 +2296,14 @@ def execute_buy_order(stock_code, target_config, quantity, price):
                 if stock['StockCode'] == stock_code:
                     executed_amount = int(stock.get('StockAmt', 0))
                     if executed_amount > 0:
-                        avg_price = float(stock.get('AvrPrice', price))
+                        avg_price = float(stock.get('AvrPrice', actual_price))  # actual_price로 기본값 변경
+                        
+                        # 체결가격 로그 추가
+                        execution_diff = avg_price - actual_price
+                        logger.info(f"✅ 매수 체결 확인: {executed_amount}주")
+                        logger.info(f"   주문가격: {actual_price:,}원")
+                        logger.info(f"   체결가격: {avg_price:,}원")
+                        logger.info(f"   체결차이: {execution_diff:+,}원")
                         
                         # 🆕 체결 완료시 pending 제거 (라이브러리 사용)
                         trading_state = load_trading_state()
@@ -2260,11 +2313,12 @@ def execute_buy_order(stock_code, target_config, quantity, price):
                         # 🆕 체결 완료 알림 (라이브러리 사용)
                         pending_manager.send_order_alert('fill', stock_code, {
                             'executed_price': avg_price,
-                            'executed_amount': executed_amount
+                            'executed_amount': executed_amount,
+                            'order_price': actual_price,
+                            'price_improvement': execution_diff
                         })
                         
-                        logger.info(f"매수 체결 확인: {executed_amount}주 @ {avg_price:,.0f}원")
-                        return avg_price, executed_amount
+                        return avg_price, executed_amount  # 실제 체결가 반환
             time.sleep(3)
         
         # 🆕 미체결시 알림 (라이브러리 사용)
@@ -2465,25 +2519,6 @@ def process_buy_candidates(trading_state):
                                     msg += f"대기시간: {wait_hours:.1f}시간\n"
                                     msg += f"일봉점수: {daily_score}점 ({signal_strength})\n"
                                     msg += f"매수사유: {force_reason}"
-
-                                    # 🆕 뉴스 분석 정보 추가
-                                    if opportunity.get('news_impact'):
-                                        news_impact = opportunity['news_impact']
-                                        decision = news_impact.get('decision', 'NEUTRAL')
-                                        percentage = news_impact.get('percentage', 0)
-                                        reason = news_impact.get('reason', '')
-                                        
-                                        msg += f"\n📰 뉴스 분석:\n"
-                                        if decision == 'POSITIVE':
-                                            msg += f"• ✅ 긍정 뉴스 ({percentage}% 신뢰도)\n"
-                                            if reason:
-                                                msg += f"• 내용: {reason[:80]}...\n"
-                                        elif decision == 'NEGATIVE': 
-                                            msg += f"• ❌ 부정 뉴스 ({percentage}% 신뢰도)\n"
-                                            if reason:
-                                                msg += f"• 내용: {reason[:80]}...\n"
-                                        else:
-                                            msg += f"• ⚪ 중립 뉴스 (영향 없음)\n"
                                     
                                     logger.info(msg)
                                     if hasattr(trading_config, 'use_discord_alert') and trading_config.config.get('use_discord_alert', True):
@@ -2640,25 +2675,7 @@ def process_buy_candidates(trading_state):
                             msg += f"일봉점수: {daily_score}점 ({signal_strength})\n"
                             msg += f"분봉점수: {current_intraday_score}점\n"
                             msg += f"진입사유: {timing_analysis['reason']}"
-
-                            if opportunity.get('news_impact'):
-                                news_impact = opportunity['news_impact']
-                                decision = news_impact.get('decision', 'NEUTRAL')
-                                percentage = news_impact.get('percentage', 0)
-                                reason = news_impact.get('reason', '')
-                                
-                                msg += f"\n📰 뉴스 분석:\n"
-                                if decision == 'POSITIVE':
-                                    msg += f"• ✅ 긍정 뉴스 ({percentage}% 신뢰도)\n"
-                                    if reason:
-                                        msg += f"• 내용: {reason[:80]}...\n"
-                                elif decision == 'NEGATIVE': 
-                                    msg += f"• ❌ 부정 뉴스 ({percentage}% 신뢰도)\n"
-                                    if reason:
-                                        msg += f"• 내용: {reason[:80]}...\n"
-                                else:
-                                    msg += f"• ⚪ 중립 뉴스 (영향 없음)\n"
-
+                            
                             logger.info(msg)
                             if hasattr(trading_config, 'use_discord_alert') and trading_config.config.get('use_discord_alert', True):
                                 discord_alert.SendMessage(msg)
@@ -2687,7 +2704,7 @@ def process_buy_candidates(trading_state):
                     # 분봉 신호 변화 추적
                     if timing_analysis.get('entry_signals'):
                         candidate_info['latest_intraday_signals'] = timing_analysis['entry_signals'][:3]
-                    
+                
             except Exception as e:
                 logger.error(f"매수 후보 처리 중 오류 ({stock_code}): {str(e)}")
                 candidates_to_remove.append(stock_code)
@@ -3508,7 +3525,36 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                         logger.info(f"      분봉 신호: {timing_analysis.get('entry_signals', [])[:3]}")
                 else:
                     logger.info(f"   🚀 일봉 신호 강도로 즉시 매수 진행")
-                
+
+                # 🆕 === 현재가 재조회 로직 추가 ===
+                old_price = opportunity['price']  # 스캔 시점 가격
+
+                try:
+                    current_price = KisKR.GetCurrentPrice(stock_code)
+                    if current_price and current_price > 0:
+                        actual_price = current_price
+                        price_diff = actual_price - old_price
+                        logger.info(f"💰 즉시매수 전 현재가 재조회: {stock_name}")
+                        logger.info(f"   스캔시 가격: {old_price:,}원")
+                        logger.info(f"   현재 가격: {actual_price:,}원")
+                        logger.info(f"   가격 변화: {price_diff:+,}원")
+                        
+                        # 가격 변화가 클 경우 추가 검증
+                        price_change_rate = abs(price_diff) / old_price
+                        if price_change_rate > 0.03:  # 3% 이상 변화
+                            logger.warning(f"⚠️ 가격 변화 {price_change_rate*100:.1f}% 감지")
+                            if price_diff > 0 and price_change_rate > 0.05:  # 5% 이상 상승시 포기
+                                logger.warning(f"💔 과도한 가격 상승으로 매수 포기")
+                                continue
+                    else:
+                        actual_price = old_price
+                        logger.warning(f"⚠️ 현재가 조회 실패, 스캔시 가격 사용: {actual_price:,}원")
+                        
+                except Exception as price_error:
+                    actual_price = old_price
+                    logger.error(f"❌ 현재가 조회 중 오류: {str(price_error)}")
+                # 🆕 === 현재가 재조회 로직 끝 ===
+
                 # 포지션 크기 계산
                 quantity = calculate_position_size(target_config, stock_code, stock_price, trading_state)
                 
@@ -3517,8 +3563,9 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                     continue
                 
                 # 최종 투자금액 계산
-                estimated_investment = stock_price * quantity
-                estimated_fee = calculate_trading_fee(stock_price, quantity, True)
+                estimated_investment = actual_price * quantity
+                estimated_fee = calculate_trading_fee(actual_price, quantity, True)
+
                 total_cost = estimated_investment + estimated_fee
                 
                 logger.info(f"   💰 매수 계획:")
@@ -3531,9 +3578,8 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                 # 🔵 매수 주문 실행
                 logger.info(f"   🔵 매수 주문 실행: {stock_name}({stock_code})")
                 executed_price, executed_amount = execute_buy_order(
-                    stock_code, target_config, quantity, stock_price
+                    stock_code, target_config, quantity, actual_price  # ← 재조회된 현재가 사용
                 )
-                
                 if executed_price and executed_amount:
                     # 매수 수수료 계산
                     buy_fee = calculate_trading_fee(executed_price, executed_amount, True)
@@ -3559,7 +3605,11 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                         'buy_analysis': opportunity['analysis'],
                         'signal_strength': signal_strength,
                         'daily_score': daily_score,  # 🔥 일봉 점수 저장
-                        'entry_method': 'intraday_timing' if use_intraday else 'daily_signal_only'
+                        'entry_method': 'intraday_timing' if use_intraday else 'daily_signal_only',
+                        'scan_price': old_price,        # 🆕 스캔시 가격 기록
+                        'order_price': actual_price,    # 🆕 주문시 가격 기록
+                        'price_improvement': executed_price - actual_price  # 🆕 가격 개선 기록
+
                     }
                     
                     # 분봉 타이밍 사용시 분봉 정보도 저장
@@ -3584,7 +3634,19 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                     msg += f"매수가: {executed_price:,.0f}원 × {executed_amount}주\n"
                     msg += f"투자금액: {actual_investment:,.0f}원\n"
                     msg += f"수수료: {buy_fee:,.0f}원\n"
-                    
+
+                    # 🆕 가격 추적 정보 추가
+                    if old_price != actual_price:
+                        price_diff = actual_price - old_price
+                        msg += f"\n💰 가격 추적:\n"
+                        msg += f"• 스캔시: {old_price:,}원\n"
+                        msg += f"• 주문시: {actual_price:,}원\n"
+                        msg += f"• 변화: {price_diff:+,}원\n"
+
+                    if executed_price != actual_price:
+                        execution_diff = executed_price - actual_price
+                        msg += f"• 체결개선: {execution_diff:+,}원\n"
+
                     # 신호 정보
                     msg += f"\n🎯 신호 정보:\n"
                     msg += f"• 일봉 점수: {daily_score}점 ({signal_strength})\n"
@@ -3827,7 +3889,7 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
             
             # 🔥 뉴스 분석 설정 (새로 추가)
             "use_news_analysis": True,             # 뉴스 분석 기능 사용 여부 (기본값 False)
-            "news_check_threshold": 35,             # 이 점수 이상일 때만 뉴스 체크
+            "news_check_threshold": 20,             # 이 점수 이상일 때만 뉴스 체크
             "always_check_news": False,             # 점수와 관계없이 항상 뉴스 체크
             "news_cache_hours": 6,                  # 뉴스 캐시 유효 시간
             "news_weight": {
