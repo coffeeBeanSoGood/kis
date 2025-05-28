@@ -2063,10 +2063,28 @@ def load_trading_state():
         })
 
 def save_trading_state(state):
-    """트레이딩 상태 저장"""
+    """트레이딩 상태 저장 - numpy 타입 변환 추가"""
+    def convert_numpy(obj):
+        """numpy 타입을 Python 기본 타입으로 변환"""
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, dict):
+            return {key: convert_numpy(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [convert_numpy(item) for item in obj]
+        else:
+            return obj
+    
+    # numpy 타입 변환 후 저장
+    cleaned_state = convert_numpy(state)
     bot_name = get_bot_name()
+
     with open(f"TargetStockBot_{bot_name}.json", 'w') as f:
-        json.dump(state, f, indent=2)
+        json.dump(cleaned_state, f, indent=2)
 
 ################################### 매매 실행 ##################################
 
