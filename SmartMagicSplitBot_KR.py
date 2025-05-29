@@ -114,184 +114,6 @@ TARGET_STOCKS = {
 }
 
 class SmartMagicSplit:
-    # =============================================================================
-    # 1. 강화된 시장 분석 함수 (새로 추가)
-    # =============================================================================
-    def detect_market_timing_enhanced(self):
-        """강화된 시장 추세와 타이밍을 감지하는 함수"""
-        try:
-            kospi_df = Common.GetOhlcv("KR", "KOSPI", 120)
-            if kospi_df is None or len(kospi_df) < 60:
-                return "neutral", 0
-                
-            # 다양한 기간의 이동평균선 계산
-            kospi_ma5 = kospi_df['close'].rolling(window=5).mean().iloc[-1]
-            kospi_ma10 = kospi_df['close'].rolling(window=10).mean().iloc[-1]
-            kospi_ma20 = kospi_df['close'].rolling(window=20).mean().iloc[-1]
-            kospi_ma60 = kospi_df['close'].rolling(window=60).mean().iloc[-1]
-            
-            current_index = kospi_df['close'].iloc[-1]
-            
-            # 최근 수익률 계산
-            return_5d = ((current_index - kospi_df['close'].iloc[-6]) / kospi_df['close'].iloc[-6]) * 100
-            return_10d = ((current_index - kospi_df['close'].iloc[-11]) / kospi_df['close'].iloc[-11]) * 100
-            return_20d = ((current_index - kospi_df['close'].iloc[-21]) / kospi_df['close'].iloc[-21]) * 100
-            
-            # RSI 계산
-            delta = kospi_df['close'].diff()
-            gain = delta.copy()
-            loss = delta.copy()
-            gain[gain < 0] = 0
-            loss[loss > 0] = 0
-            avg_gain = gain.rolling(window=14).mean()
-            avg_loss = abs(loss.rolling(window=14).mean())
-            rs = avg_gain / avg_loss
-            kospi_rsi = (100 - (100 / (1 + rs))).iloc[-1]
-            
-            # 거래량 분석
-            volume_ma20 = kospi_df['volume'].rolling(window=20).mean().iloc[-1]
-            current_volume = kospi_df['volume'].iloc[-1]
-            volume_ratio = current_volume / volume_ma20
-            
-            # 추세 강도 점수 계산
-            trend_score = 0
-            
-            # 이동평균선 정렬 점수 (최대 40점)
-            if current_index > kospi_ma5: trend_score += 10
-            if kospi_ma5 > kospi_ma10: trend_score += 10
-            if kospi_ma10 > kospi_ma20: trend_score += 10
-            if kospi_ma20 > kospi_ma60: trend_score += 10
-            
-            # 수익률 점수 (최대 30점)
-            if return_5d > 2: trend_score += 10
-            elif return_5d > 1: trend_score += 5
-            if return_10d > 3: trend_score += 10
-            elif return_10d > 1.5: trend_score += 5
-            if return_20d > 5: trend_score += 10
-            elif return_20d > 2.5: trend_score += 5
-            
-            # RSI 점수 (최대 15점)
-            if kospi_rsi < 30:
-                trend_score += 15
-            elif kospi_rsi < 50:
-                trend_score += 10
-            elif kospi_rsi < 70:
-                trend_score += 5
-            else:
-                trend_score -= 5
-            
-            # 거래량 점수 (최대 15점)
-            if volume_ratio > 1.5: trend_score += 15
-            elif volume_ratio > 1.2: trend_score += 10
-            elif volume_ratio > 1.0: trend_score += 5
-            
-            # 추세 상태 결정
-            if trend_score >= 80:
-                trend_state = "very_strong_uptrend"
-            elif trend_score >= 65:
-                trend_state = "strong_uptrend"
-            elif trend_score >= 50:
-                trend_state = "uptrend"
-            elif trend_score >= 35:
-                trend_state = "neutral"
-            elif trend_score >= 20:
-                trend_state = "downtrend"
-            else:
-                trend_state = "strong_downtrend"
-            
-            logger.info(f"시장 추세 분석 - 상태: {trend_state}, 점수: {trend_score}, RSI: {kospi_rsi:.1f}, 거래량비율: {volume_ratio:.2f}")
-            
-            return trend_state, trend_score
-            
-        except Exception as e:
-            logger.error(f"강화된 마켓 타이밍 감지 중 오류: {str(e)}")
-            return "neutral", 0
-
-    # =============================================================================
-    # 2. 동적 매매 파라미터 함수 (새로 추가)
-    # =============================================================================
-    def get_dynamic_trading_params(self, stock_code, market_trend, trend_score):
-        """시장 상황에 따른 동적 매매 파라미터 조정"""
-        try:
-            base_config = {
-                'pullback_required': 5.0,
-                'target_multiplier': 1.0,
-                'partial_sell_ratio': 0.3,
-                'trigger_sensitivity': 1.0,
-                'entry_aggressiveness': 1.0
-            }
-            
-            if market_trend == "very_strong_uptrend":
-                config = {
-                    'pullback_required': 1.5,      # 1.5% 조정만으로도 진입
-                    'target_multiplier': 0.7,      # 목표 수익률 30% 하향
-                    'partial_sell_ratio': 0.6,     # 60% 매도
-                    'trigger_sensitivity': 0.5,    # 트리거 50% 민감
-                    'entry_aggressiveness': 1.5    # 진입 비중 50% 증가
-                }
-                logger.info(f"{stock_code} 매우 강한 상승장 모드: 적극적 회전 매매")
-                
-            elif market_trend == "strong_uptrend":
-                config = {
-                    'pullback_required': 2.5,
-                    'target_multiplier': 0.8,
-                    'partial_sell_ratio': 0.5,
-                    'trigger_sensitivity': 0.6,
-                    'entry_aggressiveness': 1.3
-                }
-                logger.info(f"{stock_code} 강한 상승장 모드: 빠른 회전 매매")
-                
-            elif market_trend == "uptrend":
-                config = {
-                    'pullback_required': 3.5,
-                    'target_multiplier': 0.9,
-                    'partial_sell_ratio': 0.4,
-                    'trigger_sensitivity': 0.8,
-                    'entry_aggressiveness': 1.1
-                }
-                logger.info(f"{stock_code} 상승장 모드: 균형 매매")
-                
-            elif market_trend == "neutral":
-                config = base_config.copy()
-                logger.info(f"{stock_code} 중립 모드: 기본 매매")
-                
-            elif market_trend == "downtrend":
-                config = {
-                    'pullback_required': 7.0,
-                    'target_multiplier': 1.2,
-                    'partial_sell_ratio': 0.2,
-                    'trigger_sensitivity': 1.3,
-                    'entry_aggressiveness': 0.8
-                }
-                logger.info(f"{stock_code} 하락장 모드: 보수적 매매")
-                
-            else:  # strong_downtrend
-                config = {
-                    'pullback_required': 10.0,
-                    'target_multiplier': 1.5,
-                    'partial_sell_ratio': 0.1,
-                    'trigger_sensitivity': 1.5,
-                    'entry_aggressiveness': 0.6
-                }
-                logger.info(f"{stock_code} 강한 하락장 모드: 매우 보수적 매매")
-            
-            # 추세 강도에 따른 미세 조정
-            strength_factor = min(1.2, max(0.8, trend_score / 50.0))
-            config['entry_aggressiveness'] *= strength_factor
-            
-            # 성장주 특성 추가 반영
-            if TARGET_STOCKS[stock_code].get('stock_type') == 'growth':
-                config['target_multiplier'] *= 0.9
-                config['trigger_sensitivity'] *= 0.8
-                logger.info(f"{stock_code} 성장주 특성 추가 반영")
-            
-            return config
-            
-        except Exception as e:
-            logger.error(f"동적 매매 파라미터 조정 중 오류: {str(e)}")
-            return base_config
-
-
     def __init__(self):
         self.split_data_list = self.load_split_data()
         self.update_budget()
@@ -721,31 +543,42 @@ class SmartMagicSplit:
             logger.error(f"작은 조정 매수 기회 확인 중 오류: {str(e)}")
             return False
 
+
     def get_split_meta_info(self, stock_code, indicators):
-        """개선된 차수별 투자 정보 계산"""
+        # 차수별 투자 정보 계산
         try:
-            # 시장 상황 분석
-            market_trend, trend_score = self.detect_market_timing_enhanced()
-            trading_params = self.get_dynamic_trading_params(stock_code, market_trend, trend_score)
-            
             stock_weight = TARGET_STOCKS[stock_code]['weight']
             stock_total_money = self.total_money * stock_weight
+            
+            # 종목 유형 확인 (성장주 여부)
             stock_type = TARGET_STOCKS[stock_code].get('stock_type', 'normal')
             
-            # 동적 파라미터 적용
-            target_multiplier = trading_params['target_multiplier']
-            trigger_sensitivity = trading_params['trigger_sensitivity']
-            entry_aggressiveness = trading_params['entry_aggressiveness']
-            
-            # 시장 상황에 따른 첫 진입 비중 조정
+            # ===== 변경 시작 =====
+            # 성장주 여부에 따라 첫 진입 비중 조정
             if stock_type == 'growth':
-                first_invest_ratio = 0.45 * entry_aggressiveness
+                # 성장주는 첫 진입 비중 상향 (더 많은 물량 확보)
+                first_invest_ratio = 0.45  # 기본 45%로 상향 (기존 30%에서 증가)
+                
+                # 시장 상황에 따른 추가 조정
+                market_timing = self.detect_market_timing()
+                if market_timing == "strong_uptrend":
+                    first_invest_ratio = 0.5  # 강한 상승장에서는 50%로 더 상향
+                elif market_timing == "downtrend":
+                    first_invest_ratio = 0.35  # 하락장에서는 35%로 하향
+                    
+                logger.info(f"{stock_code} 성장주 특성 반영: 첫 진입 비중 {first_invest_ratio:.2f} (기본값 0.3)")
             else:
-                first_invest_ratio = 0.3 * entry_aggressiveness
-            
-            # 안전장치: 최소 20%, 최대 60%
-            first_invest_ratio = max(0.2, min(0.6, first_invest_ratio))
-            
+                # 기존 급등주 처리 로직
+                first_invest_ratio = 0.3  # 기본 30%
+                
+                # 급등주는 첫 진입 비중을 더 낮게 설정 (리스크 관리)
+                if 'is_rapid_rise' in indicators and indicators['is_rapid_rise']:
+                    # 상승폭이 클수록 첫 진입 비중 축소
+                    rise_adj = max(0.5, 1.0 - (indicators['recent_rise_percent'] / 100))  # 최소 50%까지 감소
+                    first_invest_ratio = first_invest_ratio * rise_adj
+                    logger.info(f"{stock_code} 급등주 특성 반영: 첫 진입 비중 {first_invest_ratio:.2f} (원래는 0.3)")
+            # ===== 변경 끝 =====
+                
             first_invest_money = stock_total_money * first_invest_ratio
             remain_invest_money = stock_total_money * (1 - first_invest_ratio)
             
@@ -754,109 +587,158 @@ class SmartMagicSplit:
             for i in range(int(DIV_NUM)):
                 number = i + 1
                 
+                # 1차수일 경우
                 if number == 1:
-                    # 1차수 진입 비율 계산
+                    # 기존 로직 유지하되 비중 계산 방식 개선
                     final_invest_rate = 0
                     
+                    # MA 골든크로스 상태 확인 (단기>중기>장기)
                     if (indicators['ma_short'] > indicators['ma_mid'] and 
                         indicators['ma_mid'] > indicators['ma_long']):
-                        final_invest_rate += 20 * entry_aggressiveness
+                        final_invest_rate += 15  # 비중 상향
                     
-                    # 이동평균선 상태별 점수
+                    # 각 이동평균선 상태 체크
                     if indicators['prev_close'] >= indicators['ma_short']:
-                        final_invest_rate += 8
+                        final_invest_rate += 5  # 비중 하향 조정
                     if indicators['prev_close'] >= indicators['ma_mid']:
-                        final_invest_rate += 8
+                        final_invest_rate += 5
                     if indicators['prev_close'] >= indicators['ma_long']:
-                        final_invest_rate += 8
+                        final_invest_rate += 5
                     if indicators['ma_short'] >= indicators['ma_short_before']:
-                        final_invest_rate += 8
+                        final_invest_rate += 5
                     if indicators['ma_mid'] >= indicators['ma_mid_before']:
-                        final_invest_rate += 8
+                        final_invest_rate += 5
                     if indicators['ma_long'] >= indicators['ma_long_before']:
-                        final_invest_rate += 8
+                        final_invest_rate += 5
                     
-                    # 현재 구간에 따른 투자 비율
-                    step_invest_rate = ((int(DIV_NUM) + 1) - indicators['now_step']) * (50.0 / DIV_NUM)
+                    # 현재 구간에 따른 투자 비율 결정 (최대 40%)
+                    step_invest_rate = ((int(DIV_NUM) + 1) - indicators['now_step']) * (40.0 / DIV_NUM)
                     final_invest_rate += step_invest_rate
                     
-                    # RSI 조건 완화
-                    if market_trend in ["very_strong_uptrend", "strong_uptrend"]:
-                        if indicators['rsi'] > 80:
-                            final_invest_rate *= 0.8
-                        elif indicators['rsi'] > 70:
-                            final_invest_rate *= 0.9
-                    else:
-                        if indicators['rsi'] > RSI_UPPER_BOUND:
-                            final_invest_rate *= 0.5
-                        elif indicators['rsi'] < RSI_LOWER_BOUND:
-                            final_invest_rate *= 0.7
+                    # RSI 고려 (과매수/과매도 상태에서 비중 조절)
+                    if indicators['rsi'] > RSI_UPPER_BOUND:
+                        final_invest_rate = final_invest_rate * 0.5  # 과매수 상태에서는 50% 축소
+                    elif indicators['rsi'] < RSI_LOWER_BOUND:
+                        final_invest_rate = final_invest_rate * 0.7  # 과매도 상태에서는 30% 축소 (더 떨어질 수 있음)
+                        
+                    # 조정폭 고려 (고점 대비 조정이 충분히 이루어진 경우 비중 확대)
+                    if indicators['pullback_from_high'] > 5:  # 5% 이상 조정
+                        final_invest_rate = final_invest_rate * 1.2  # 20% 확대
                     
-                    # 조정폭 고려
-                    pullback_bonus = max(1.0, indicators['pullback_from_high'] / trading_params['pullback_required'])
-                    final_invest_rate *= pullback_bonus
+                    # 급등주 특성 반영 (더 충분한 조정이 있을 때만 정상 비중 투자)
+                    if 'is_rapid_rise' in indicators and indicators['is_rapid_rise']:
+                        if indicators['pullback_from_high'] < 5:  # 충분한 조정이 없으면
+                            final_invest_rate = final_invest_rate * 0.7  # 추가로 30% 축소
                     
                     final_first_money = first_invest_money * (final_invest_rate / 100.0)
+                    
+                    # 안전장치: 최소 0%, 최대 100% 제한
                     final_first_money = max(0, min(final_first_money, first_invest_money))
                     
-                    # 동적 목표 수익률 계산
-                    dynamic_target = indicators['target_rate'] * target_multiplier
-                    
-                    # 성장주 추가 조정
+                    # ===== 변경 시작 =====
+                    # 성장주 여부에 따라 목표 수익률 조정
                     if stock_type == 'growth':
-                        if market_trend in ["very_strong_uptrend", "strong_uptrend"]:
-                            dynamic_target *= 0.8
+                        # 목표 수익률 상향 조정 (더 장기 보유를 위함)
+                        # hold_profit_target = TARGET_STOCKS[stock_code].get('hold_profit_target', 20)
+                        # target_rate_multiplier = max(2.0, hold_profit_target / indicators['target_rate'])
+                        # logger.info(f"{stock_code} 성장주 특성 반영: 목표 수익률 승수 {target_rate_multiplier:.2f} (원래는 1.5)")
+
+                        # 동적 목표 수익률 계산
+                        dynamic_target = self.calculate_dynamic_profit_target(stock_code, indicators)
+                        # target_rate_multiplier = max(2.0, dynamic_target / indicators['target_rate'])
+                        target_rate_multiplier = max(1.2, dynamic_target / indicators['target_rate'])    # 🔥 최소 1.2배로 완화
+                        logger.info(f"{stock_code} 성장주 특성 반영: 동적 목표 수익률 {dynamic_target:.2f}% (승수: {target_rate_multiplier:.2f})")
+
+                    else:
+                        # 급등주 목표 수익률 조정 (기존 로직 유지)
+                        target_rate_multiplier = 1.5  # 기본 1.5배
+                        
+                        if 'is_rapid_rise' in indicators and indicators['is_rapid_rise']:
+                            # 급등 정도에 따라 목표 수익률 조정 (최소 1.0배)
+                            target_rate_multiplier = max(1.0, 1.5 - (indicators['recent_rise_percent'] / 100))
+                            logger.info(f"{stock_code} 급등주 특성 반영: 목표 수익률 승수 {target_rate_multiplier:.2f} (원래는 1.5)")
+                    # ===== 변경 끝 =====
                     
+                    # 1차 매수는 조정된 목표 수익률 적용
                     split_info_list.append({
                         "number": 1,
-                        "target_rate": dynamic_target,
+                        "target_rate": indicators['target_rate'] * target_rate_multiplier,
                         "trigger_rate": None,
                         "invest_money": round(final_first_money)
                     })
                     
+                # 2차수 이상 - 비중 조정 (나머지 차수에 불균등 배분 - 초기 차수 비중 확대)
                 else:
-                    # 2차수 이상 - 동적 트리거 적용
-                    trigger_multiplier = trigger_sensitivity
-                    
-                    # 성장주 특별 처리
+                    # ===== 변경 시작 =====
+                    # 성장주 여부에 따라 트리거 민감도 조정
                     if stock_type == 'growth':
-                        trigger_multiplier *= 0.7
+                        # 성장주는 작은 조정에도 추가 매수 가능하도록 트리거 민감도 상향
+                        # trigger_multiplier = 0.8  # 더 적은 하락에도 추가 매수 (기본 대비 20% 민감하게)
+                        trigger_multiplier = 0.5  # 0.8에서 0.5로 더 민감하게 조정 (50% 더 작은 하락에도 매수)
+
                         
-                        if market_trend in ["very_strong_uptrend", "strong_uptrend"]:
-                            trigger_multiplier *= 0.8
+                        market_timing = self.detect_market_timing()
+                        if market_timing in ["strong_uptrend", "uptrend"]:
+                            # 상승장에서는 더 민감하게
+                            trigger_multiplier = 0.7
+                        elif market_timing in ["downtrend", "strong_downtrend"]:
+                            # 하락장에서는 덜 민감하게
+                            trigger_multiplier = 0.9
+                            
+                        logger.info(f"{stock_code} 성장주 특성 반영: 트리거 민감도 {trigger_multiplier:.2f} (기본값 1.0)")
+                    else:
+                        # 급등주 트리거 처리 (기존 로직 유지)
+                        if 'is_rapid_rise' in indicators and indicators['is_rapid_rise']:
+                            # 상승폭이 클수록 차수 간격 확대 (최대 1.2배로 제한)
+                            trigger_multiplier = min(1.2, 1.0 + (indicators['recent_rise_percent'] / 200))
+                            logger.info(f"{stock_code} 급등주 특성 반영: 트리거 승수 {trigger_multiplier:.2f} (조정됨)")
+                        else:
+                            trigger_multiplier = 1.0
+                    # ===== 변경 끝 =====
+
+                    # 차수별 비중 설정 (낮은 차수에 더 많은 비중 할당)
+                    weight_multiplier = 1.0
+                    if number <= 3:  # 2-3차수
+                        weight_multiplier = 1.2
+                    elif number >= 6:  # 6-7차수
+                        weight_multiplier = 0.8
                     
-                    # 차수별 비중
-                    weight_multiplier = 1.2 if number <= 3 else 0.8 if number >= 6 else 1.0
-                    total_weight = sum([1.2 if i <= 3 else 0.8 if i >= 6 else 1.0 
-                                    for i in range(2, int(DIV_NUM)+1)])
+                    # 나머지 차수의 합계 가중치 계산
+                    total_weight = sum([1.2 if i <= 3 else 0.8 if i >= 6 else 1.0 for i in range(2, int(DIV_NUM)+1)])
+                    
+                    # 개별 차수 투자금액 계산
                     invest_money = remain_invest_money * (weight_multiplier / total_weight)
                     
-                    # 차수별 차등 트리거 적용
-                    if number <= 3:
+                    # 차수별 트리거 손실률 차등 적용
+                    if number <= 3:  # 2-3차수는 더 민감한 트리거 (손실률 60%)
                         trigger_value = indicators['trigger_rate'] * trigger_multiplier * 0.6
-                    elif number <= 5:
-                        trigger_value = indicators['trigger_rate'] * trigger_multiplier
-                    else:
-                        trigger_value = indicators['trigger_rate'] * trigger_multiplier * 1.3
-                    
-                    # 동적 목표 수익률
-                    target_rate = indicators['target_rate']
-                    if stock_type == 'growth' and market_trend in ["very_strong_uptrend", "strong_uptrend"]:
-                        target_rate *= 0.9
-                    
-                    split_info_list.append({
-                        "number": number,
-                        "target_rate": target_rate,
-                        "trigger_rate": trigger_value,
-                        "invest_money": round(invest_money)
-                    })
+                        split_info_list.append({
+                            "number": number,
+                            "target_rate": indicators['target_rate'] * (1.0 if stock_type == 'growth' else 1.0),  # 성장주는 목표 수익률 유지
+                            "trigger_rate": trigger_value,  # 60%로 축소된 트리거 값
+                            "invest_money": round(invest_money)
+                        })
+                    elif number <= 5:  # 4-5차수는 기본 트리거 (100%)
+                        split_info_list.append({
+                            "number": number,
+                            "target_rate": indicators['target_rate'] * (1.0 if stock_type == 'growth' else 1.0),
+                            "trigger_rate": indicators['trigger_rate'] * trigger_multiplier,  # 기본 트리거
+                            "invest_money": round(invest_money)
+                        })
+                    else:  # 6-7차수는 더 큰 트리거 (130%)
+                        split_info_list.append({
+                            "number": number,
+                            "target_rate": indicators['target_rate'] * (1.0 if stock_type == 'growth' else 1.0),
+                            "trigger_rate": indicators['trigger_rate'] * trigger_multiplier * 1.3,  # 130%로 확대된 트리거
+                            "invest_money": round(invest_money)
+                        })
             
             return split_info_list
-            
         except Exception as e:
-            logger.error(f"개선된 차수 정보 생성 중 오류: {str(e)}")
+            logger.error(f"차수 정보 생성 중 오류: {str(e)}")
             return []
 
+       
     def get_split_data_info(self, stock_data_list, number):
         # 특정 차수 데이터 가져오기
         for save_data in stock_data_list:
@@ -864,81 +746,77 @@ class SmartMagicSplit:
                 return save_data
         return None
     
+
     def check_first_entry_condition(self, indicators):
-        """개선된 1차 진입 조건 체크"""
+        """개선된 1차 진입 조건 체크 (급등주 특성 반영)"""
         try:
-            # 시장 상황 분석
-            market_trend, trend_score = self.detect_market_timing_enhanced()
-            trading_params = self.get_dynamic_trading_params("", market_trend, trend_score)
-            
-            pullback_required = trading_params['pullback_required']
-            entry_aggressiveness = trading_params['entry_aggressiveness']
-            
-            # 1. 기본 차트 패턴 조건 (완화)
+            # 1. 기본 차트 패턴 조건
             basic_condition = (
-                indicators['prev_open'] < indicators['prev_close'] or
+                indicators['prev_open'] < indicators['prev_close'] and  # 전일 양봉
+                (indicators['prev_close'] >= indicators['ma_short'] or   # 5일선 위 또는
+                indicators['ma_short_before'] <= indicators['ma_short'])  # 5일선 상승 추세
+            )
+            
+            # 2. RSI 조건 (과매수/과매도 회피)
+            rsi_condition = (
+                RSI_LOWER_BOUND <= indicators['rsi'] <= RSI_UPPER_BOUND  # RSI 30-70 사이 (건전한 구간)
+            )
+            
+            # 3. 고점 대비 충분한 조정 확인 (급등주는 더 큰 조정 요구)
+            pullback_required = PULLBACK_RATE
+            
+            # 급등주 조건 확인 (30% 이상 상승한 경우 더 큰 조정 요구)
+            if 'is_rapid_rise' in indicators and indicators['is_rapid_rise']:
+                # 급등 정도에 따라 필요 조정폭 증가 (최대 5%)
+                rise_factor = min(5.0, indicators['recent_rise_percent'] / 20)  # 최대 5%
+                pullback_required = min(5.0, PULLBACK_RATE * rise_factor)  # 최대 5%
+                logger.info(f"급등주 특성 감지: 필요 조정폭 {pullback_required:.2f}%")
+            
+            pullback_condition = (
+                indicators['pullback_from_high'] >= pullback_required  # 필요 조정폭 이상 하락
+            )
+            
+            # 4. 이동평균선 정렬 상태 확인 (중장기 추세)
+            ma_condition = (
+                # 골든크로스 상태 확인 (단기>중기) - 완화된 조건
+                indicators['ma_short'] > indicators['ma_mid'] or
+                # 단기 상승 추세 확인
                 indicators['ma_short'] > indicators['ma_short_before']
             )
             
-            # 2. RSI 조건 (시장 상황에 따라 완화)
-            if market_trend in ["very_strong_uptrend", "strong_uptrend"]:
-                rsi_condition = indicators['rsi'] <= 85
-            elif market_trend == "uptrend":
-                rsi_condition = indicators['rsi'] <= RSI_UPPER_BOUND
-            else:
-                rsi_condition = (RSI_LOWER_BOUND <= indicators['rsi'] <= RSI_UPPER_BOUND)
-            
-            # 3. 동적 조정폭 조건
-            pullback_condition = (indicators['pullback_from_high'] >= pullback_required)
-            
-            # 4. 강화된 이동평균선 조건
-            ma_condition = (
-                indicators['ma_short'] > indicators['ma_mid'] or
-                indicators['ma_short'] > indicators['ma_short_before'] or
-                (market_trend in ["very_strong_uptrend", "strong_uptrend"] and 
-                indicators['prev_close'] >= indicators['ma_short'])
-            )
-            
-            # 5. 시장 모멘텀 조건
-            momentum_condition = True
-            if market_trend in ["very_strong_uptrend", "strong_uptrend"]:
-                momentum_condition = True
-            elif market_trend == "downtrend":
-                momentum_condition = (indicators['rsi'] < 35 and 
-                                    indicators['prev_close'] > indicators['prev_open'])
-            
-            # 6. 진입 적극성 반영
-            if entry_aggressiveness > 1.2:
-                aggressive_condition = (
-                    basic_condition or 
-                    pullback_condition or 
-                    (indicators['rsi'] < 50 and ma_condition)
-                )
-            else:
-                aggressive_condition = False
-            
             # 로그 기록
-            logger.info(f"개선된 1차 진입 조건 체크 ({market_trend}):")
-            logger.info(f"- 차트 패턴: {'통과' if basic_condition else '미달'}")
-            logger.info(f"- RSI 조건: {indicators['rsi']:.1f} - {'통과' if rsi_condition else '미달'}")
-            logger.info(f"- 조정 조건({pullback_required:.1f}%): {indicators['pullback_from_high']:.2f}% - {'통과' if pullback_condition else '미달'}")
-            logger.info(f"- MA 조건: {'통과' if ma_condition else '미달'}")
-            logger.info(f"- 모멘텀 조건: {'통과' if momentum_condition else '미달'}")
-            logger.info(f"- 적극성({entry_aggressiveness:.1f}): {'통과' if aggressive_condition else '미달'}")
+            logger.info(f"1차 진입 조건 체크:")
+            logger.info(f"- 차트 패턴 조건: {'통과' if basic_condition else '미달'}")
+            logger.info(f"- RSI 조건({RSI_LOWER_BOUND}-{RSI_UPPER_BOUND}): {indicators['rsi']:.1f} - {'통과' if rsi_condition else '미달'}")
+            logger.info(f"- 고점 대비 조정({pullback_required:.2f}%): {indicators['pullback_from_high']:.2f}% - {'통과' if pullback_condition else '미달'}")
+            logger.info(f"- 이동평균선 조건: {'통과' if ma_condition else '미달'}")
             
-            # 최종 판단
+            # 급등주 특별 조건: 과매수 상태에서도 충분한 조정이 있으면 진입 허용
+            special_condition = False
+            if 'is_rapid_rise' in indicators and indicators['is_rapid_rise']:
+                if indicators['pullback_from_high'] >= pullback_required * 1.5:  # 필요 조정의 1.5배 이상
+                    special_condition = True
+                    logger.info(f"급등주 특별 조건 적용: 충분한 조정 감지 ({indicators['pullback_from_high']:.2f}%)")
+            
+            # 최종 판단: 모든 조건 또는 하락장에서 강한 반등 조건 또는 급등주 특별 조건
             final_condition = (
-                (basic_condition and rsi_condition and pullback_condition and ma_condition and momentum_condition) or
-                aggressive_condition or
-                (indicators['rsi'] < 25 and indicators['prev_close'] > indicators['prev_open'] * 1.03)
+                # 일반적인 경우 - 기본 조건 + RSI + 추가 조건
+                (basic_condition and rsi_condition and (pullback_condition or ma_condition)) or
+                # 특수 상황 - 강한 과매도 반등 신호 (RSI 30 이하에서 상승 반전)
+                (indicators['rsi'] < RSI_LOWER_BOUND and 
+                indicators['prev_close'] > indicators['prev_open'] * 1.02) or  # 2% 이상 상승
+                # 급등주 특별 조건
+                special_condition
             )
             
             logger.info(f"1차 진입 최종 결정: {'진입 가능' if final_condition else '진입 불가'}")
+            
             return final_condition
                     
         except Exception as e:
-            logger.error(f"개선된 1차 진입 조건 체크 중 오류: {str(e)}")
+            logger.error(f"1차 진입 조건 체크 중 오류: {str(e)}")
             return False
+
 
     def get_current_holdings(self, stock_code):
         # 현재 보유 수량 및 상태 조회
