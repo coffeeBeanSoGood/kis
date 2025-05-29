@@ -93,11 +93,11 @@ TARGET_STOCKS = {
         "period": 60, 
         "recent_period": 30, 
         "recent_weight": 0.6,
-        "stock_type": "growth",  # 우량 성장주 타입 추가
-        # "hold_profit_target": 20,  # 홀딩 목표 수익률 20%
-        "hold_profit_target": 15,  # 이 값은 기존 호환성을 위해 유지
-        "base_profit_target": 15,  # 새로운 동적 계산의 기준값
-        "partial_sell_ratio": 0.3  # 부분 매도 비율 30%
+        "stock_type": "growth",
+        # "hold_profit_target": 15,  # 기존 15%
+        "hold_profit_target": 10,    # 🔥 15% → 10%로 변경
+        "base_profit_target": 10,    # 🔥 15% → 10%로 변경  
+        "partial_sell_ratio": 0.3
     },
     "042660": {
         "name": "한화오션", 
@@ -106,10 +106,10 @@ TARGET_STOCKS = {
         "period": 60, 
         "recent_period": 30, 
         "recent_weight": 0.7,
-        "stock_type": "growth",  
-        "hold_profit_target": 15,  # 이 값은 기존 호환성을 위해 유지
-        "base_profit_target": 15,  # 새로운 동적 계산의 기준값
-        "partial_sell_ratio": 0.3
+        "stock_type": "growth",
+        # "hold_profit_target": 15,  # 기존 15%
+        "hold_profit_target": 10,    # 🔥 15% → 10%로 변경
+        "base_profit_target": 10     # 🔥 15% → 10%로 변경
     }
 }
 
@@ -645,7 +645,8 @@ class SmartMagicSplit:
 
                         # 동적 목표 수익률 계산
                         dynamic_target = self.calculate_dynamic_profit_target(stock_code, indicators)
-                        target_rate_multiplier = max(2.0, dynamic_target / indicators['target_rate'])
+                        # target_rate_multiplier = max(2.0, dynamic_target / indicators['target_rate'])
+                        target_rate_multiplier = max(1.2, dynamic_target / indicators['target_rate'])    # 🔥 최소 1.2배로 완화
                         logger.info(f"{stock_code} 성장주 특성 반영: 동적 목표 수익률 {dynamic_target:.2f}% (승수: {target_rate_multiplier:.2f})")
 
                     else:
