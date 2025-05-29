@@ -1263,8 +1263,15 @@ class SmartMagicSplit:
                                     
                                     if result:
                                         magic_data['IsBuy'] = False
-                                        stock_data_info['IsReady'] = False
-                                        
+                                        market_timing = self.detect_market_timing()
+
+                                        if market_timing in ["strong_uptrend", "uptrend"]:
+                                            stock_data_info['IsReady'] = True
+                                            logger.info(f"{stock_code} 상승장 감지: 매도 후 즉시 재진입 준비 완료")
+                                        else:
+                                            stock_data_info['IsReady'] = False
+                                            logger.info(f"{stock_code} 일반장/하락장: 매도 후 하루 대기")
+
                                         realized_pnl = holdings['revenue_money'] * sell_amt / holdings['amount']
                                         self.update_realized_pnl(stock_code, realized_pnl)
                                         
@@ -1306,18 +1313,7 @@ class SmartMagicSplit:
                                     magic_data['EntryAmt'] = buy_amt
                                     magic_data['CurrentAmt'] = buy_amt  # 현재 보유 수량 설정
                                     magic_data['EntryDate'] = datetime.now().strftime("%Y-%m-%d")  # 진입 날짜 설정
-
-                                    # 매도 완료 후 재진입 준비 시간 동적 조정
-                                    market_timing = self.detect_market_timing()
-                                    if market_timing in ["strong_uptrend", "uptrend"]:
-                                        # 상승장에서는 즉시 재진입 준비 (복리 효과 극대화)
-                                        stock_data_info['IsReady'] = True
-                                        logger.info(f"{stock_code} 상승장 감지: 매도 후 즉시 재진입 준비 완료")
-                                    else:
-                                        # 일반/하락장에서는 기존 로직 유지 (하루 대기)
-                                        stock_data_info['IsReady'] = False
-                                        logger.info(f"{stock_code} 일반장/하락장: 매도 후 하루 대기")
-
+                                    stock_data_info['IsReady'] = False  # 기존 로직 유지
                                     self.save_split_data()
                                     
                                     msg = f"{stock_info['name']}({stock_code}) 스마트스플릿 {magic_data['Number']}차 매수 완료! 이전 차수 손실률 {split_meta['trigger_rate']}% 만족"
