@@ -72,8 +72,11 @@ try:
 except:
     logger.warning("API 헬퍼 모듈에 로거를 전달할 수 없습니다.")
 
-
 ################################### 통합된 설정 관리 시스템 ##################################
+
+# 🔥 API 초기화 (가장 먼저!)
+Common.SetChangeMode()
+logger.info("✅ API 초기화 완료 - 모든 KIS API 사용 가능")
 
 class SmartSplitConfig:
     """스마트 스플릿 설정 관리 클래스 - 통합 버전"""
@@ -136,11 +139,15 @@ class SmartSplitConfig:
         target_stocks = {}
         
         for stock_code, basic_config in target_stocks_config.items():
+
             try:
                 logger.info(f"종목 정보 수집 중: {stock_code}")
                 
                 # 종목명 조회 시도
                 stock_name = f"종목{stock_code}"  # 기본값으로 시작
+                logger.info(f"종목 기본명 : {stock_name}")
+                logger.info(f"stock_code : {stock_code}")
+
                 try:
                     stock_status = KisKR.GetCurrentStatus(stock_code)
                     if stock_status and isinstance(stock_status, dict):
@@ -1898,8 +1905,6 @@ def run_bot():
         # 클래스 변수 사용을 위해 SmartMagicSplit 클래스에 정적 변수 추가
         if not hasattr(SmartMagicSplit, '_daily_summary_sent_date'):
             SmartMagicSplit._daily_summary_sent_date = None
-
-        Common.SetChangeMode()
 
         # 봇 초기화 및 실행
         bot = SmartMagicSplit()
