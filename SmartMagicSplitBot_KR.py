@@ -72,20 +72,26 @@ try:
 except:
     logger.warning("API 헬퍼 모듈에 로거를 전달할 수 없습니다.")
 
-################################### 설정 파일 생성 함수 ##################################
 
-def create_smart_split_config(config_path: str = "smart_split_config.json") -> None:
-    """스마트 스플릿 기본 설정 파일 생성"""
-    try:
-        logger.info("🔧 스마트 스플릿 설정 파일 생성 시작...")
-        
+################################### 통합된 설정 관리 시스템 ##################################
+
+class SmartSplitConfig:
+    """스마트 스플릿 설정 관리 클래스 - 통합 버전"""
+    
+    def __init__(self, config_path: str = "smart_split_config.json"):
+        self.config_path = config_path
+        self.config = {}
+        self.load_config()
+    
+    def get_default_config(self):
+        """기본 설정값 반환 - 모든 기본값을 한 곳에서 관리"""
         # 샘플 종목 코드들 (거래량과 유동성이 확보된 종목들)
         sample_stocks = ["449450", "042660"]  # PLUS K방산, 한화오션
         
-        # 종목별 정보 수집
+        # 종목별 정보 수집 및 설정 생성
         target_stocks = {}
         
-        for i, stock_code in enumerate(sample_stocks):
+        for stock_code in sample_stocks:
             try:
                 logger.info(f"종목 정보 수집 중: {stock_code}")
                 
@@ -102,11 +108,11 @@ def create_smart_split_config(config_path: str = "smart_split_config.json") -> N
                     logger.warning(f"종목 {stock_code} 현재가 조회 실패")
                     continue
                 
-                # 종목별 비중 설정 (K방산 40%, 한화오션 60%)
+                # 종목별 비중 설정
                 if stock_code == "449450":  # PLUS K방산
-                    weight = 0.5
+                    weight = 0.6
                 elif stock_code == "042660":  # 한화오션
-                    weight = 0.5
+                    weight = 0.4
                 else:
                     weight = 0.5  # 기타 종목
                 
@@ -145,11 +151,11 @@ def create_smart_split_config(config_path: str = "smart_split_config.json") -> N
                     "partial_sell_ratio": 0.3
                 }
         
-        # 전체 설정 구성
-        config = {
+        # 통합된 기본 설정 반환
+        return {
             # 🔥 절대 예산 설정
             "use_absolute_budget": True,
-            "absolute_budget": 1000000,  # 🎯 기본 100만원
+            "absolute_budget": 1000000,  # 🎯 기본 100만원으로 통일
             "absolute_budget_strategy": "proportional",  # 성과 기반 동적 조정
             "initial_total_asset": 0,  # 봇 시작시 자동 설정
             
@@ -204,171 +210,65 @@ def create_smart_split_config(config_path: str = "smart_split_config.json") -> N
                 "주의사항": "_readme 섹션은 삭제해도 됩니다"
             }
         }
-        
-        # 파일 저장
-        with open(config_path, 'w', encoding='utf-8') as f:
-            json.dump(config, f, ensure_ascii=False, indent=4)
-        
-        logger.info(f"✅ 스마트 스플릿 설정 파일 생성 완료: {config_path}")
-        logger.info(f"🎯 주요 설정:")
-        logger.info(f"  - 절대 예산: {config['absolute_budget']:,}원")
-        logger.info(f"  - 예산 전략: {config['absolute_budget_strategy']}")
-        logger.info(f"  - 분할 차수: {config['div_num']:.0f}차수")
-        logger.info(f"  - 타겟 종목: {len(target_stocks)}개")
-        
-        for stock_code, stock_config in target_stocks.items():
-            logger.info(f"    · {stock_config['name']}({stock_code}): {stock_config['weight']*100:.1f}% 비중")
-        
-        # Discord 알림 전송
-        try:
-            setup_msg = f"🔧 스마트 스플릿 설정 파일 생성 완료!\n"
-            setup_msg += f"📁 파일: {config_path}\n"
-            setup_msg += f"💰 초기 예산: {config['absolute_budget']:,}원\n"
-            setup_msg += f"📊 예산 전략: {config['absolute_budget_strategy']}\n"
-            setup_msg += f"🎯 분할 차수: {config['div_num']:.0f}차수\n\n"
-            setup_msg += f"종목 설정:\n"
-            for stock_code, stock_config in target_stocks.items():
-                allocated = config['absolute_budget'] * stock_config['weight']
-                setup_msg += f"• {stock_config['name']}: {stock_config['weight']*100:.1f}% ({allocated:,.0f}원)\n"
-            setup_msg += f"\n⚙️ 설정 변경은 {config_path} 파일을 수정하세요."
-            
-            if config.get("use_discord_alert", True):
-                discord_alert.SendMessage(setup_msg)
-                
-        except Exception as alert_e:
-            logger.warning(f"Discord 알림 전송 중 오류: {str(alert_e)}")
-        
-    except Exception as e:
-        logger.exception(f"설정 파일 생성 중 오류: {str(e)}")
-        raise
-
-def check_and_create_config():
-    """설정 파일 존재 여부 확인 및 생성"""
-    config_path = "smart_split_config.json"
-    
-    if not os.path.exists(config_path):
-        logger.info(f"📋 설정 파일이 없습니다. 기본 설정 파일을 생성합니다: {config_path}")
-        create_smart_split_config(config_path)
-        
-        # 생성 후 사용자 확인 메시지
-        logger.info("=" * 60)
-        logger.info("🎯 설정 파일이 생성되었습니다!")
-        logger.info("📝 필요시 다음 항목들을 수정하세요:")
-        logger.info("  1. absolute_budget: 투자할 총 금액 (기본: 50만원)")
-        logger.info("  2. target_stocks의 weight: 종목별 비중")
-        logger.info("  3. absolute_budget_strategy: 예산 전략")
-        logger.info("     - proportional: 성과 기반 동적 조정 (추천)")
-        logger.info("     - strict: 고정 예산")
-        logger.info("     - adaptive: 손실 허용도 기반")
-        logger.info("💡 설정 변경 후 봇을 재시작하면 자동 적용됩니다.")
-        logger.info("=" * 60)
-        
-        return True
-    else:
-        logger.info(f"✅ 설정 파일 존재: {config_path}")
-        return False
-
-################################### 설정 클래스 ##################################
-
-class SmartSplitConfig:
-    """스마트 스플릿 설정 관리 클래스"""
-    
-    def __init__(self, config_path: str = "smart_split_config.json"):
-        self.config_path = config_path
-        self.config = {}
-        self.load_config()
     
     def load_config(self):
-        """설정 파일 로드"""
-        default_config = {
-            # 🔥 절대 예산 설정
-            "use_absolute_budget": True,
-            "absolute_budget": 5000000,  # 초기 500만원
-            "absolute_budget_strategy": "proportional",  # strict, adaptive, proportional
-            "initial_total_asset": 0,  # 봇 시작시 총 자산 (자동 설정)
-            
-            # 🔥 동적 조정 설정
-            "performance_multiplier_range": [0.7, 1.4],  # 70%~140% 범위
-            "budget_loss_tolerance": 0.2,  # adaptive 모드용
-            "safety_cash_ratio": 0.9,  # 현금 잔고의 90%만 사용
-            
-            # 봇 기본 설정
-            "bot_name": "SmartMagicSplitBot",
-            "div_num": 5.0,  # 분할 수
-            
-            # 수수료 및 세금 설정
-            "commission_rate": 0.00015,  # 수수료 0.015%
-            "tax_rate": 0.0023,  # 매도 시 거래세 0.23%
-            "special_tax_rate": 0.0015,  # 농어촌특별세 0.15%
-            
-            # 기술적 지표 설정
-            "rsi_period": 14,
-            "atr_period": 14,
-            "pullback_rate": 5,  # 고점 대비 조정 요구 (5%)
-            "rsi_lower_bound": 30,
-            "rsi_upper_bound": 78,
-            "ma_short": 5,
-            "ma_mid": 20,
-            "ma_long": 60,
-            
-            # 관심 종목 설정
-            "target_stocks": {
-                "449450": {
-                    "name": "PLUS K방산",
-                    "weight": 0.4,  # 40% 비중
-                    "min_holding": 0,
-                    "period": 60,
-                    "recent_period": 30,
-                    "recent_weight": 0.6,
-                    "stock_type": "growth",
-                    "hold_profit_target": 10,    # 목표 수익률 10%
-                    "base_profit_target": 10,
-                    "partial_sell_ratio": 0.3   # 부분 매도 비율 30%
-                },
-                "042660": {
-                    "name": "한화오션",
-                    "weight": 0.6,  # 60% 비중
-                    "min_holding": 0,
-                    "period": 60,
-                    "recent_period": 30,
-                    "recent_weight": 0.7,
-                    "stock_type": "growth",
-                    "hold_profit_target": 10,
-                    "base_profit_target": 10
-                }
-            },
-            
-            # 성과 추적
-            "performance_tracking": {
-                "start_date": datetime.now().strftime("%Y-%m-%d"),
-                "best_performance": 0.0,
-                "worst_performance": 0.0,
-                "total_trades": 0,
-                "winning_trades": 0,
-                "total_realized_pnl": 0.0
-            },
-            
-            # 기타 설정
-            "use_discord_alert": True,
-            "last_config_update": datetime.now().isoformat()
-        }
-        
+        """설정 파일 로드 - 기본 설정 생성 통합"""
         try:
             with open(self.config_path, 'r', encoding='utf-8') as f:
                 loaded_config = json.load(f)
             
             # 기본 설정과 병합
+            default_config = self.get_default_config()
             self.config = self._merge_config(default_config, loaded_config)
-            logger.info(f"설정 파일 로드 완료: {self.config_path}")
+            logger.info(f"✅ 설정 파일 로드 완료: {self.config_path}")
             
         except FileNotFoundError:
-            self.config = default_config
+            logger.info(f"📋 설정 파일이 없습니다. 기본 설정 파일을 생성합니다: {self.config_path}")
+            self.config = self.get_default_config()
             self.save_config()
-            logger.info(f"기본 설정 파일 생성: {self.config_path}")
+            self._send_creation_message()
             
         except Exception as e:
             logger.error(f"설정 파일 로드 중 오류: {str(e)}")
-            self.config = default_config
+            self.config = self.get_default_config()
+    
+    def _send_creation_message(self):
+        """설정 파일 생성 시 안내 메시지 전송"""
+        try:
+            setup_msg = f"🔧 스마트 스플릿 설정 파일 생성 완료!\n"
+            setup_msg += f"📁 파일: {self.config_path}\n"
+            setup_msg += f"💰 초기 예산: {self.config['absolute_budget']:,}원\n"
+            setup_msg += f"📊 예산 전략: {self.config['absolute_budget_strategy']}\n"
+            setup_msg += f"🎯 분할 차수: {self.config['div_num']:.0f}차수\n\n"
+            setup_msg += f"종목 설정:\n"
+            
+            target_stocks = self.config.get('target_stocks', {})
+            for stock_code, stock_config in target_stocks.items():
+                allocated = self.config['absolute_budget'] * stock_config.get('weight', 0)
+                setup_msg += f"• {stock_config.get('name', stock_code)}: {stock_config.get('weight', 0)*100:.1f}% ({allocated:,.0f}원)\n"
+            
+            setup_msg += f"\n⚙️ 설정 변경은 {self.config_path} 파일을 수정하세요."
+            
+            logger.info(setup_msg)
+            
+            if self.config.get("use_discord_alert", True):
+                discord_alert.SendMessage(setup_msg)
+                
+            # 사용자 확인 메시지
+            logger.info("=" * 60)
+            logger.info("🎯 설정 파일이 생성되었습니다!")
+            logger.info("📝 필요시 다음 항목들을 수정하세요:")
+            logger.info("  1. absolute_budget: 투자할 총 금액 (기본: 100만원)")
+            logger.info("  2. target_stocks의 weight: 종목별 비중")
+            logger.info("  3. absolute_budget_strategy: 예산 전략")
+            logger.info("     - proportional: 성과 기반 동적 조정 (추천)")
+            logger.info("     - strict: 고정 예산")
+            logger.info("     - adaptive: 손실 허용도 기반")
+            logger.info("💡 설정 변경 후 봇을 재시작하면 자동 적용됩니다.")
+            logger.info("=" * 60)
+                
+        except Exception as alert_e:
+            logger.warning(f"설정 파일 생성 메시지 전송 중 오류: {str(alert_e)}")
     
     def _merge_config(self, default, loaded):
         """설정 병합 (기본값 + 로드된 값)"""
@@ -386,18 +286,18 @@ class SmartSplitConfig:
             self.config["last_config_update"] = datetime.now().isoformat()
             with open(self.config_path, 'w', encoding='utf-8') as f:
                 json.dump(self.config, f, ensure_ascii=False, indent=4)
-            logger.info(f"설정 파일 저장 완료: {self.config_path}")
+            logger.info(f"✅ 설정 파일 저장 완료: {self.config_path}")
         except Exception as e:
             logger.error(f"설정 파일 저장 중 오류: {str(e)}")
     
-    # 속성 접근자들
+    # 속성 접근자들 (기존 유지)
     @property
     def use_absolute_budget(self):
         return self.config.get("use_absolute_budget", True)
     
     @property
     def absolute_budget(self):
-        return self.config.get("absolute_budget", 5000000)
+        return self.config.get("absolute_budget", 1000000)  # 100만원으로 통일
     
     @property
     def absolute_budget_strategy(self):
@@ -431,6 +331,20 @@ class SmartSplitConfig:
         tracking["worst_performance"] = min(tracking.get("worst_performance", 0), performance_rate)
         self.config["performance_tracking"] = tracking
         self.save_config()
+
+
+################################### 간단한 체크 함수 (호환성 유지) ##################################
+
+def check_and_create_config():
+    """설정 파일 존재 여부 확인 - 간소화된 버전"""
+    config_path = "smart_split_config.json"
+    
+    if not os.path.exists(config_path):
+        logger.info(f"📋 설정 파일이 없어서 SmartSplitConfig 클래스에서 자동 생성합니다.")
+        return True  # 새로 생성됨을 알림
+    else:
+        logger.info(f"✅ 설정 파일 존재: {config_path}")
+        return False  # 기존 파일 사용
 
 # 전역 설정 인스턴스
 config = SmartSplitConfig()
