@@ -84,106 +84,173 @@ class SmartSplitConfig:
         self.load_config()
     
     def get_default_config(self):
-        """기본 설정값 반환 - 모든 기본값을 한 곳에서 관리"""
-        # 샘플 종목 코드들 (거래량과 유동성이 확보된 종목들)
-        sample_stocks = ["449450", "042660"]  # PLUS K방산, 한화오션
+        """기본 설정값 반환 - 종목타입별 템플릿 자동 적용"""
+        
+        # 🎯 종목타입별 기본 템플릿 정의
+        stock_type_templates = {
+            "growth": {          # 성장주 템플릿
+                "period": 60,
+                "recent_period": 30,
+                "recent_weight": 0.7,        # 최근 가중치 높음
+                "hold_profit_target": 12,    # 높은 목표 수익률
+                "base_profit_target": 12,
+                "partial_sell_ratio": 0.25,  # 적게 매도 (복리 극대화)
+                "min_holding": 0
+            },
+            "value": {           # 가치주 템플릿
+                "period": 90,
+                "recent_period": 45,
+                "recent_weight": 0.5,        # 장기 관점
+                "hold_profit_target": 8,     # 보수적 목표
+                "base_profit_target": 8,
+                "partial_sell_ratio": 0.4,   # 많이 매도 (안정성)
+                "min_holding": 0
+            },
+            "defensive": {       # 방어주 템플릿
+                "period": 120,
+                "recent_period": 60,
+                "recent_weight": 0.4,        # 장기 추세 중시
+                "hold_profit_target": 6,     # 낮은 목표 (안정성)
+                "base_profit_target": 6,
+                "partial_sell_ratio": 0.5,   # 절반 매도
+                "min_holding": 0
+            },
+            "bluechip": {        # 대형주 템플릿
+                "period": 90,
+                "recent_period": 45,
+                "recent_weight": 0.5,
+                "hold_profit_target": 7,
+                "base_profit_target": 7,
+                "partial_sell_ratio": 0.35,
+                "min_holding": 0
+            }
+        }
+        
+        # 🔥 종목별 간단 설정 (종목코드, 비중, 타입만 정의)
+        target_stocks_config = {
+            "449450": {"weight": 0.6, "stock_type": "growth"},     # PLUS K방산 - 성장주
+            "042660": {"weight": 0.4, "stock_type": "growth"}   # 한화오션 - 성장주
+        }
         
         # 종목별 정보 수집 및 설정 생성
         target_stocks = {}
         
-        for stock_code in sample_stocks:
+        for stock_code, basic_config in target_stocks_config.items():
             try:
                 logger.info(f"종목 정보 수집 중: {stock_code}")
                 
-                # 종목명 조회
-                stock_status = KisKR.GetCurrentStatus(stock_code)
-                if stock_status and isinstance(stock_status, dict):
-                    stock_name = stock_status.get("StockName", f"종목{stock_code}")
+                # 종목명 조회 시도
+                stock_name = f"종목{stock_code}"  # 기본값으로 시작
+                try:
+                    stock_status = KisKR.GetCurrentStatus(stock_code)
+                    if stock_status and isinstance(stock_status, dict):
+                        api_name = stock_status.get("StockName", "")
+                        if api_name and api_name.strip():
+                            stock_name = api_name
+                            logger.info(f"종목명 조회 성공: {stock_code} → {stock_name}")
+                except Exception as name_e:
+                    logger.warning(f"종목명 조회 API 오류: {str(name_e)} - 기본명 사용")
+                
+                # 현재가 조회 시도 (유효성 검증용)
+                try:
+                    current_price = KisKR.GetCurrentPrice(stock_code)
+                    if current_price and current_price > 0:
+                        logger.info(f"현재가 확인 완료: {stock_code} = {current_price:,.0f}원")
+                except Exception as price_e:
+                    logger.warning(f"현재가 조회 API 오류: {str(price_e)} - 설정은 유지")
+                
+                # 🎯 종목타입에 따른 템플릿 자동 선택
+                stock_type = basic_config["stock_type"]
+                if stock_type in stock_type_templates:
+                    type_template = stock_type_templates[stock_type]
+                    logger.info(f"{stock_code} → {stock_type} 템플릿 적용")
                 else:
-                    stock_name = f"종목{stock_code}"
+                    # 정의되지 않은 타입은 growth 템플릿 사용
+                    type_template = stock_type_templates["growth"]
+                    logger.warning(f"{stock_code} → 정의되지 않은 타입({stock_type}), growth 템플릿 사용")
                 
-                # 현재가 조회 (유효성 검증)
-                current_price = KisKR.GetCurrentPrice(stock_code)
-                if not current_price or current_price <= 0:
-                    logger.warning(f"종목 {stock_code} 현재가 조회 실패")
-                    continue
-                
-                # 종목별 비중 설정
-                if stock_code == "449450":  # PLUS K방산
-                    weight = 0.6
-                elif stock_code == "042660":  # 한화오션
-                    weight = 0.4
-                else:
-                    weight = 0.5  # 기타 종목
-                
-                # 종목 설정 생성
+                # 🔥 최종 종목 설정 생성 (기본 정보 + 타입별 템플릿)
                 stock_config = {
                     "name": stock_name,
-                    "weight": weight,
-                    "min_holding": 0,
-                    "period": 60,
-                    "recent_period": 30,
-                    "recent_weight": 0.6,
-                    "stock_type": "growth",
-                    "hold_profit_target": 10,    # 10% 목표 수익률
-                    "base_profit_target": 10,
-                    "partial_sell_ratio": 0.3    # 30% 부분 매도
+                    "weight": basic_config["weight"],
+                    "stock_type": stock_type,
+                    **type_template  # 타입별 템플릿 자동 적용
                 }
                 
                 target_stocks[stock_code] = stock_config
-                logger.info(f"종목 설정 완료: {stock_code}({stock_name}) - 비중 {weight*100:.1f}%")
+                
+                weight = basic_config["weight"]
+                logger.info(f"✅ 종목 설정 완료: {stock_code}({stock_name})")
+                logger.info(f"   📊 타입: {stock_type}, 비중: {weight*100:.1f}%")
+                logger.info(f"   🎯 목표수익률: {type_template['hold_profit_target']}%, 매도비율: {type_template['partial_sell_ratio']*100:.0f}%")
                 
                 time.sleep(0.5)  # API 호출 간격
                 
             except Exception as e:
-                logger.warning(f"종목 {stock_code} 정보 수집 중 오류: {str(e)}")
-                # 오류 발생시 기본값으로 설정
-                target_stocks[stock_code] = {
+                logger.error(f"종목 {stock_code} 처리 중 심각한 오류: {str(e)}")
+                # 오류 시에도 기본 설정으로 종목 추가
+                stock_type = basic_config.get("stock_type", "growth")
+                type_template = stock_type_templates.get(stock_type, stock_type_templates["growth"])
+                
+                error_config = {
                     "name": f"종목{stock_code}",
-                    "weight": 0.5,
-                    "min_holding": 0,
-                    "period": 60,
-                    "recent_period": 30,
-                    "recent_weight": 0.6,
-                    "stock_type": "growth",
-                    "hold_profit_target": 10,
-                    "base_profit_target": 10,
-                    "partial_sell_ratio": 0.3
+                    "weight": basic_config["weight"],
+                    "stock_type": stock_type,
+                    **type_template
                 }
+                target_stocks[stock_code] = error_config
+                logger.info(f"🔧 오류 복구: {stock_code} 기본 설정으로 추가됨")
+        
+        # 🔧 비중 검증 및 로깅
+        total_weight = sum(config.get('weight', 0) for config in target_stocks.values())
+        logger.info(f"총 비중 합계: {total_weight:.3f}")
+        
+        if abs(total_weight - 1.0) > 0.001:
+            logger.warning(f"⚠️ 총 비중이 1.0이 아닙니다: {total_weight:.3f}")
+        else:
+            logger.info("✅ 총 비중 합계 정상: 1.000")
+        
+        # 각 종목별 할당 예산 로깅
+        budget = 1000000
+        logger.info("📋 종목별 할당 예산 및 전략:")
+        for stock_code, stock_config in target_stocks.items():
+            allocated = budget * stock_config['weight']
+            logger.info(f"  • {stock_config['name']}({stock_code}): {stock_config['weight']*100:.1f}% → {allocated:,.0f}원")
+            logger.info(f"    └─ {stock_config['stock_type']} 타입, 목표수익률 {stock_config['hold_profit_target']}%")
         
         # 통합된 기본 설정 반환
         return {
             # 🔥 절대 예산 설정
             "use_absolute_budget": True,
-            "absolute_budget": 1000000,  # 🎯 기본 100만원으로 통일
-            "absolute_budget_strategy": "proportional",  # 성과 기반 동적 조정
-            "initial_total_asset": 0,  # 봇 시작시 자동 설정
+            "absolute_budget": budget,
+            "absolute_budget_strategy": "proportional",
+            "initial_total_asset": 0,
             
             # 🔥 동적 조정 설정
-            "performance_multiplier_range": [0.7, 1.4],  # 70%~140% 범위
-            "budget_loss_tolerance": 0.2,  # adaptive 모드용 20% 손실 허용
-            "safety_cash_ratio": 0.8,  # 현금 잔고의 80%만 사용
+            "performance_multiplier_range": [0.7, 1.4],
+            "budget_loss_tolerance": 0.2,
+            "safety_cash_ratio": 0.8,
             
             # 봇 기본 설정
             "bot_name": "SmartMagicSplitBot",
-            "div_num": 5.0,  # 5차수 분할
+            "div_num": 5.0,
             
             # 수수료 및 세금 설정
-            "commission_rate": 0.00015,  # 수수료 0.015%
-            "tax_rate": 0.0023,  # 매도 시 거래세 0.23%
-            "special_tax_rate": 0.0015,  # 농어촌특별세 0.15%
+            "commission_rate": 0.00015,
+            "tax_rate": 0.0023,
+            "special_tax_rate": 0.0015,
             
             # 기술적 지표 설정
             "rsi_period": 14,
             "atr_period": 14,
-            "pullback_rate": 5,  # 고점 대비 5% 조정 요구
+            "pullback_rate": 5,
             "rsi_lower_bound": 30,
             "rsi_upper_bound": 78,
             "ma_short": 5,
             "ma_mid": 20,
             "ma_long": 60,
             
-            # 관심 종목 설정
+            # 🎯 종목 설정 (타입별 템플릿 자동 적용됨)
             "target_stocks": target_stocks,
             
             # 성과 추적 초기화
@@ -203,14 +270,16 @@ class SmartSplitConfig:
             # 🔥 사용자 안내 메시지
             "_readme": {
                 "설명": "스마트 매직 스플릿 봇 설정 파일",
-                "절대예산": "absolute_budget을 원하는 금액으로 수정하세요 (예: 1000000 = 100만원)",
+                "절대예산": "absolute_budget을 원하는 금액으로 수정하세요",
                 "예산전략": "proportional=성과기반, strict=고정, adaptive=손실허용",
-                "종목비중": "target_stocks의 weight 값을 조정하여 종목별 비중 설정",
+                "종목설정": "target_stocks의 weight와 stock_type만 수정하면 나머지는 타입별 템플릿 자동 적용",
+                "종목타입": "growth=성장주, value=가치주, defensive=방어주, bluechip=대형주",
+                "동적조정": "period, hold_profit_target 등은 운영 중 시장 상황에 따라 자동 조정됨",
                 "알림설정": "use_discord_alert를 false로 설정하면 Discord 알림 비활성화",
                 "주의사항": "_readme 섹션은 삭제해도 됩니다"
             }
         }
-    
+
     def load_config(self):
         """설정 파일 로드 - 기본 설정 생성 통합"""
         try:
