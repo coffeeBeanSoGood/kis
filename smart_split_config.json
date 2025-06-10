@@ -1,0 +1,85 @@
+{
+    "use_absolute_budget": true,
+    "absolute_budget": 1000000,
+    "absolute_budget_strategy": "proportional",
+    "initial_total_asset": 7037038.0,
+    "performance_multiplier_range": [
+        0.7,
+        1.4
+    ],
+    "budget_loss_tolerance": 0.2,
+    "safety_cash_ratio": 0.8,
+    "bot_name": "SmartMagicSplitBot",
+    "div_num": 5.0,
+    "commission_rate": 0.00015,
+    "tax_rate": 0.0023,
+    "special_tax_rate": 0.0015,
+    "rsi_period": 14,
+    "atr_period": 14,
+    "pullback_rate": 5,
+    "rsi_lower_bound": 30,
+    "rsi_upper_bound": 78,
+    "ma_short": 5,
+    "ma_mid": 20,
+    "ma_long": 60,
+    "target_stocks": {
+        "449450": {
+            "name": "PLUS K방산",
+            "weight": 0.6,
+            "stock_type": "growth",
+            "period": 60,
+            "recent_period": 30,
+            "recent_weight": 0.7,
+            "hold_profit_target": 12,
+            "base_profit_target": 12,
+            "partial_sell_ratio": 0.25,
+            "min_holding": 0,
+            "reentry_cooldown_minutes": 30,
+            "min_pullback_for_reentry": 1.5,
+            "uptrend_sell_ratio_multiplier": 0.6,
+            "high_profit_sell_reduction": true
+        },
+        "042660": {
+            "name": "한화오션",
+            "weight": 0.4,
+            "stock_type": "growth",
+            "period": 60,
+            "recent_period": 30,
+            "recent_weight": 0.7,
+            "hold_profit_target": 12,
+            "base_profit_target": 12,
+            "partial_sell_ratio": 0.25,
+            "min_holding": 0,
+            "reentry_cooldown_minutes": 30,
+            "min_pullback_for_reentry": 1.5,
+            "uptrend_sell_ratio_multiplier": 0.6,
+            "high_profit_sell_reduction": true
+        }
+    },
+    "performance_tracking": {
+        "start_date": "2025-05-30",
+        "best_performance": 0.0442309676315518,
+        "worst_performance": -0.030768911578991046,
+        "total_trades": 4,
+        "winning_trades": 4,
+        "total_realized_pnl": 6637.133333333333
+    },
+    "use_discord_alert": true,
+    "last_config_update": "2025-06-10T13:04:24.858448",
+    "_readme": {
+        "설명": "스마트 매직 스플릿 봇 설정 파일",
+        "절대예산": "absolute_budget을 원하는 금액으로 수정하세요",
+        "예산전략": "proportional=성과기반, strict=고정, adaptive=손실허용",
+        "종목설정": "target_stocks의 weight와 stock_type만 수정하면 나머지는 타입별 템플릿 자동 적용",
+        "종목타입": "growth=성장주, value=가치주, defensive=방어주, bluechip=대형주",
+        "동적조정": "period, hold_profit_target 등은 운영 중 시장 상황에 따라 자동 조정됨",
+        "🔥신규추가": {
+            "재진입제어": "reentry_cooldown_minutes로 매도 후 재진입 대기시간 설정",
+            "조정률요구": "min_pullback_for_reentry로 재진입 최소 조정률 설정",
+            "매도비율": "uptrend_sell_ratio_multiplier로 상승장 매도 비율 조정",
+            "고수익제어": "high_profit_sell_reduction으로 고수익 시 매도량 감소 여부"
+        },
+        "알림설정": "use_discord_alert를 false로 설정하면 Discord 알림 비활성화",
+        "주의사항": "_readme 섹션은 삭제해도 됩니다"
+    }
+}
