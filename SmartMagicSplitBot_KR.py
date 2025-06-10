@@ -94,29 +94,44 @@ class SmartSplitConfig:
             "growth": {          # 성장주 템플릿
                 "period": 60,
                 "recent_period": 30,
-                "recent_weight": 0.7,        # 최근 가중치 높음
-                "hold_profit_target": 12,    # 높은 목표 수익률
+                "recent_weight": 0.7,
+                "hold_profit_target": 12,
                 "base_profit_target": 12,
-                "partial_sell_ratio": 0.25,  # 적게 매도 (복리 극대화)
-                "min_holding": 0
+                "partial_sell_ratio": 0.25,
+                "min_holding": 0,
+                # 🔥 새로 추가되는 설정들
+                "reentry_cooldown_minutes": 30,           # 재진입 쿨다운 시간
+                "min_pullback_for_reentry": 1.5,          # 재진입 최소 조정률
+                "uptrend_sell_ratio_multiplier": 0.6,     # 상승장 매도 비율 승수
+                "high_profit_sell_reduction": True        # 고수익 시 매도량 감소 여부
             },
             "value": {           # 가치주 템플릿
                 "period": 90,
                 "recent_period": 45,
-                "recent_weight": 0.5,        # 장기 관점
-                "hold_profit_target": 8,     # 보수적 목표
+                "recent_weight": 0.5,
+                "hold_profit_target": 8,
                 "base_profit_target": 8,
-                "partial_sell_ratio": 0.4,   # 많이 매도 (안정성)
-                "min_holding": 0
+                "partial_sell_ratio": 0.4,
+                "min_holding": 0,
+                # 🔥 새로 추가되는 설정들
+                "reentry_cooldown_minutes": 60,           # 가치주는 더 긴 쿨다운
+                "min_pullback_for_reentry": 2.5,
+                "uptrend_sell_ratio_multiplier": 0.8,
+                "high_profit_sell_reduction": False
             },
             "defensive": {       # 방어주 템플릿
                 "period": 120,
                 "recent_period": 60,
-                "recent_weight": 0.4,        # 장기 추세 중시
-                "hold_profit_target": 6,     # 낮은 목표 (안정성)
+                "recent_weight": 0.4,
+                "hold_profit_target": 6,
                 "base_profit_target": 6,
-                "partial_sell_ratio": 0.5,   # 절반 매도
-                "min_holding": 0
+                "partial_sell_ratio": 0.5,
+                "min_holding": 0,
+                # 🔥 새로 추가되는 설정들
+                "reentry_cooldown_minutes": 90,           # 방어주는 가장 긴 쿨다운
+                "min_pullback_for_reentry": 3.0,
+                "uptrend_sell_ratio_multiplier": 0.9,
+                "high_profit_sell_reduction": False
             },
             "bluechip": {        # 대형주 템플릿
                 "period": 90,
@@ -125,7 +140,12 @@ class SmartSplitConfig:
                 "hold_profit_target": 7,
                 "base_profit_target": 7,
                 "partial_sell_ratio": 0.35,
-                "min_holding": 0
+                "min_holding": 0,
+                # 🔥 새로 추가되는 설정들
+                "reentry_cooldown_minutes": 45,
+                "min_pullback_for_reentry": 2.0,
+                "uptrend_sell_ratio_multiplier": 0.7,
+                "high_profit_sell_reduction": True
             }
         }
         
@@ -273,7 +293,6 @@ class SmartSplitConfig:
             # 기타 설정
             "use_discord_alert": True,
             "last_config_update": datetime.now().isoformat(),
-            
             # 🔥 사용자 안내 메시지
             "_readme": {
                 "설명": "스마트 매직 스플릿 봇 설정 파일",
@@ -282,6 +301,12 @@ class SmartSplitConfig:
                 "종목설정": "target_stocks의 weight와 stock_type만 수정하면 나머지는 타입별 템플릿 자동 적용",
                 "종목타입": "growth=성장주, value=가치주, defensive=방어주, bluechip=대형주",
                 "동적조정": "period, hold_profit_target 등은 운영 중 시장 상황에 따라 자동 조정됨",
+                "🔥신규추가": {
+                    "재진입제어": "reentry_cooldown_minutes로 매도 후 재진입 대기시간 설정",
+                    "조정률요구": "min_pullback_for_reentry로 재진입 최소 조정률 설정",
+                    "매도비율": "uptrend_sell_ratio_multiplier로 상승장 매도 비율 조정",
+                    "고수익제어": "high_profit_sell_reduction으로 고수익 시 매도량 감소 여부"
+                },
                 "알림설정": "use_discord_alert를 false로 설정하면 Discord 알림 비활성화",
                 "주의사항": "_readme 섹션은 삭제해도 됩니다"
             }
@@ -431,11 +456,85 @@ BOT_NAME = Common.GetNowDist() + "_" + config.bot_name
 ################################### 메인 클래스 ##################################
 
 class SmartMagicSplit:
+
     def __init__(self):
         self.split_data_list = self.load_split_data()
         self.total_money = 0
         self.update_budget()
         self._upgrade_json_structure_if_needed()
+        # 🔥 새로 추가: 매도 이력 추적을 위한 딕셔너리
+        self.last_sell_time = {}  # {stock_code: datetime}
+
+    def check_reentry_cooldown(self, stock_code):
+        """재진입 쿨다운 시간 체크"""
+        try:
+            target_stocks = config.target_stocks
+            if stock_code not in target_stocks:
+                return True
+                
+            # 마지막 매도 시간 확인
+            if stock_code not in self.last_sell_time:
+                return True
+                
+            last_sell = self.last_sell_time[stock_code]
+            current_time = datetime.now()
+            
+            # 쿨다운 시간 가져오기
+            cooldown_minutes = target_stocks[stock_code].get('reentry_cooldown_minutes', 30)
+            
+            # 경과 시간 계산
+            elapsed_minutes = (current_time - last_sell).total_seconds() / 60
+            
+            if elapsed_minutes < cooldown_minutes:
+                remaining_minutes = cooldown_minutes - elapsed_minutes
+                logger.info(f"{stock_code} 재진입 쿨다운 중: {remaining_minutes:.1f}분 남음")
+                return False
+            else:
+                logger.info(f"{stock_code} 재진입 쿨다운 완료: {elapsed_minutes:.1f}분 경과")
+                return True
+                
+        except Exception as e:
+            logger.error(f"재진입 쿨다운 체크 중 오류: {str(e)}")
+            return True  # 오류 시 진입 허용
+
+    def check_enhanced_reentry_condition(self, stock_code, indicators):
+        """강화된 재진입 조건 체크"""
+        try:
+            target_stocks = config.target_stocks
+            if stock_code not in target_stocks:
+                return True
+                
+            # 1. 쿨다운 시간 체크
+            if not self.check_reentry_cooldown(stock_code):
+                return False
+                
+            # 2. 최소 조정률 체크
+            min_pullback = target_stocks[stock_code].get('min_pullback_for_reentry', 1.5)
+            
+            if indicators['pullback_from_high'] < min_pullback:
+                logger.info(f"{stock_code} 재진입 조건 미달: 조정률 {indicators['pullback_from_high']:.2f}% < 최소 요구 {min_pullback}%")
+                return False
+                
+            # 3. 시장 상황별 추가 조건
+            market_timing = self.detect_market_timing()
+            
+            if market_timing in ["strong_uptrend", "uptrend"]:
+                # 상승장에서는 더 엄격한 조건
+                if indicators['rsi'] > 70:
+                    logger.info(f"{stock_code} 상승장 재진입 제한: RSI {indicators['rsi']:.1f} > 70")
+                    return False
+                    
+                # 이동평균선 지지 확인
+                if indicators['current_price'] < indicators['ma_short'] * 0.99:
+                    logger.info(f"{stock_code} 상승장 재진입 제한: 단기 이평선 이탈")
+                    return False
+            
+            logger.info(f"{stock_code} 강화된 재진입 조건 통과")
+            return True
+            
+        except Exception as e:
+            logger.error(f"강화된 재진입 조건 체크 중 오류: {str(e)}")
+            return False
 
     def _upgrade_json_structure_if_needed(self):
         """JSON 구조 업그레이드: 부분 매도를 지원하기 위한 필드 추가"""
@@ -1100,9 +1199,15 @@ class SmartMagicSplit:
                 return save_data
         return None
 
-    def check_first_entry_condition(self, indicators):
+    def check_first_entry_condition(self, indicators, stock_code=None):  # stock_code 파라미터 추가
+
         """개선된 1차 진입 조건 체크"""
         try:
+            # 🔥 재진입인 경우 강화된 조건 체크
+            if stock_code and stock_code in self.last_sell_time:
+                if not self.check_enhanced_reentry_condition(stock_code, indicators):
+                    return False
+
             market_timing = self.detect_market_timing()
             is_bullish_market = market_timing in ["strong_uptrend", "uptrend"]
             
@@ -1432,9 +1537,19 @@ class SmartMagicSplit:
                         break
                 
                 if first_magic_data and not first_magic_data['IsBuy'] and stock_data_info['IsReady']:
-                    if self.check_first_entry_condition(indicators) or is_small_pullback_opportunity:
-                        stock_data_info['RealizedPNL'] = 0
+
+                    # 🔥 수정: stock_code 파라미터 추가
+                    if (self.check_first_entry_condition(indicators, stock_code) or 
+                        is_small_pullback_opportunity):
                         
+                        # 🔥 재진입인 경우 추가 체크
+                        if stock_code in self.last_sell_time:
+                            if not self.check_enhanced_reentry_condition(stock_code, indicators):
+                                logger.info(f"{stock_code} 재진입 조건 미달로 1차 매수 건너뜀")
+                                continue  # 다음 종목으로
+                        
+                        stock_data_info['RealizedPNL'] = 0
+
                         if holdings['amount'] > 0:
                             first_magic_data['IsBuy'] = True
                             first_magic_data['EntryPrice'] = holdings['avg_price']
@@ -1498,27 +1613,46 @@ class SmartMagicSplit:
                             is_growth_stock = stock_info.get('stock_type') == 'growth'
 
                             # 성장주 동적 부분 매도 적용
+
                             if is_growth_stock:
                                 current_amt = magic_data.get('CurrentAmt', magic_data['EntryAmt'])
                                 
-                                # 시장 상황에 따른 동적 부분 매도 비율 계산
+                                # 🔥 개선된 동적 부분 매도 비율 계산
                                 market_timing = self.detect_market_timing()
                                 base_sell_ratio = stock_info.get('partial_sell_ratio', 0.3)
+                                uptrend_multiplier = stock_info.get('uptrend_sell_ratio_multiplier', 0.6)
+                                high_profit_reduction = stock_info.get('high_profit_sell_reduction', True)
                                 
                                 if market_timing in ["strong_uptrend", "uptrend"]:
-                                    partial_sell_ratio = base_sell_ratio * 0.6
+                                    partial_sell_ratio = base_sell_ratio * uptrend_multiplier
                                     logger.info(f"{stock_code} 상승장 감지: 부분 매도 비율을 {partial_sell_ratio:.1%}로 축소하여 복리 효과 극대화")
                                 elif market_timing in ["downtrend", "strong_downtrend"]:
-                                    partial_sell_ratio = min(0.5, base_sell_ratio * 1.5)
+                                    partial_sell_ratio = min(0.6, base_sell_ratio * 1.5)
                                     logger.info(f"{stock_code} 하락장 감지: 부분 매도 비율을 {partial_sell_ratio:.1%}로 확대하여 리스크 관리")
                                 else:
                                     partial_sell_ratio = base_sell_ratio
                                 
-                                # 추가 조건: 수익률이 높을수록 더 적게 매도
-                                if market_timing in ["strong_uptrend", "uptrend"] and current_rate > 8:
-                                    high_profit_factor = max(0.5, 1.0 - (current_rate - 8) / 20)
+                                # 🔥 고수익 달성 시 매도량 추가 감소
+                                if (high_profit_reduction and 
+                                    market_timing in ["strong_uptrend", "uptrend"] and 
+                                    current_rate > 8):
+                                    high_profit_factor = max(0.4, 1.0 - (current_rate - 8) / 25)  # 25% 수익률에서 최소 40%
                                     partial_sell_ratio = partial_sell_ratio * high_profit_factor
                                     logger.info(f"{stock_code} 고수익({current_rate:.1f}%) 달성: 매도 비율을 {partial_sell_ratio:.1%}로 추가 축소")
+
+                                # 🔥 연속 매도 방지 (하루 최대 1회)
+                                today = datetime.now().date()
+                                last_sell_today = False
+                                
+                                if 'SellHistory' in magic_data:
+                                    for sell_record in magic_data['SellHistory']:
+                                        if sell_record.get('Date') == today.strftime("%Y-%m-%d"):
+                                            last_sell_today = True
+                                            break
+                                
+                                if last_sell_today and market_timing in ["strong_uptrend", "uptrend"]:
+                                    logger.info(f"{stock_code} 당일 이미 매도 실행됨: 연속 매도 방지")
+                                    continue  # 다음 매직 데이터로 넘어감
 
                                 sell_amt = max(1, int(current_amt * partial_sell_ratio))
                                 
@@ -1537,6 +1671,9 @@ class SmartMagicSplit:
                                     result, error = self.handle_sell(stock_code, sell_amt, indicators['current_price'])
                                     
                                     if result:
+                                        # 🔥 매도 시간 기록 (쿨다운용)
+                                        self.last_sell_time[stock_code] = datetime.now()
+                                        
                                         # 현재 보유 수량 업데이트
                                         magic_data['CurrentAmt'] = current_amt - sell_amt
                                         
@@ -1554,26 +1691,30 @@ class SmartMagicSplit:
                                         # 매도 이력 기록
                                         magic_data['SellHistory'].append({
                                             "Date": datetime.now().strftime("%Y-%m-%d"),
+                                            "Time": datetime.now().strftime("%H:%M:%S"),  # 시간도 기록
                                             "Amount": sell_amt,
                                             "Price": indicators['current_price'],
-                                            "Profit": realized_pnl
+                                            "Profit": realized_pnl,
+                                            "Reason": f"부분매도_{market_timing}"  # 매도 이유 기록
                                         })
                                         
-                                        # 매도 완료 후 재진입 준비 시간 동적 조정
-                                        market_timing = self.detect_market_timing()
-
+                                        # 🔥 개선된 재진입 준비 로직
+                                        cooldown_minutes = stock_info.get('reentry_cooldown_minutes', 30)
+                                        
                                         if market_timing in ["strong_uptrend", "uptrend"]:
-                                            stock_data_info['IsReady'] = True
-                                            logger.info(f"{stock_code} 상승장 감지: 매도 후 즉시 재진입 준비 완료")
+                                            # 상승장에서도 쿨다운 적용
+                                            stock_data_info['IsReady'] = False  # 쿨다운 동안 대기
+                                            logger.info(f"{stock_code} 상승장 부분매도 완료: {cooldown_minutes}분 쿨다운 후 재진입 가능")
                                         else:
                                             stock_data_info['IsReady'] = False
-                                            logger.info(f"{stock_code} 일반장/하락장: 매도 후 하루 대기")
+                                            logger.info(f"{stock_code} 일반장/하락장: 매도 후 {cooldown_minutes}분 + 조건 만족 시 재진입")
 
                                         # 누적 실현 손익 업데이트
                                         self.update_realized_pnl(stock_code, realized_pnl)
                                         
                                         # 매도 메시지 작성
-                                        msg = f"{stock_info['name']}({stock_code}) 스마트스플릿 {magic_data['Number']}차 {current_amt}주 중 {sell_amt}주 부분 매도 완료! 수익률: {current_rate:.2f}%"
+                                        msg = f"{stock_info['name']}({stock_code}) 스마트스플릿 {magic_data['Number']}차 {current_amt}주 중 {sell_amt}주 부분 매도 완료!"
+                                        msg += f" 수익률: {current_rate:.2f}%, 매도비율: {partial_sell_ratio:.1%}"
                                         if is_over:
                                             msg += " (매도할 수량이 보유 수량보다 많은 상태라 모두 매도함)"
                                         
@@ -2065,8 +2206,8 @@ def main():
                             reload_msg += "🔄 다음 거래부터 새 설정이 적용됩니다."
                             
                             logger.info(reload_msg)
-                            if config.config.get("use_discord_alert", True):
-                                discord_alert.SendMessage(reload_msg)
+                            # if config.config.get("use_discord_alert", True):
+                            #     discord_alert.SendMessage(reload_msg)
                     except Exception as reload_e:
                         logger.warning(f"설정 파일 리로드 체크 중 오류: {str(reload_e)}")
                         
