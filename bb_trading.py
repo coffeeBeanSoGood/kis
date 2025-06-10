@@ -1803,7 +1803,17 @@ def analyze_sell_signal(stock_data, position, target_config):
         # 🔄 5단계: 트레일링 스탑 (조건 강화)
         trailing_stop = target_config.get('trailing_stop', 0.03)  # 4% → 3% (강화)
         high_price = position.get('high_price', entry_price)
-        
+        # 🔥 직접 비교 로직 추가
+        current_trailing_stop = position.get('trailing_stop', entry_price * (1 - trailing_stop))
+        # 현재가가 트레일링 스탑보다 낮으면 즉시 매도
+        if current_price <= current_trailing_stop:
+            return {
+                'is_sell_signal': True,
+                'sell_type': 'trailing_stop',
+                'reason': f"트레일링스탑 매도 {current_price:,}원 ≤ {current_trailing_stop:,}원",
+                'urgent': True
+            }        
+
         if high_price > entry_price and profit_rate > 0.04:  # 5% → 4% (기준 낮춤)
             trailing_loss = (high_price - current_price) / high_price
             
@@ -2854,7 +2864,7 @@ def send_target_stock_status():
     """타겟 종목 현황 보고서"""
     try:
         msg = "📋 타겟 종목 현황 📋\n"
-        msg += f"========== {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')} ==========\n"
+        msg += f"====== {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')} =====\n"
         
         for stock_code, config in trading_config.target_stocks.items():
             if not config.get('enabled', True):
@@ -3207,16 +3217,47 @@ def update_trailing_stop(position, current_price, target_config):
         return position
 
 def process_positions(trading_state):
-    """보유 포지션 관리 - API 보유 vs 봇 미기록 케이스 처리 추가"""
+    """보유 포지션 관리 - API 보유 vs 봇 미기록 케이스 처리 추가 + 디버깅 로그"""
     try:
+        logger.info("🔍 포지션 관리 시작 - GetMyStockList 호출 전")
+        
+        # API 호출 전 로그
+        logger.info("📞 KisKR.GetMyStockList() 호출 시작...")
+        start_time = time.time()
+        
         my_stocks = KisKR.GetMyStockList()
+        
+        # API 호출 후 로그
+        elapsed_time = time.time() - start_time
+        logger.info(f"📞 KisKR.GetMyStockList() 완료 - 소요시간: {elapsed_time:.2f}초")
+        
+        if my_stocks is None:
+            logger.error("❌ GetMyStockList 반환값이 None입니다")
+            return trading_state
+        elif not my_stocks:
+            logger.warning("⚠️ GetMyStockList 반환값이 빈 리스트입니다")
+            return trading_state
+        else:
+            logger.info(f"✅ 보유종목 조회 성공: {len(my_stocks)}개 종목")
+            # 보유종목 상세 로그
+            for stock in my_stocks:
+                stock_code = stock.get('StockCode', 'Unknown')
+                stock_amt = stock.get('StockAmt', 0)
+                now_price = stock.get('NowPrice', 0)
+                logger.info(f"   📈 {stock_code}: {stock_amt}주 @ {now_price}원")
+        
         positions_to_remove = []
+        
+        logger.info(f"🔄 봇 기록 포지션 처리 시작: {len(trading_state['positions'])}개")
         
         # 🔥 1단계: 봇 기록 종목들 처리 (기존 로직)
         for stock_code, position in trading_state['positions'].items():
             try:
+                logger.info(f"🔍 포지션 처리 시작: {stock_code}")
+                
                 # 타겟 종목이 아닌 경우 스킵
                 if stock_code not in trading_config.target_stocks:
+                    logger.info(f"⏭️ 타겟 종목 아님: {stock_code}")
                     continue
                 
                 # API에서 실제 보유 확인
@@ -3230,19 +3271,24 @@ def process_positions(trading_state):
                 target_config = trading_config.target_stocks[stock_code]
                 stock_name = target_config.get('name', stock_code)
                 
+                logger.info(f"📊 {stock_name}({stock_code}) 분석 시작")
+                
                 # 🔥 봇 기록의 수량 사용 (API와 무관)
                 current_amount = position.get('amount', 0)
                 
                 if current_amount <= 0:
-                    logger.info(f"봇 기록상 보유 수량 0 - 포지션 제거: {stock_name}({stock_code})")
+                    logger.info(f"❌ 봇 기록상 보유 수량 0 - 포지션 제거: {stock_name}({stock_code})")
                     positions_to_remove.append(stock_code)
                     continue
+                
+                logger.info(f"💼 봇 기록 수량: {current_amount}주")
                 
                 # 🔥 ========== 여기에 수량 검증 로직 추가 ==========
                 # API 조회 성공시 실제 보유량 검증
                 actual_amount = 0
                 if my_stocks and actual_holding:
                     actual_amount = int(actual_holding.get('StockAmt', 0))
+                    logger.info(f"💼 실제 보유량: {actual_amount}주")
                 
                 # 실제 보유량이 봇 기록보다 적으면 매도 불가
                 sell_amount = current_amount  # 기본값: 봇 기록 수량
@@ -3269,8 +3315,8 @@ def process_positions(trading_state):
                         # 봇 기록도 실제 수량으로 조정
                         position['amount'] = actual_amount
                         trading_state['positions'][stock_code] = position
-                
-                # 🔥 ========== 검증 로직 끝 ==========
+                else:
+                    logger.warning(f"⚠️ API 조회 실패 - 봇 기록으로만 관리: {stock_name}({stock_code})")
                 
                 # API 검증 결과 알림 (기존 로직 유지하되 더 간단하게)
                 if my_stocks and actual_holding:
@@ -3281,18 +3327,44 @@ def process_positions(trading_state):
                     logger.debug(f"API 조회 실패 - 봇 기록으로만 관리: {stock_name}({stock_code})")
                 
                 # 종목 데이터 조회
+                logger.info(f"📈 {stock_name} 종목 데이터 조회 시작...")
                 stock_data = get_stock_data(stock_code)
+                
                 if not stock_data:
+                    logger.error(f"❌ {stock_name} 종목 데이터 조회 실패")
                     continue
                 
                 current_price = stock_data['current_price']
+                entry_price = position['entry_price']
+                profit_rate = (current_price - entry_price) / entry_price
+                
+                logger.info(f"💰 {stock_name} 가격 정보:")
+                logger.info(f"   매수가: {entry_price:,.0f}원")
+                logger.info(f"   현재가: {current_price:,.0f}원")
+                logger.info(f"   수익률: {profit_rate*100:.2f}%")
+                
+                # 트레일링 스탑 정보
+                trailing_stop = position.get('trailing_stop', 0)
+                high_price = position.get('high_price', entry_price)
+                
+                logger.info(f"🎯 트레일링 스탑 정보:")
+                logger.info(f"   고점: {high_price:,.0f}원")
+                logger.info(f"   트레일링 스탑: {trailing_stop:,.0f}원")
+                logger.info(f"   스탑과 차이: {current_price - trailing_stop:,.0f}원")
                 
                 # 트레일링 스탑 업데이트
+                logger.info(f"🔄 트레일링 스탑 업데이트 체크...")
                 position = update_trailing_stop(position, current_price, target_config)
                 trading_state['positions'][stock_code] = position
                 
                 # 매도 신호 분석
+                logger.info(f"🔍 {stock_name} 매도 신호 분석 시작...")
                 sell_analysis = analyze_sell_signal(stock_data, position, target_config)
+                
+                logger.info(f"📊 매도 신호 분석 결과:")
+                logger.info(f"   매도 신호: {sell_analysis['is_sell_signal']}")
+                logger.info(f"   매도 유형: {sell_analysis.get('sell_type', 'None')}")
+                logger.info(f"   매도 이유: {sell_analysis.get('reason', 'None')}")
                 
                 if sell_analysis['is_sell_signal']:
                     logger.info(f"🔴 매도 신호 감지: {stock_name}({stock_code})")
@@ -3300,12 +3372,18 @@ def process_positions(trading_state):
                     logger.info(f"   이유: {sell_analysis['reason']}")
                     
                     # 🔥 검증된 수량으로 매도 주문 실행
+                    logger.info(f"🔥 매도 주문 실행 시작: {stock_name}")
                     logger.info(f"   매도 수량: {sell_amount}주 (검증완료)")
+                    
                     executed_price, executed_amount = execute_sell_order(
                         stock_code, target_config, sell_amount  # 검증된 수량 사용
                     )
                     
                     if executed_price and executed_amount:
+                        logger.info(f"✅ 매도 체결 성공: {stock_name}")
+                        logger.info(f"   체결가: {executed_price:,.0f}원")
+                        logger.info(f"   체결량: {executed_amount}주")
+                        
                         # 손익 계산 (기존 로직 유지)
                         entry_price = position['entry_price']
                         buy_fee = position.get('buy_fee', 0)
@@ -3364,13 +3442,19 @@ def process_positions(trading_state):
                         # 포지션 제거
                         positions_to_remove.append(stock_code)
                     else:
-                        logger.error(f"매도 주문 실패: {stock_name}({stock_code})")
+                        logger.error(f"❌ 매도 주문 실패: {stock_name}({stock_code})")
+                else:
+                    logger.info(f"⏳ 매도 신호 없음: {stock_name} - 포지션 유지")
+                
+                logger.info(f"✅ {stock_name}({stock_code}) 포지션 처리 완료")
                 
             except Exception as e:
-                logger.error(f"포지션 처리 오류 ({stock_code}): {str(e)}")
+                logger.error(f"❌ 포지션 처리 오류 ({stock_code}): {str(e)}")
+                logger.exception(f"❌ {stock_code} 상세 에러 정보:")
                 continue
         
         # 🔥 2단계: API에는 있지만 봇 기록에 없는 종목 체크 (기존 로직 유지)
+        logger.info("🔍 API 보유 vs 봇 미기록 종목 체크 시작...")
         if my_stocks:  # API 조회 성공시에만
             bot_tracked_stocks = set(trading_state['positions'].keys())
             
@@ -3396,15 +3480,18 @@ def process_positions(trading_state):
                     discord_alert.SendMessage(warning_msg)
         
         # 제거할 포지션 정리
+        logger.info(f"🗑️ 포지션 정리 시작: {len(positions_to_remove)}개")
         for stock_code in positions_to_remove:
             if stock_code in trading_state['positions']:
                 del trading_state['positions'][stock_code]
-                logger.info(f"포지션 제거 완료: {stock_code}")
+                logger.info(f"🗑️ 포지션 제거 완료: {stock_code}")
         
+        logger.info(f"🏁 모든 포지션 처리 완료")
         return trading_state
         
     except Exception as e:
-        logger.error(f"포지션 관리 오류: {str(e)}")
+        logger.error(f"❌ 포지션 관리 전체 오류: {str(e)}")
+        logger.exception("❌ 포지션 관리 상세 에러 정보:")
         return trading_state
 
 def execute_buy_opportunities(buy_opportunities, trading_state):
@@ -3763,7 +3850,7 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
         logger.info("분봉 타이밍 + 뉴스 분석 옵션 포함한 개선 설정 파일 생성 시작...")
         
         # 기본 타겟 종목들 정의 (거래량 확보를 위해 확대)
-        sample_codes = ["272210", "034020", "010140"]  # 한화시스템, 두산에너빌리티, 삼성중공업
+        sample_codes = ["272210", "034020", "010140","007660"]  # 한화시스템, 두산에너빌리티, 삼성중공업, 이수페타시스
 
         # 🎯 특성별 파라미터 수정 (모든 타입의 min_score 상향)
         characteristic_params = {
