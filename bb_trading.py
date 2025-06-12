@@ -563,20 +563,21 @@ def get_total_invested_amount(trading_state):
         return 0
 
 def get_invested_amount_for_stock(stock_code, trading_state):
-    """특정 종목에 투자된 금액 계산"""
-    try:
-        if stock_code not in trading_state['positions']:
-            return 0
-        
+    # 현재 보유 + 당일 총 투자 중 큰 값 사용
+    current_invested = 0
+    if stock_code in trading_state['positions']:
         position = trading_state['positions'][stock_code]
-        invested_amount = position['entry_price'] * position['amount']
-        
-        logger.debug(f"종목별 투자금액 - {stock_code}: {invested_amount:,.0f}원")
-        return invested_amount
-        
-    except Exception as e:
-        logger.error(f"종목별 투자 금액 계산 중 오류 ({stock_code}): {str(e)}")
-        return 0    
+        current_invested = position['entry_price'] * position['amount']
+    
+    # 당일 총 투자 추적
+    today = datetime.datetime.now().strftime('%Y-%m-%d')
+    daily_total = 0
+    if 'daily_investments' not in trading_state:
+        trading_state['daily_investments'] = {}
+    if today in trading_state.get('daily_investments', {}):
+        daily_total = trading_state['daily_investments'][today].get(stock_code, 0)
+    
+    return max(current_invested, daily_total)
 
 def get_available_budget(trading_state=None):
     """사용 가능한 예산 계산 - 이미 투자된 금액 차감 (개선됨)"""
@@ -3721,7 +3722,26 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                     
                     trading_state['positions'][stock_code] = position_info
                     executed_count += 1
-                    
+
+                    trading_state['positions'][stock_code] = position_info
+                    executed_count += 1
+
+                    # 🔥 당일 투자 금액 기록 (매도되어도 누적 추적)
+                    today = datetime.datetime.now().strftime('%Y-%m-%d')
+                    if 'daily_investments' not in trading_state:
+                        trading_state['daily_investments'] = {}
+                    if today not in trading_state['daily_investments']:
+                        trading_state['daily_investments'][today] = {}
+
+                    # 당일 누적 투자 금액 업데이트
+                    previous_daily = trading_state['daily_investments'][today].get(stock_code, 0)
+                    trading_state['daily_investments'][today][stock_code] = previous_daily + actual_investment
+
+                    logger.info(f"📊 {stock_name} 당일 누적 투자: {trading_state['daily_investments'][today][stock_code]:,}원")
+
+                    # 📊 예산 현황 업데이트 (기존 코드 계속...)
+                    updated_total_invested = get_total_invested_amount(trading_state) + actual_investment
+
                     # 📊 예산 현황 업데이트
                     updated_total_invested = get_total_invested_amount(trading_state) + actual_investment
                     total_target_budget = get_per_stock_budget_limit() * active_stock_count
@@ -4292,6 +4312,16 @@ def main():
                     'winning_trades': 0,
                     'start_balance': start_balance
                 }
+
+                # 🔥 당일 투자 기록 정리 (여기에 추가)
+                if 'daily_investments' in trading_state:
+                    cutoff_date = (datetime.datetime.now() - datetime.timedelta(days=3)).strftime('%Y-%m-%d')
+                    trading_state['daily_investments'] = {
+                        date: data for date, data in trading_state['daily_investments'].items() 
+                        if date > cutoff_date
+                    }
+                    logger.info(f"📅 당일 투자 기록 정리: 3일 이전 데이터 삭제")
+
                 daily_report_sent = False
                 market_open_notified = False
 
