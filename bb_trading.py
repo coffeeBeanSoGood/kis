@@ -2192,14 +2192,21 @@ def calculate_position_size(target_config, stock_code, stock_price, trading_stat
         final_fee = calculate_trading_fee(stock_price, base_quantity, True)
         final_total = final_amount + final_fee
         
-        # 🎯 추가 검증: 종목별 한도 재확인
+        # 🔥 종목별 한도 검증 엄격화 (여유 없음)
         current_invested = get_invested_amount_for_stock(stock_code, trading_state)
         per_stock_limit = get_per_stock_budget_limit()
-        
-        if (current_invested + final_total) > per_stock_limit * 1.01:  # 1% 여유 허용
-            logger.warning(f"⚠️ 종목별 한도 초과 위험: {current_invested + final_total:,.0f}원 > {per_stock_limit:,.0f}원")
+
+        if (current_invested + final_total) > per_stock_limit:  # 1% 여유 제거
+            logger.warning(f"❌ 종목별 한도 초과: {current_invested + final_total:,.0f}원 > {per_stock_limit:,.0f}원")
             return 0
-        
+
+        # 🔥 추가: 이미 투자된 종목의 추가 투자 제한
+        if current_invested > 0:  # 이미 보유 중인 종목
+            remaining_limit = per_stock_limit - current_invested
+            if final_total > remaining_limit:
+                logger.warning(f"❌ 추가투자 한도 초과: 요청 {final_total:,.0f}원 > 남은한도 {remaining_limit:,.0f}원")
+                return 0
+
         stock_name = target_config.get('name', stock_code)
         logger.info(f"🎯 개선된 포지션 계산: {stock_name}({stock_code})")
         logger.info(f"   종목별 남은예산: {remaining_budget_for_stock:,.0f}원")
@@ -3402,11 +3409,17 @@ def process_positions(trading_state):
                         # 🔥 재매수 방지 기록
                         if 'recent_sells' not in trading_state:
                             trading_state['recent_sells'] = {}
-                        
+                                                
+                        # 과열 매도시 더 긴 쿨다운
+                        if 'overheated' in sell_analysis['sell_type']:
+                            cooldown_hours = 24  # 과열 매도시 24시간
+                        else:
+                            cooldown_hours = 6   # 일반 매도시 6시간
+
                         trading_state['recent_sells'][stock_code] = {
                             'sell_time': datetime.datetime.now().isoformat(),
                             'sell_reason': sell_analysis['sell_type'],
-                            'cooldown_hours': 2
+                            'cooldown_hours': cooldown_hours
                         }
                         
                         # 매도 완료 알림
@@ -3415,8 +3428,10 @@ def process_positions(trading_state):
                         msg += f"수량: {executed_amount}주\n"
                         msg += f"순손익: {net_profit:,.0f}원 ({profit_rate:.2f}%)\n"
                         msg += f"매도사유: {sell_analysis['reason']}\n"
-                        msg += f"재매수 방지: 2시간"
-                        
+                        msg += f"재매수 방지: {cooldown_hours}시간"
+                        if cooldown_hours == 24:
+                            msg += " (과열매도)"
+
                         # 🔥 수량 조정이 있었다면 추가 안내
                         if sell_amount != current_amount:
                             msg += f"\n⚠️ 수량 조정: 봇기록 {current_amount}주 → 실제매도 {executed_amount}주"
