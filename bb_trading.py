@@ -151,14 +151,51 @@ class TradingConfig:
         """거래 예산 비율"""
         return self.config.get("trade_budget_ratio", 0.90)
     
+    # =========================== 후보종목 풀 설정 (새로 추가) ===========================
+    @property
+    def use_candidate_pool(self):
+        """후보종목 풀 방식 사용 여부"""
+        return self.config.get("use_candidate_pool", False)
+    
+    @property
+    def target_holding_count(self):
+        """목표 보유 종목 수"""
+        return self.config.get("target_holding_count", 3)
+    
+    @property
+    def candidate_selection_method(self):
+        """후보 선택 방식 (score/signal_strength)"""
+        return self.config.get("candidate_selection_method", "score")
+    
+    @property
+    def min_selection_score(self):
+        """후보 선택 최소 점수"""
+        return self.config.get("min_selection_score", 45)
+    
+    @property
+    def rebalance_interval_hours(self):
+        """재선택 주기 (시간)"""
+        return self.config.get("rebalance_interval_hours", 24)
+    
+    @property
+    def max_candidate_positions(self):
+        """최대 후보종목 동시 보유 수"""
+        return self.config.get("max_candidate_positions", 4)
+    
+    # =========================== 기존 max_positions 수정 ===========================
+
     @property 
     def max_positions(self):
-        """최대 보유 종목 수 - 활성 타겟 종목 수 기반"""
-        active_count = 0
-        for stock_code, config in self.target_stocks.items():
-            if config.get('enabled', True):
-                active_count += 1
-        return active_count if active_count > 0 else 1
+        """최대 보유 종목 수 - 후보종목 풀 방식에서는 target_holding_count 사용"""
+        if self.use_candidate_pool:
+            return self.target_holding_count
+        else:
+            # 기존 방식: 활성 타겟 종목 수 기반
+            active_count = 0
+            for stock_code, config in self.target_stocks.items():
+                if config.get('enabled', True):
+                    active_count += 1
+            return active_count if active_count > 0 else 1
     
     @property
     def min_stock_price(self):
@@ -333,6 +370,17 @@ class TradingConfig:
         return self.config.get("max_candidate_wait_hours", 2)
 
 
+    def get_candidate_stocks(self):
+        """후보종목 리스트 반환"""
+        if not self.use_candidate_pool:
+            return self.target_stocks  # 기존 방식
+        
+        candidates = {}
+        for stock_code, config in self.target_stocks.items():
+            if config.get('enabled', True) and config.get('is_candidate', True):
+                candidates[stock_code] = config
+        return candidates
+    
 ################################### 로깅 처리 ##################################
 
 log_directory = "logs"
@@ -414,6 +462,63 @@ def get_bot_name():
         return Common.GetNowDist() + "_TargetStockBot"
 
 ################################### 유틸리티 함수 ##################################
+
+def select_target_stocks_from_candidates(buy_opportunities):
+    """후보종목에서 매수 대상 선택"""
+    try:
+        if not trading_config.use_candidate_pool:
+            return buy_opportunities  # 기존 방식은 모든 기회 반환
+        
+        target_count = trading_config.target_holding_count
+        selection_method = trading_config.candidate_selection_method
+        min_score = trading_config.min_selection_score
+        
+        logger.info(f"🎯 후보종목 선택: {len(buy_opportunities)}개 → 최대 {target_count}개 선택")
+        
+        # 최소 점수 미달 제거
+        qualified_opportunities = []
+        for opp in buy_opportunities:
+            if opp['score'] >= min_score:
+                qualified_opportunities.append(opp)
+        
+        if not qualified_opportunities:
+            logger.info("   ⚠️ 최소 점수를 충족하는 종목이 없습니다")
+            return []
+        
+        # 선택 방식에 따른 정렬
+        if selection_method == "score":
+            qualified_opportunities.sort(key=lambda x: x['score'], reverse=True)
+        elif selection_method == "signal_strength":
+            def signal_priority(opp):
+                strength = opp.get('signal_strength', 'NORMAL')
+                score = opp['score']
+                return (2 if strength == 'STRONG' else 1, score)
+            qualified_opportunities.sort(key=signal_priority, reverse=True)
+        
+        # 🔥 현재 보유 중인 종목 수 확인 후 남은 슬롯만큼만 선택
+        trading_state = load_trading_state()
+        current_positions = len(trading_state.get('positions', {}))
+        available_slots = max(0, target_count - current_positions)
+        
+        logger.info(f"   💼 현재 보유: {current_positions}개, 추가 가능: {available_slots}개")
+        
+        if available_slots == 0:
+            logger.info("   ✋ 목표 보유 종목 수 달성, 추가 매수 없음")
+            return []
+        
+        # 사용 가능한 슬롯만큼만 선택
+        selected = qualified_opportunities[:available_slots]
+        
+        logger.info(f"🎯 최종 선택된 종목들:")
+        for i, opp in enumerate(selected, 1):
+            logger.info(f"   {i}. {opp['stock_name']}({opp['stock_code']}): "
+                       f"{opp['score']}점 ({opp.get('signal_strength', 'NORMAL')})")
+        
+        return selected
+        
+    except Exception as e:
+        logger.error(f"후보종목 선택 중 오류: {str(e)}")
+        return []
 
 def get_sector_info(stock_code):
     """네이버 금융을 통한 섹터 정보 조회"""
@@ -504,19 +609,34 @@ def _update_stock_info(target_stocks):
         return target_stocks
 
 def get_active_target_stock_count():
-    """활성화된 타겟 종목 수 자동 계산"""
+    """활성화된 타겟 종목 수 계산 - 후보종목 풀 방식 지원"""
     try:
-        active_count = 0
-        for stock_code, config in trading_config.target_stocks.items():
-            if config.get('enabled', True):  # enabled가 True인 것만 카운트
-                active_count += 1
-        
-        logger.debug(f"활성 타겟 종목 수: {active_count}개")
-        return active_count
+        if trading_config.use_candidate_pool:
+            return trading_config.target_holding_count
+        else:
+            active_count = 0
+            for stock_code, config in trading_config.target_stocks.items():
+                if config.get('enabled', True):
+                    active_count += 1
+            return active_count if active_count > 0 else 1
         
     except Exception as e:
         logger.error(f"활성 종목 수 계산 중 오류: {str(e)}")
-        return 1  # 최소 1개로 설정하여 0으로 나누기 방지
+        
+        # 🔥 간단하고 안전한 기본값 처리
+        try:
+            # trading_config가 있고 후보종목 풀 방식이면 target_holding_count 사용
+            if (trading_config and 
+                hasattr(trading_config, 'use_candidate_pool') and 
+                trading_config.use_candidate_pool):
+                return getattr(trading_config, 'target_holding_count', 3)
+            else:
+                # 기존 방식이거나 설정이 없으면 최소값
+                return 1
+        except:
+            # 최악의 상황: 아무것도 접근할 수 없을 때
+            logger.error("모든 설정 접근 실패, 최소 안전값 사용")
+            return 1
 
 def get_per_stock_budget_limit():
     """종목별 예산 한도 계산 - 활성 종목 수 기반"""
@@ -690,7 +810,7 @@ def get_remaining_budget_for_stock(stock_code, trading_state):
         return 0
 
 def get_budget_info_message():
-    """예산 정보 메시지 생성 - 종목별 분배 현황 포함 (개선됨)"""
+    """예산 정보 메시지 생성 - 후보종목 풀 방식 지원 (완전 개선 버전)"""
     try:
         trading_state = load_trading_state()
         balance = KisKR.GetBalance()
@@ -706,45 +826,142 @@ def get_budget_info_message():
         total_invested = get_total_invested_amount(trading_state)
         per_stock_limit = get_per_stock_budget_limit()
         
-        # 기본 정보
-        if trading_config.use_absolute_budget:
-            strategy = trading_config.absolute_budget_strategy
-            absolute_budget = trading_config.absolute_budget
-            
-            msg = f"💰 절대금액 예산 운용 ({strategy})\n"
-            msg += f"설정 예산: {absolute_budget:,.0f}원\n"
+        # 🔥 후보종목 풀 방식 여부에 따른 메시지 구성
+        if trading_config.use_candidate_pool:
+            # 후보종목 풀 방식
+            candidate_stocks = trading_config.get_candidate_stocks()
+            msg = f"🎯 후보종목 풀 운용 방식\n"
+            msg += f"후보 풀: {len(candidate_stocks)}개\n"
+            msg += f"목표 보유: {trading_config.target_holding_count}개\n"
+            msg += f"선택 방식: {trading_config.candidate_selection_method}\n"
+            msg += f"최소 점수: {trading_config.min_selection_score}점\n"
         else:
-            msg = f"📊 비율 기반 예산 운용\n"
-            msg += f"설정 비율: {trading_config.trade_budget_ratio*100:.1f}%\n"
-        
-        msg += f"현재 자산: {total_money:,.0f}원\n"
-        msg += f"현금 잔고: {remain_money:,.0f}원\n"
-        msg += f"\n📈 투자 현황:\n"
-        msg += f"• 총 투자됨: {total_invested:,.0f}원\n"
-        msg += f"• 사용가능: {total_available_budget:,.0f}원\n"
-        msg += f"• 종목별 한도: {per_stock_limit:,.0f}원\n"
-        
-        # 종목별 투자 현황
-        msg += f"\n🎯 종목별 투자 현황:\n"
-        for stock_code, stock_config in trading_config.target_stocks.items():
-            if not stock_config.get('enabled', True):
-                continue
-                
-            stock_name = stock_config.get('name', stock_code)
-            invested = get_invested_amount_for_stock(stock_code, trading_state)
-            remaining = get_remaining_budget_for_stock(stock_code, trading_state)
-            usage_rate = (invested / per_stock_limit * 100) if per_stock_limit > 0 else 0
-            
-            if invested > 0:
-                msg += f"• {stock_name}: {invested:,.0f}원 ({usage_rate:.1f}%)\n"
+            # 기존 방식
+            if trading_config.use_absolute_budget:
+                strategy = trading_config.absolute_budget_strategy
+                absolute_budget = trading_config.absolute_budget
+                msg = f"📊 기존 타겟 종목 운용 ({strategy})\n"
+                msg += f"설정 예산: {absolute_budget:,}원\n"
             else:
-                msg += f"• {stock_name}: 투자 대기 (가능: {remaining:,.0f}원)\n"
+                msg = f"📊 기존 타겟 종목 운용 (비율)\n"
+                msg += f"설정 비율: {trading_config.trade_budget_ratio*100:.1f}%\n"
+        
+        msg += f"현재 자산: {total_money:,}원\n"
+        msg += f"현금 잔고: {remain_money:,}원\n"
+        msg += f"\n📈 투자 현황:\n"
+        msg += f"• 총 투자됨: {total_invested:,}원\n"
+        msg += f"• 사용가능: {total_available_budget:,}원\n"
+        msg += f"• 종목별 한도: {per_stock_limit:,}원\n"
+        
+        # 현재 보유 종목 현황
+        current_positions = len(trading_state.get('positions', {}))
+        target_count = get_active_target_stock_count()
+        
+        msg += f"\n🎯 보유 현황:\n"
+        msg += f"• 현재 보유: {current_positions}개\n"
+        msg += f"• 목표/최대: {target_count}개\n"
+        
+        if trading_config.use_candidate_pool:
+            available_slots = max(0, target_count - current_positions)
+            msg += f"• 추가 가능: {available_slots}개\n"
+        
+        # 🔥 종목별 투자 현황 (방식별로 다르게 표시)
+        if trading_config.use_candidate_pool:
+            # 후보종목 풀: 현재 보유 종목만 표시
+            msg += f"\n🎯 현재 선택된 종목:\n"
+            
+            if current_positions > 0:
+                for stock_code, position in trading_state.get('positions', {}).items():
+                    if stock_code in trading_config.target_stocks:
+                        stock_name = trading_config.target_stocks[stock_code].get('name', stock_code)
+                        invested = get_invested_amount_for_stock(stock_code, trading_state)
+                        usage_rate = (invested / per_stock_limit * 100) if per_stock_limit > 0 else 0
+                        
+                        # 추가 정보: 수익률 표시
+                        try:
+                            entry_price = position.get('entry_price', 0)
+                            current_price = KisKR.GetCurrentPrice(stock_code)
+                            if entry_price > 0 and current_price:
+                                profit_rate = (current_price - entry_price) / entry_price * 100
+                                profit_sign = "📈" if profit_rate > 0 else "📉" if profit_rate < 0 else "➡️"
+                                msg += f"• {stock_name}: {invested:,}원 ({usage_rate:.1f}%) {profit_sign} {profit_rate:+.1f}%\n"
+                            else:
+                                msg += f"• {stock_name}: {invested:,}원 ({usage_rate:.1f}%)\n"
+                        except:
+                            msg += f"• {stock_name}: {invested:,}원 ({usage_rate:.1f}%)\n"
+                
+                # 후보종목 풀 추가 정보
+                if available_slots > 0:
+                    candidate_stocks = trading_config.get_candidate_stocks()
+                    unselected_candidates = []
+                    for code, config in candidate_stocks.items():
+                        if code not in trading_state.get('positions', {}):
+                            unselected_candidates.append(config.get('name', code))
+                    
+                    if unselected_candidates:
+                        msg += f"\n📋 대기 중인 후보종목:\n"
+                        for i, name in enumerate(unselected_candidates[:3], 1):  # 최대 3개만 표시
+                            msg += f"{i}. {name}\n"
+                        if len(unselected_candidates) > 3:
+                            msg += f"... 외 {len(unselected_candidates)-3}개\n"
+            else:
+                msg += "• 현재 보유 종목 없음\n"
+                
+                # 후보종목 리스트 표시
+                candidate_stocks = trading_config.get_candidate_stocks()
+                msg += f"\n📋 후보종목 풀 ({len(candidate_stocks)}개):\n"
+                for i, (code, config) in enumerate(candidate_stocks.items(), 1):
+                    name = config.get('name', code)
+                    msg += f"{i}. {name}\n"
+        else:
+            # 기존 방식: 모든 활성 종목 표시
+            msg += f"\n🎯 종목별 투자 현황:\n"
+            for stock_code, stock_config in trading_config.target_stocks.items():
+                if not stock_config.get('enabled', True):
+                    continue
+                    
+                stock_name = stock_config.get('name', stock_code)
+                invested = get_invested_amount_for_stock(stock_code, trading_state)
+                remaining = get_remaining_budget_for_stock(stock_code, trading_state)
+                usage_rate = (invested / per_stock_limit * 100) if per_stock_limit > 0 else 0
+                
+                if invested > 0:
+                    # 수익률 정보 추가
+                    try:
+                        if stock_code in trading_state.get('positions', {}):
+                            position = trading_state['positions'][stock_code]
+                            entry_price = position.get('entry_price', 0)
+                            current_price = KisKR.GetCurrentPrice(stock_code)
+                            if entry_price > 0 and current_price:
+                                profit_rate = (current_price - entry_price) / entry_price * 100
+                                profit_sign = "📈" if profit_rate > 0 else "📉" if profit_rate < 0 else "➡️"
+                                msg += f"• {stock_name}: {invested:,}원 ({usage_rate:.1f}%) {profit_sign} {profit_rate:+.1f}%\n"
+                            else:
+                                msg += f"• {stock_name}: {invested:,}원 ({usage_rate:.1f}%)\n"
+                        else:
+                            msg += f"• {stock_name}: {invested:,}원 ({usage_rate:.1f}%)\n"
+                    except:
+                        msg += f"• {stock_name}: {invested:,}원 ({usage_rate:.1f}%)\n"
+                else:
+                    msg += f"• {stock_name}: 투자 대기 (가능: {remaining:,}원)\n"
+        
+        # 🔥 추가 정보: 매수 대기 종목이 있으면 표시
+        if 'buy_candidates' in trading_state and trading_state['buy_candidates']:
+            candidate_count = len(trading_state['buy_candidates'])
+            msg += f"\n⏳ 매수 대기 종목: {candidate_count}개\n"
+            for stock_code, candidate_info in trading_state['buy_candidates'].items():
+                stock_name = candidate_info['opportunity']['stock_name']
+                wait_start = datetime.datetime.fromisoformat(candidate_info['wait_start_time'])
+                wait_hours = (datetime.datetime.now() - wait_start).total_seconds() / 3600
+                daily_score = candidate_info.get('daily_score', 0)
+                msg += f"• {stock_name}: {wait_hours:.1f}시간 대기 ({daily_score}점)\n"
         
         return msg
         
     except Exception as e:
         logger.error(f"개선된 예산 정보 메시지 생성 중 에러: {str(e)}")
-        return "예산 정보 조회 실패"
+        logger.exception("상세 에러 정보:")
+        return f"예산 정보 조회 실패: {str(e)}"
 
 def get_safe_config_value(target_config, key, default_value):
     """종목별 설정에서 안전하게 값 가져오기"""
@@ -2950,6 +3167,14 @@ def scan_target_stocks(trading_state):
         
         buy_opportunities = []
         current_positions = len(trading_state['positions'])
+
+        # 🔥 수정 1: 후보종목 풀 또는 기존 타겟 종목 가져오기
+        if trading_config.use_candidate_pool:
+            scan_stocks = trading_config.get_candidate_stocks()
+            logger.info(f"후보종목 풀 스캔 시작: {len(scan_stocks)}개 후보종목 분석")
+        else:
+            scan_stocks = trading_config.target_stocks
+            logger.info(f"기존 타겟 종목 스캔 시작: {len(scan_stocks)}개 종목 분석")        
         
         if current_positions >= get_active_target_stock_count():
             logger.info(f"최대 보유 종목 수 도달({get_active_target_stock_count()}개)")
@@ -3194,14 +3419,27 @@ def scan_target_stocks(trading_state):
                     logger.info(f"   - {signal}")
         
         # 점수 순으로 정렬
-        buy_opportunities.sort(key=lambda x: x['score'], reverse=True)
-        
-        # 🔥 캐시 상태 로깅
-        total_cache_entries = len(trading_state.get('news_cache', {}))
-        logger.info(f"📰 뉴스 캐시 현황: 총 {total_cache_entries}개 종목, 이번 스캔에서 {cached_news_count}개 재사용")
-        
-        logger.info(f"매수 기회 스캔 완료: {len(buy_opportunities)}개 발견")
-        return buy_opportunities
+        # 🔥 4단계: 후보종목 풀 방식에서는 최적 종목 선택
+        if trading_config.use_candidate_pool and buy_opportunities:
+            logger.info(f"🔍 후보종목 풀에서 최적 종목 선택 시작")
+            selected_opportunities = select_target_stocks_from_candidates(buy_opportunities)
+            logger.info(f"🎯 후보종목 선택 완료: {len(buy_opportunities)}개 → {len(selected_opportunities)}개")
+            
+            # 캐시 상태 로깅
+            total_cache_entries = len(trading_state.get('news_cache', {}))
+            logger.info(f"📰 뉴스 캐시 현황: 총 {total_cache_entries}개 종목, 이번 스캔에서 {cached_news_count}개 재사용")
+            
+            return selected_opportunities
+        else:
+            # 기존 방식: 점수 순으로 정렬만
+            buy_opportunities.sort(key=lambda x: x['score'], reverse=True)
+            
+            # 캐시 상태 로깅
+            total_cache_entries = len(trading_state.get('news_cache', {}))
+            logger.info(f"📰 뉴스 캐시 현황: 총 {total_cache_entries}개 종목, 이번 스캔에서 {cached_news_count}개 재사용")
+            
+            logger.info(f"📊 기존 방식 매수 기회 스캔 완료: {len(buy_opportunities)}개 발견")
+            return buy_opportunities
         
     except Exception as e:
         logger.error(f"매수 기회 스캔 중 에러: {str(e)}")
@@ -3882,10 +4120,13 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
 def create_config_file(config_path: str = "target_stock_config.json") -> None:
     """기본 설정 파일 생성 (분봉 타이밍 옵션 + 뉴스 분석 포함한 개선 버전)"""
     try:
-        logger.info("분봉 타이밍 + 뉴스 분석 옵션 포함한 개선 설정 파일 생성 시작...")
-        
-        # 기본 타겟 종목들 정의 (거래량 확보를 위해 확대)
-        sample_codes = ["272210", "034020", "010140","007660"]  # 한화시스템, 두산에너빌리티, 삼성중공업, 이수페타시스
+        logger.info("후보종목 풀 방식 설정 파일 생성 시작...")
+        # 🔥 후보종목 풀 확장 (기존 4개 + 추가 4개)
+        sample_codes = [
+            "272210", "034020", "010140", "007660",  # 기존: 한화시스템, 두산에너빌리티, 삼성중공업, 이수페타시스
+            "017960", "033500", "051600", "000725"   # 추가: 한국카본, 동성화인텍, 한전KPS, 현대건설우
+        ]
+
 
         # 🎯 특성별 파라미터 수정 (모든 타입의 min_score 상향)
         characteristic_params = {
@@ -3954,8 +4195,8 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
             }
         }
 
-        # 임시 종목 특성 분석 (간단화 버전)
-        target_stocks = {}
+        # 🔥 후보종목 정보 수집 (모든 종목을 candidate로 설정)
+        candidate_stocks = {}
         for i, stock_code in enumerate(sample_codes):
             try:
                 # 종목명 조회
@@ -3968,55 +4209,70 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
                 # 섹터 정보 조회
                 sector_info = get_sector_info(stock_code)
                 
-                # 🔥 모든 종목을 성장주로 설정 (사용자 요청)
+                # 특성 타입 결정 (기존: 모든 종목을 성장주로 설정)
                 char_type = "growth"
                 
-                # 특성별 파라미터 적용
+                # 🔥 후보종목으로 설정 (enabled는 candidate 여부를 의미)
                 params = characteristic_params[char_type].copy()
                 params.update({
                     "name": stock_name,
                     "sector": sector_info.get('sector', 'Unknown'),
-                    "enabled": True,
-                    "characteristic_type": char_type
+                    "enabled": True,  # 🔥 후보종목 풀에 포함
+                    "characteristic_type": char_type,
+                    "is_candidate": True  # 🔥 후보종목 표시
                 })
                 
-                target_stocks[stock_code] = params
-                logger.info(f"종목 설정: {stock_code}({stock_name}) - {char_type}")
+                candidate_stocks[stock_code] = params
+                logger.info(f"후보종목 설정: {stock_code}({stock_name}) - {char_type}")
                 
                 time.sleep(0.5)  # API 호출 간격
                 
             except Exception as e:
                 logger.warning(f"종목 {stock_code} 정보 수집 중 오류: {str(e)}")
                 # 기본값으로 설정
-                target_stocks[stock_code] = characteristic_params["growth"].copy()
-                target_stocks[stock_code].update({
+                candidate_stocks[stock_code] = characteristic_params["growth"].copy()
+                candidate_stocks[stock_code].update({
                     "name": f"종목{stock_code}",
                     "sector": "Unknown",
                     "enabled": True,
-                    "characteristic_type": "growth"
+                    "characteristic_type": "growth",
+                    "is_candidate": True
                 })
+
         
         # 전체 설정 구성 (분봉 타이밍 + 뉴스 분석 옵션 포함)
         config = {
-            "target_stocks": target_stocks,
+            # 🔥 후보종목을 target_stocks로 설정 (기존 구조 유지)
+            "target_stocks": candidate_stocks,
             
-            # 🎯 분봉 타이밍 전역 설정 (새로 추가)
-            "use_intraday_timing": True,            # 분봉 진입 타이밍 사용 여부 (백테스트시 False)
-            "intraday_check_interval": 10,          # 분봉 체크 주기 (초) - 분봉 타이밍 사용시
-            "default_check_interval": 30,           # 기본 체크 주기 (초) - 일봉만 사용시
-            "max_candidate_wait_hours": 2,          # 최대 대기 시간 (시간)
-            "intraday_data_period": "5m",           # 분봉 데이터 주기 (5분봉)
-            "intraday_data_count": 24,              # 분봉 데이터 개수 (2시간치)
-            "force_buy_after_wait": True,           # 최대 대기시간 후 강제 매수 여부
+            # 🔥 새로운 설정: 동적 선택 관련
+            "use_candidate_pool": True,              # 후보종목 풀 방식 사용 여부
+            "target_holding_count": 3,               # 🎯 목표 보유 종목 수 (기존 보유 2개 + 1개 여유)
+            "candidate_selection_method": "score",   # 선택 방식: "score" (점수순), "signal_strength" (신호강도순)
+            "min_selection_score": 45,              # 🔥 후보 선택 최소 점수 (40→45, 더 엄격)
+            "rebalance_interval_hours": 24,          # 재선택 주기 (시간)
+            "max_candidate_positions": 4,            # 🔥 최대 후보종목 동시 보유 수 (여유분)
             
-            # 🔥 뉴스 분석 설정 (새로 추가)
-            "use_news_analysis": True,             # 뉴스 분석 기능 사용 여부 (기본값 False)
-            "news_check_threshold": 20,             # 이 점수 이상일 때만 뉴스 체크
-            "always_check_news": False,             # 점수와 관계없이 항상 뉴스 체크
-            "news_cache_hours": 6,                  # 뉴스 캐시 유효 시간
+            # 🔥 기존 max_positions 대체 (하위 호환성 유지)
+            "max_positions": 3,  # target_holding_count와 동일하게 설정
+            
+            # 분봉 타이밍 전역 설정 (기존 유지)
+            "use_intraday_timing": True,
+            "intraday_check_interval": 10,
+            "default_check_interval": 30,
+            "max_candidate_wait_hours": 2,
+            "intraday_data_period": "5m",
+            "intraday_data_count": 24,
+            "force_buy_after_wait": True,
+            
+            # 뉴스 분석 설정 (기존 유지)
+            "use_news_analysis": True,
+            "news_check_threshold": 20,
+            "always_check_news": False,
+            "news_cache_hours": 6,
             "news_weight": {
-                "positive_multiplier": 0.15,         # 긍정 뉴스 가중치 (최대 15점)
-                "negative_multiplier": 0.25          # 부정 뉴스 가중치 (최대 25점)
+                "positive_multiplier": 0.15,
+                "negative_multiplier": 0.25
             },
             
             # 예산 설정 - 기존 구조 유지하되 일부 값만 최적화
@@ -4071,15 +4327,16 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
         # 파일 저장
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, ensure_ascii=False, indent=4)
-        
-        logger.info(f"🎯 분봉 타이밍 + 뉴스 분석 옵션 포함 설정 파일 생성 완료: {config_path}")
+
+        logger.info(f"🎯 후보종목 풀 방식 설정 파일 생성 완료: {config_path}")
         logger.info(f"주요 설정:")
+        logger.info(f"  - 후보종목 풀: {len(candidate_stocks)}개 (기존 4개 + 추가 4개)")
+        logger.info(f"  - 목표 보유 종목: {config['target_holding_count']}개")
+        logger.info(f"  - 선택 방식: {config['candidate_selection_method']}")
+        logger.info(f"  - 선택 최소 점수: {config['min_selection_score']}점")
+        logger.info(f"  - 예산: {config['absolute_budget']:,}원")
         logger.info(f"  - 분봉 타이밍: {'ON' if config['use_intraday_timing'] else 'OFF'}")
         logger.info(f"  - 뉴스 분석: {'ON' if config['use_news_analysis'] else 'OFF'}")
-        logger.info(f"  - 예산: {config['absolute_budget']:,}원")
-        # logger.info(f"  - 최대 종목수: {config['max_positions']}개")
-        logger.info(f"  - 체크 주기: {config['intraday_check_interval']}초 (분봉 사용시)")
-        logger.info(f"  - 뉴스 캐시: {config['news_cache_hours']}시간")
         logger.info(f"  - 모든 종목: 성장주 전략 적용")
         
         # 적응형 전략 파일 초기화
