@@ -464,28 +464,32 @@ def get_bot_name():
 ################################### 유틸리티 함수 ##################################
 
 def select_target_stocks_from_candidates(buy_opportunities):
-    """후보종목에서 매수 대상 선택"""
+    """후보종목에서 매수 대상 선택 - 개별 분석 기준점수 사용 (개선됨)"""
     try:
         if not trading_config.use_candidate_pool:
             return buy_opportunities  # 기존 방식은 모든 기회 반환
         
         target_count = trading_config.target_holding_count
         selection_method = trading_config.candidate_selection_method
-        min_score = trading_config.min_selection_score
         
         logger.info(f"🎯 후보종목 선택: {len(buy_opportunities)}개 → 최대 {target_count}개 선택")
         
-        # 최소 점수 미달 제거
+        # 🔥 핵심 변경: 개별 분석에서 사용한 기준점수 적용
         qualified_opportunities = []
         for opp in buy_opportunities:
-            if opp['score'] >= min_score:
+            individual_min_score = opp.get('min_score', trading_config.min_selection_score)
+            
+            if opp['score'] >= individual_min_score:
                 qualified_opportunities.append(opp)
+                logger.info(f"✅ {opp['stock_name']}: {opp['score']}≥{individual_min_score}점")
+            else:
+                logger.info(f"❌ {opp['stock_name']}: {opp['score']}<{individual_min_score}점")
         
         if not qualified_opportunities:
-            logger.info("   ⚠️ 최소 점수를 충족하는 종목이 없습니다")
+            logger.info("   ⚠️ 개별 기준을 충족하는 종목이 없습니다")
             return []
         
-        # 선택 방식에 따른 정렬
+        # 선택 방식에 따른 정렬 (기존 로직 유지)
         if selection_method == "score":
             qualified_opportunities.sort(key=lambda x: x['score'], reverse=True)
         elif selection_method == "signal_strength":
@@ -495,7 +499,7 @@ def select_target_stocks_from_candidates(buy_opportunities):
                 return (2 if strength == 'STRONG' else 1, score)
             qualified_opportunities.sort(key=signal_priority, reverse=True)
         
-        # 🔥 현재 보유 중인 종목 수 확인 후 남은 슬롯만큼만 선택
+        # 현재 보유 종목 수 확인 후 남은 슬롯만큼만 선택 (기존 로직 유지)
         trading_state = load_trading_state()
         current_positions = len(trading_state.get('positions', {}))
         available_slots = max(0, target_count - current_positions)
