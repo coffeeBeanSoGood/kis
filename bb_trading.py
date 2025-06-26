@@ -2192,7 +2192,7 @@ def analyze_sell_signal(stock_data, position, target_config):
             base_stop_loss = -0.06  # -15% → -6% (대폭 강화)
         
         # 🎯 시간별 손절 로직 (대폭 단축)
-        if holding_hours < 2:  # 6시간 → 2시간 (대폭 단축)
+        if holding_hours < 4:  # 2시간 → 4시간 (연장)    
             # 극한 상황 손절 기준 강화
             if profit_rate <= -0.12:  # -25% → -12% (대폭 강화)
                 return {
@@ -2323,9 +2323,9 @@ def analyze_sell_signal(stock_data, position, target_config):
         
         # 🔥 기존: if profit_rate > 0.02: (수익 상태에서만)
         # 🔥 수정: if profit_rate > -0.05: (손실 상태에도 적용)
-        if profit_rate > -0.05:  # -5% 이상이면 추세 체크 (손실 상태에도 적용)
-            if ma5 < ma20 * 0.985:  # 0.98 → 0.985 (더 민감하게)
-                if rsi < 45:  # 40 → 45 (더 민감하게)
+        if profit_rate > -0.02:  # -5% → -2% (수익/소폭손실에만 적용)
+            if ma5 < ma20 * 0.975:  # 0.985 → 0.975 (덜 민감하게)
+                if rsi < 35:  # 45 → 35 (더 확실한 약세에만)
                     return {
                         'is_sell_signal': True,
                         'sell_type': 'trend_reversal',
@@ -2340,8 +2340,8 @@ def analyze_sell_signal(stock_data, position, target_config):
             consecutive_down = sum(1 for x in recent_changes if x < -0.02)  # 2% 이상 하락
             
             # 🔥 기존: if consecutive_down >= 2 and profit_rate < -0.03: (3% 손실)
-            # 🔥 수정: if consecutive_down >= 2 and profit_rate < -0.025: (2.5% 손실)
-            if consecutive_down >= 2 and profit_rate < -0.025:  # 연속 하락 + 2.5% 손실
+            # 🔥 수정: if consecutive_down >= 2 and profit_rate < -0.025: (2.5% 손실)실
+            if consecutive_down >= 3 and profit_rate < -0.04:  # 3일 연속 + 4% 손실로 완화    
                 return {
                     'is_sell_signal': True,
                     'sell_type': 'consecutive_decline',
@@ -2350,7 +2350,7 @@ def analyze_sell_signal(stock_data, position, target_config):
                 }
         
         # 🔥 9단계: 시간 기반 손절 (🔥 수정 3: 새로 추가)
-        if holding_hours >= 24 and profit_rate <= -0.03:  # 24시간 이상 + 3% 손실
+        if holding_hours >= 48 and profit_rate <= -0.05:  # 48시간 + 5% 손실로 완화    
             return {
                 'is_sell_signal': True,
                 'sell_type': 'time_based_stop_loss',
@@ -2681,6 +2681,12 @@ def calculate_position_size(target_config, stock_code, stock_price, trading_stat
         
         # 최종 배분율
         enhanced_allocation = base_allocation * strength_multiplier
+
+        # 🆕 여기에 추가 - 바로 다음 줄에
+        if enhanced_allocation > 1.0:
+            logger.warning(f"⚠️ {stock_name}: 계산된 배분율 {enhanced_allocation:.3f} > 1.0, 1.0으로 제한")
+            enhanced_allocation = 1.0
+
         allocated_budget = usable_budget * enhanced_allocation
         
         logger.info(f"💰 {stock_name} 배분 계산:")
@@ -2783,6 +2789,8 @@ def execute_buy_order(stock_code, target_config, quantity, price):
     try:
         stock_name = target_config.get('name', stock_code)
         trading_state = load_trading_state()
+        # 🆕 여기에 추가 - 매수 전 보유량 기록
+        initial_holdings = 0        
         
         # 🆕 1. 중복 주문 방지 (라이브러리 사용)
         if pending_manager.check_pending_orders(stock_code, trading_state):
@@ -2863,37 +2871,39 @@ def execute_buy_order(stock_code, target_config, quantity, price):
                     save_trading_state(trading_state)
                     logger.info(f"📋 주문번호 등록: {stock_name}({stock_code}) - {order_id}")
         
-        # 6. 체결 확인 (기존 로직)
+        # 6. 체결 확인 (수정된 로직)
         start_time = time.time()
-        while time.time() - start_time < 60:
+        while time.time() - start_time < 180:  # 60 → 180초 연장
             my_stocks = KisKR.GetMyStockList()
             for stock in my_stocks:
                 if stock['StockCode'] == stock_code:
-                    executed_amount = int(stock.get('StockAmt', 0))
-                    if executed_amount > 0:
-                        avg_price = float(stock.get('AvrPrice', actual_price))  # actual_price로 기본값 변경
+                    current_holdings = int(stock.get('StockAmt', 0))
+                    holdings_increase = current_holdings - initial_holdings  # 🆕 증가분 계산
+                    
+                    if holdings_increase > 0:  # 🔧 증가분으로 체결 확인
+                        executed_amount = holdings_increase  # 🔧 실제 체결량
+                        avg_price = float(stock.get('AvrPrice', actual_price))
                         
-                        # 체결가격 로그 추가
+                        # 체결가격 로그 추가 (그대로 유지)
                         execution_diff = avg_price - actual_price
                         logger.info(f"✅ 매수 체결 확인: {executed_amount}주")
                         logger.info(f"   주문가격: {actual_price:,}원")
                         logger.info(f"   체결가격: {avg_price:,}원")
                         logger.info(f"   체결차이: {execution_diff:+,}원")
                         
-                        # 🆕 체결 완료시 pending 제거 (라이브러리 사용)
+                        # 🆕 체결 완료시 pending 제거 (그대로 유지)
                         trading_state = load_trading_state()
                         pending_manager.remove_pending_order(trading_state, stock_code, "체결 완료")
                         save_trading_state(trading_state)
                         
-                        # 🆕 체결 완료 알림 (라이브러리 사용)
+                        # 🆕 체결 완료 알림 (그대로 유지)
                         pending_manager.send_order_alert('fill', stock_code, {
                             'executed_price': avg_price,
                             'executed_amount': executed_amount,
                             'order_price': actual_price,
                             'price_improvement': execution_diff
-                        })
-                        
-                        return avg_price, executed_amount  # 실제 체결가 반환
+                        })                        
+                        return avg_price, executed_amount
             time.sleep(3)
         
         # 🆕 미체결시 알림 (라이브러리 사용)
@@ -4550,7 +4560,7 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
         # 🎯 특성별 파라미터 수정 (모든 타입의 min_score 상향)
         characteristic_params = {
             "growth": {
-                "allocation_ratio": 1,
+                "allocation_ratio": 0.8,
                 "profit_target": 0.12,
                 "stop_loss": -0.08,           # -0.12 → -0.08
                 "rsi_oversold": 55,
