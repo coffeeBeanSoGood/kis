@@ -2317,12 +2317,13 @@ def analyze_sell_signal(stock_data, position, target_config):
                     'urgent': True
                 }
         
-        # 🎯 7단계: 추세 반전 감지 매도 (기준 강화)
+        # 🎯 7단계: 추세 반전 감지 매도 (🔥 수정 1: 손실 상태에도 적용)
         ma5 = stock_data.get('ma5', 0)
         ma20 = stock_data.get('ma20', 0)
         
-        # 수익 상태에서 추세 반전시 매도 (기준 낮춤)
-        if profit_rate > 0.02:  # 3% → 2% (기준 낮춤)
+        # 🔥 기존: if profit_rate > 0.02: (수익 상태에서만)
+        # 🔥 수정: if profit_rate > -0.05: (손실 상태에도 적용)
+        if profit_rate > -0.05:  # -5% 이상이면 추세 체크 (손실 상태에도 적용)
             if ma5 < ma20 * 0.985:  # 0.98 → 0.985 (더 민감하게)
                 if rsi < 45:  # 40 → 45 (더 민감하게)
                     return {
@@ -2332,19 +2333,30 @@ def analyze_sell_signal(stock_data, position, target_config):
                         'urgent': False
                     }
         
-        # 🔥 8단계: 추가 안전장치 - 연속 하락 손절
+        # 🔥 8단계: 추가 안전장치 - 연속 하락 손절 (🔥 수정 2: 기준 완화)
         if len(df) >= 3:
             # 최근 3일 연속 하락 + 손실 상태면 매도
             recent_changes = df['close'].pct_change().iloc[-3:]
             consecutive_down = sum(1 for x in recent_changes if x < -0.02)  # 2% 이상 하락
             
-            if consecutive_down >= 2 and profit_rate < -0.03:  # 연속 하락 + 3% 손실
+            # 🔥 기존: if consecutive_down >= 2 and profit_rate < -0.03: (3% 손실)
+            # 🔥 수정: if consecutive_down >= 2 and profit_rate < -0.025: (2.5% 손실)
+            if consecutive_down >= 2 and profit_rate < -0.025:  # 연속 하락 + 2.5% 손실
                 return {
                     'is_sell_signal': True,
                     'sell_type': 'consecutive_decline',
                     'reason': f"연속하락 안전매도 {profit_rate*100:.1f}% (연속하락 {consecutive_down}일)",
                     'urgent': True
                 }
+        
+        # 🔥 9단계: 시간 기반 손절 (🔥 수정 3: 새로 추가)
+        if holding_hours >= 24 and profit_rate <= -0.03:  # 24시간 이상 + 3% 손실
+            return {
+                'is_sell_signal': True,
+                'sell_type': 'time_based_stop_loss',
+                'reason': f"장기보유 손절 {profit_rate*100:.1f}% (보유: {holding_hours:.1f}시간)",
+                'urgent': True
+            }
         
         # 기본: 보유 지속
         return {
@@ -2360,7 +2372,6 @@ def analyze_sell_signal(stock_data, position, target_config):
     except Exception as e:
         logger.error(f"개선된 매도 신호 분석 중 에러: {str(e)}")
         return {'is_sell_signal': False, 'sell_type': None, 'reason': f'분석 오류: {str(e)}'}
-
 
 def analyze_intraday_entry_timing(stock_code, target_config):
     """분봉 기준 최적 진입 타이밍 분석 - API 호출 방식 수정"""
