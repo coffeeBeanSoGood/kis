@@ -687,21 +687,11 @@ def get_total_invested_amount(trading_state):
         return 0
 
 def get_invested_amount_for_stock(stock_code, trading_state):
-    # 현재 보유 + 당일 총 투자 중 큰 값 사용
-    current_invested = 0
+    """현재 실제 보유 중인 투자금액 반환"""
     if stock_code in trading_state['positions']:
         position = trading_state['positions'][stock_code]
-        current_invested = position['entry_price'] * position['amount']
-    
-    # 당일 총 투자 추적
-    today = datetime.datetime.now().strftime('%Y-%m-%d')
-    daily_total = 0
-    if 'daily_investments' not in trading_state:
-        trading_state['daily_investments'] = {}
-    if today in trading_state.get('daily_investments', {}):
-        daily_total = trading_state['daily_investments'][today].get(stock_code, 0)
-    
-    return max(current_invested, daily_total)
+        return position['entry_price'] * position['amount']
+    return 0
 
 def get_available_budget(trading_state=None):
     """사용 가능한 예산 계산 - 이미 투자된 금액 차감 (개선됨)"""
@@ -793,25 +783,31 @@ def get_available_budget(trading_state=None):
         return 0
 
 def get_remaining_budget_for_stock(stock_code, trading_state):
-    """특정 종목의 남은 투자 가능 예산 계산 - 미체결 주문 금액 포함"""
-    try:
-        per_stock_limit = get_per_stock_budget_limit()
-        
-        # 🆕 라이브러리 사용해서 미체결 주문 금액 포함 계산
-        committed_amount = pending_manager.get_committed_budget_for_stock(
-            stock_code, trading_state, get_invested_amount_for_stock
-        )
-        
-        remaining = per_stock_limit - committed_amount
-        
-        stock_name = trading_config.target_stocks.get(stock_code, {}).get('name', stock_code)
-        logger.debug(f"💰 {stock_name}({stock_code}) 남은 예산: {remaining:,}원 (한도: {per_stock_limit:,}원, 사용중: {committed_amount:,}원)")
-        
-        return max(0, remaining)
-        
-    except Exception as e:
-        logger.error(f"종목별 남은 예산 계산 중 오류 ({stock_code}): {str(e)}")
-        return 0
+    """종목별 남은 예산 계산 - 디버깅 로그 추가"""
+    per_stock_limit = get_per_stock_budget_limit()
+    
+    # 현재 보유 금액
+    current_invested = get_invested_amount_for_stock(stock_code, trading_state)
+    
+    # 미체결 주문 금액
+    pending_amount = pending_manager.get_committed_budget_for_stock(
+        stock_code, trading_state, lambda code, state: 0  # 수정된 함수 사용
+    )
+    
+    # 총 커밋된 금액
+    total_committed = current_invested + pending_amount
+    remaining = per_stock_limit - total_committed
+    
+    # 🔥 디버깅 로그 추가
+    stock_name = trading_config.target_stocks.get(stock_code, {}).get('name', stock_code)
+    logger.debug(f"💰 {stock_name}({stock_code}) 예산 계산:")
+    logger.debug(f"   종목별 한도: {per_stock_limit:,}원")
+    logger.debug(f"   현재 보유: {current_invested:,}원")
+    logger.debug(f"   미체결 주문: {pending_amount:,}원")
+    logger.debug(f"   총 사용중: {total_committed:,}원")
+    logger.debug(f"   남은 예산: {remaining:,}원")
+    
+    return max(0, remaining)
 
 def get_budget_info_message():
     """예산 정보 메시지 생성 - 후보종목 풀 방식 지원 (완전 개선 버전)"""
@@ -1001,46 +997,111 @@ def calculate_trading_fee(price, quantity, is_buy=True):
     
     return commission + tax + special_tax
 
-
 def check_trading_time():
-    """장중 거래 가능한 시간대인지 체크 (개선된 버전)"""
+    """거래 시간 체크 - 장 초반 안정화 대기 적용 (완전 개선 버전)"""
     try:
+        # 1단계: 휴장일 체크
         if KisKR.IsTodayOpenCheck() == 'N':
-            logger.info("휴장일 입니다.")
+            logger.info("📅 오늘은 휴장일입니다.")
             return False, False
 
+        # 2단계: 장 상태 조회
         market_status = KisKR.MarketStatus()
         if market_status is None or not isinstance(market_status, dict):
-            logger.info("장 상태 확인 실패")
+            logger.warning("⚠️ 장 상태 확인 실패")
             return False, False
             
         status_code = market_status.get('Status', '')
         current_time = datetime.datetime.now().time()
         
-        # 동시호가: 8:30-9:00
-        is_market_open = (status_code == '0' and 
-                         current_time >= datetime.time(8, 30) and 
-                         current_time < datetime.time(9, 0))
-        
-        # 정규장: 9:00-15:30
-        is_trading_time = (status_code == '2' and
-                          current_time >= datetime.time(9, 0) and
-                          current_time < datetime.time(15, 30))
-        
+        # 3단계: 상태 코드별 상세 로그
         status_desc = {
             '': '장 개시전',
-            '1': '장 개시전',
+            '1': '장 개시전', 
             '2': '장중',
             '3': '장 종료후',
             '4': '시간외단일가',
             '0': '동시호가'
         }
-        logger.info(f"장 상태: {status_desc.get(status_code, '알 수 없음')}")
+        
+        current_status = status_desc.get(status_code, f'알 수 없음({status_code})')
+        logger.debug(f"🕐 현재 시각: {current_time.strftime('%H:%M:%S')} - 장 상태: {current_status}")
+        
+        # 4단계: 동시호가 시간 (8:30-9:00)
+        is_market_open = False
+        if status_code == '0':
+            if (current_time >= datetime.time(8, 30) and 
+                current_time < datetime.time(9, 0)):
+                is_market_open = True
+                logger.info(f"📊 동시호가 시간: {current_time.strftime('%H:%M:%S')}")
+            else:
+                logger.debug(f"⏰ 동시호가 시간 외: {current_time.strftime('%H:%M:%S')}")
+        
+        # 5단계: 정규장 시간 체크 (9:00-15:30) + 장 초반 안정화 적용
+        is_trading_time = False
+        if status_code == '2':
+            # 🔥 핵심 개선: 장 초반 안정화 대기 설정
+            market_open_time = datetime.time(9, 0)
+            market_close_time = datetime.time(15, 30)
+            
+            # 설정에서 대기 시간 가져오기 (기본 15분)
+            wait_minutes = getattr(trading_config, 'market_open_wait_minutes', 15)
+            stabilization_time = datetime.time(9, wait_minutes)  # 기본 09:15
+            
+            # 🚨 장 초반 안정화 대기 (09:00~09:15)
+            if (current_time >= market_open_time and 
+                current_time < stabilization_time):
+                logger.info(f"⏰ 장 초반 안정화 대기 중: {current_time.strftime('%H:%M:%S')} "
+                          f"(대기 종료: {stabilization_time.strftime('%H:%M')})")
+                logger.info(f"   📊 이유: 분봉 데이터 부족 및 변동성 과열 방지")
+                logger.info(f"   🕐 남은 시간: {(datetime.datetime.combine(datetime.date.today(), stabilization_time) - datetime.datetime.combine(datetime.date.today(), current_time)).total_seconds() / 60:.0f}분")
+                return False, False
+            
+            # ✅ 정상 거래 시간 (09:15~15:30)
+            elif (current_time >= stabilization_time and 
+                  current_time < market_close_time):
+                is_trading_time = True
+                
+                # 첫 거래 시간 진입시 알림
+                if current_time < datetime.time(9, 20):  # 09:20 이전에만
+                    logger.info(f"🎯 정상 거래 시간 진입: {current_time.strftime('%H:%M:%S')} "
+                              f"(안정화 완료)")
+            
+            # 장 시작 전 (09:00 이전)
+            elif current_time < market_open_time:
+                logger.debug(f"⏰ 장 시작 전: {current_time.strftime('%H:%M:%S')} "
+                           f"(시작 예정: {market_open_time.strftime('%H:%M')})")
+            
+            # 장 마감 후 (15:30 이후)
+            elif current_time >= market_close_time:
+                logger.debug(f"📊 장 마감: {current_time.strftime('%H:%M:%S')} "
+                           f"(마감 시간: {market_close_time.strftime('%H:%M')})")
+            
+        # 6단계: 기타 상태 처리
+        elif status_code == '1':  # 장 개시전
+            logger.debug(f"⏰ 장 개시 전 대기 중: {current_time.strftime('%H:%M:%S')}")
+        elif status_code == '3':  # 장 종료후
+            logger.debug(f"📊 장 종료 후: {current_time.strftime('%H:%M:%S')}")
+        elif status_code == '4':  # 시간외단일가
+            logger.debug(f"📊 시간외단일가: {current_time.strftime('%H:%M:%S')}")
+        else:
+            logger.warning(f"⚠️ 알 수 없는 장 상태: {status_code} at {current_time.strftime('%H:%M:%S')}")
+        
+        # 7단계: 결과 요약 로그
+        if is_trading_time:
+            logger.debug(f"✅ 거래 가능: {current_time.strftime('%H:%M:%S')} (상태: {current_status})")
+        elif is_market_open:
+            logger.debug(f"📊 동시호가: {current_time.strftime('%H:%M:%S')} (상태: {current_status})")
+        else:
+            logger.debug(f"⏸️ 거래 불가: {current_time.strftime('%H:%M:%S')} (상태: {current_status})")
         
         return is_trading_time, is_market_open
         
     except Exception as e:
-        logger.error(f"거래 시간 체크 중 에러 발생: {str(e)}")
+        logger.error(f"❌ 거래 시간 체크 중 오류: {str(e)}")
+        logger.exception("❌ 거래 시간 체크 상세 오류 정보:")
+        
+        # 🔥 예외 발생시 안전 모드 (거래 중단)
         return False, False
 
 def detect_stock_environment(stock_code):
@@ -1603,72 +1664,176 @@ def analyze_buy_signal(stock_data, target_config):
     
 # 🎯 분봉 타이밍도 조건부 차단으로 수정
 def analyze_intraday_entry_timing(stock_code, target_config):
-    """분봉 기준 최적 진입 타이밍 분석 - 조건부 차단 방식"""
+    """분봉 기준 최적 진입 타이밍 분석 - 장 초반 안정화 적용"""
     try:
+        stock_name = target_config.get('name', stock_code)
+        
+        # 🔥 1단계: 현재가 조회
         current_price = KisKR.GetCurrentPrice(stock_code)
         if not current_price:
-            return {'enter_now': True, 'reason': '현재가 조회 실패로 즉시 진입'}
+            logger.warning(f"⚠️ {stock_name}: 현재가 조회 실패")
+            return {
+                'enter_now': False,  # True → False (보수적 변경)
+                'entry_score': 0,
+                'reason': '현재가 조회 실패로 진입 대기'
+            }
         
-        # 분봉 데이터 조회 (기존 로직)
+        # 🔥 2단계: 장 초반 시간대 체크
+        current_time = datetime.datetime.now().time()
+        is_early_market = current_time < datetime.time(9, 30)  # 09:30 이전
+        is_very_early = current_time < datetime.time(9, 15)    # 09:15 이전 (극초반)
+        
+        logger.debug(f"🕐 {stock_name} 분봉 분석: {current_time.strftime('%H:%M:%S')} "
+                    f"(초반: {is_early_market}, 극초반: {is_very_early})")
+        
+        # 🔥 3단계: 분봉 데이터 조회 (다단계 시도)
+        df_5m = None
+        data_source = "unknown"
+        
         try:
+            # 시도 1: KIS API 분봉 조회
             df_5m = KisKR.GetOhlcvNew(stock_code, 'M', 24, adj_ok=1)
-            
-            if df_5m is None or len(df_5m) < 10:
-                df_5m = Common.GetOhlcv("KR", stock_code, 24)
+            if df_5m is not None and len(df_5m) >= 10:
+                data_source = "KIS_minute"
+                logger.debug(f"📊 {stock_name}: KIS 분봉 데이터 조회 성공 ({len(df_5m)}개)")
+            else:
+                logger.debug(f"📊 {stock_name}: KIS 분봉 데이터 부족")
                 
         except Exception as api_e:
-            logger.debug(f"분봉 API 호출 실패: {str(api_e)}, 일봉으로 대체")
-            df_5m = Common.GetOhlcv("KR", stock_code, 24)
+            logger.debug(f"📊 {stock_name}: KIS 분봉 API 실패 - {str(api_e)}")
         
+        # 시도 2: Common API 일봉 조회 (백업)
         if df_5m is None or len(df_5m) < 10:
-            return {'enter_now': True, 'reason': '데이터 부족으로 즉시 진입'}
+            try:
+                df_5m = Common.GetOhlcv("KR", stock_code, 24)
+                if df_5m is not None and len(df_5m) >= 10:
+                    data_source = "Common_daily"
+                    logger.debug(f"📊 {stock_name}: Common 일봉 데이터로 대체 ({len(df_5m)}개)")
+            except Exception as common_e:
+                logger.debug(f"📊 {stock_name}: Common API도 실패 - {str(common_e)}")
         
+        # 🔥 4단계: 데이터 부족시 시간대별 처리
+        if df_5m is None or len(df_5m) < 10:
+            if is_very_early:  # 09:15 이전
+                logger.info(f"⏰ {stock_name}: 극초반 데이터 부족으로 대기 (시간: {current_time.strftime('%H:%M')})")
+                return {
+                    'enter_now': False,
+                    'entry_score': 0,
+                    'entry_signals': ['극초반 분봉 데이터 부족'],
+                    'reason': f'극초반({current_time.strftime("%H:%M")}) 분봉 데이터 부족으로 대기',
+                    'data_info': {'data_length': 0, 'data_source': 'none'}
+                }
+            elif is_early_market:  # 09:15~09:30
+                logger.info(f"⏰ {stock_name}: 장 초반 데이터 부족으로 대기 (시간: {current_time.strftime('%H:%M')})")
+                return {
+                    'enter_now': False,
+                    'entry_score': 0,
+                    'entry_signals': ['장 초반 분봉 데이터 부족'],
+                    'reason': f'장 초반({current_time.strftime("%H:%M")}) 분봉 데이터 부족으로 대기',
+                    'data_info': {'data_length': 0, 'data_source': 'none'}
+                }
+            else:  # 09:30 이후
+                logger.warning(f"⚠️ {stock_name}: 장중 데이터 부족 - 조건부 진입")
+                return {
+                    'enter_now': True,  # 장중에는 진입 허용
+                    'entry_score': 10,  # 최소 점수 부여
+                    'entry_signals': ['장중 데이터 부족으로 조건부 진입'],
+                    'reason': f'장중({current_time.strftime("%H:%M")}) 데이터 부족하지만 진입',
+                    'data_info': {'data_length': 0, 'data_source': 'none'}
+                }
+        
+        # 🔥 5단계: 데이터 길이 및 지표 설정
         data_length = len(df_5m)
-        
-        # 기술적 지표 계산
         rsi_period = min(14, data_length // 2)
         ma_short = min(5, data_length // 4)
         ma_long = min(20, data_length // 2)
         bb_period = min(20, data_length // 2)
         
+        logger.debug(f"📊 {stock_name} 분봉 데이터: {data_length}개 ({data_source})")
+        
+        # RSI 계산 최소 요구사항 체크
         if rsi_period < 3:
-            return {'enter_now': True, 'reason': '데이터 부족으로 즉시 진입'}
+            if is_early_market:
+                logger.info(f"⏰ {stock_name}: RSI 계산 불가로 장 초반 대기")
+                return {
+                    'enter_now': False,
+                    'entry_score': 0,
+                    'reason': 'RSI 계산 불가로 장 초반 대기',
+                    'data_info': {'data_length': data_length, 'rsi_period': rsi_period}
+                }
+            else:
+                return {
+                    'enter_now': True,
+                    'entry_score': 5,
+                    'reason': 'RSI 계산 불가하지만 장중 진입',
+                    'data_info': {'data_length': data_length, 'rsi_period': rsi_period}
+                }
         
-        df_5m['RSI'] = TechnicalIndicators.calculate_rsi(df_5m, rsi_period)
-        df_5m['MA_Short'] = df_5m['close'].rolling(window=ma_short).mean()
-        df_5m['MA_Long'] = df_5m['close'].rolling(window=ma_long).mean()
+        # 🔥 6단계: 기술적 지표 계산
+        try:
+            df_5m['RSI'] = TechnicalIndicators.calculate_rsi(df_5m, rsi_period)
+            df_5m['MA_Short'] = df_5m['close'].rolling(window=ma_short).mean()
+            df_5m['MA_Long'] = df_5m['close'].rolling(window=ma_long).mean()
+            
+            # 볼린저밴드 계산
+            if data_length >= bb_period:
+                bb_data = TechnicalIndicators.calculate_bollinger_bands(df_5m, bb_period, 2.0)
+                df_5m[['BB_Mid', 'BB_Upper', 'BB_Lower']] = bb_data
+            else:
+                # 볼린저밴드 계산 불가시 더미 값
+                df_5m['BB_Mid'] = df_5m['close']
+                df_5m['BB_Upper'] = df_5m['close'] * 1.02
+                df_5m['BB_Lower'] = df_5m['close'] * 0.98
+                
+        except Exception as calc_e:
+            logger.error(f"❌ {stock_name}: 기술적 지표 계산 실패 - {str(calc_e)}")
+            if is_early_market:
+                return {
+                    'enter_now': False,
+                    'entry_score': 0,
+                    'reason': f'장 초반 지표 계산 실패로 대기: {str(calc_e)}',
+                    'data_info': {'data_length': data_length, 'error': str(calc_e)}
+                }
+            else:
+                return {
+                    'enter_now': True,
+                    'entry_score': 5,
+                    'reason': f'지표 계산 실패하지만 장중 진입: {str(calc_e)}',
+                    'data_info': {'data_length': data_length, 'error': str(calc_e)}
+                }
         
-        if data_length >= bb_period:
-            bb_data = TechnicalIndicators.calculate_bollinger_bands(df_5m, bb_period, 2.0)
-            df_5m[['BB_Mid', 'BB_Upper', 'BB_Lower']] = bb_data
-        else:
-            df_5m['BB_Mid'] = df_5m['close']
-            df_5m['BB_Upper'] = df_5m['close'] * 1.02
-            df_5m['BB_Lower'] = df_5m['close'] * 0.98
-        
-        # 🚨 분봉 극한 조건 계산
+        # 🔥 7단계: 극한 조건 체크
         intraday_rsi = df_5m['RSI'].iloc[-1] if not pd.isna(df_5m['RSI'].iloc[-1]) else 50
         bb_upper_5m = df_5m['BB_Upper'].iloc[-1]
         intraday_bb_ratio = current_price / bb_upper_5m if bb_upper_5m > 0 else 0.5
         
-        # 분봉 극한 조건 (2개 이상시 진입 거부)
+        # 분봉 극한 조건 정의
         intraday_extreme = [
-            intraday_rsi >= 85,           # 분봉 RSI 85% 이상
-            intraday_bb_ratio >= 1.02,    # 분봉 볼밴 상단 2% 돌파
+            intraday_rsi >= 85,           # RSI 85% 이상
+            intraday_bb_ratio >= 1.02,    # 볼밴 상단 2% 돌파
         ]
         
         intraday_extreme_count = sum(intraday_extreme)
         
-        # 🚨 분봉 극한 조건 2개 만족시 진입 거부
+        logger.debug(f"🚨 {stock_name} 극한 조건: RSI {intraday_rsi:.1f}, BB비율 {intraday_bb_ratio:.3f}, 극한수 {intraday_extreme_count}/2")
+        
+        # 극한 조건 2개 만족시 진입 거부
         if intraday_extreme_count >= 2:
+            logger.info(f"🚨 {stock_name}: 분봉 극한 조건 차단")
             return {
                 'enter_now': False,
                 'entry_score': 0,
                 'entry_signals': [f'분봉 극한 조건 {intraday_extreme_count}개로 진입 거부'],
-                'reason': f'분봉 과열(RSI:{intraday_rsi:.1f}%, BB:{intraday_bb_ratio:.3f})로 진입 거부'
+                'reason': f'분봉 과열(RSI:{intraday_rsi:.1f}%, BB:{intraday_bb_ratio:.3f})로 진입 거부',
+                'data_info': {
+                    'data_length': data_length,
+                    'extreme_count': intraday_extreme_count,
+                    'rsi': intraday_rsi,
+                    'bb_ratio': intraday_bb_ratio
+                }
             }
         
-        # 🎯 분봉 진입 점수 계산 (페널티 포함)
+        # 🔥 8단계: 분봉 진입 점수 계산
         entry_signals = []
         entry_score = 0
         
@@ -1679,26 +1844,26 @@ def analyze_intraday_entry_timing(stock_code, target_config):
         elif intraday_rsi <= 45:
             entry_score += 20
             entry_signals.append(f"분봉 RSI 조정 {intraday_rsi:.1f} (+20)")
-        elif intraday_rsi >= 80:  # 🔥 페널티 (차단 아님)
+        elif intraday_rsi >= 80:
             entry_score -= 20
             entry_signals.append(f"분봉 RSI 과매수 페널티 {intraday_rsi:.1f} (-20)")
         elif intraday_rsi >= 70:
             entry_score -= 10
             entry_signals.append(f"분봉 RSI 과매수 주의 {intraday_rsi:.1f} (-10)")
         
-        # 볼린저밴드 신호 (페널티 포함)
+        # 볼린저밴드 신호
         bb_lower_5m = df_5m['BB_Lower'].iloc[-1]
         if not pd.isna(bb_lower_5m) and current_price <= bb_lower_5m * 1.02:
             entry_score += 25
             entry_signals.append("분봉 볼린저 하단 근접 (+25)")
-        elif intraday_bb_ratio >= 1.0:  # 🔥 페널티 (차단 아님)
+        elif intraday_bb_ratio >= 1.0:
             entry_score -= 15
             entry_signals.append(f"분봉 볼밴 상단 페널티 (-15)")
         elif intraday_bb_ratio >= 0.98:
             entry_score -= 8
             entry_signals.append(f"분봉 볼밴 상단 주의 (-8)")
         
-        # 나머지 신호들 (기존 로직)
+        # 이동평균 지지 신호
         try:
             ma_short_current = df_5m['MA_Short'].iloc[-1]
             if not pd.isna(ma_short_current):
@@ -1709,6 +1874,7 @@ def analyze_intraday_entry_timing(stock_code, target_config):
         except:
             pass
         
+        # 거래량 신호
         try:
             if data_length >= 10:
                 recent_volume = df_5m['volume'].iloc[-3:].mean()
@@ -1722,6 +1888,7 @@ def analyze_intraday_entry_timing(stock_code, target_config):
         except:
             pass
         
+        # 반등 신호 및 고점 페널티
         try:
             if data_length >= 5:
                 recent_changes = df_5m['close'].pct_change().iloc[-4:]
@@ -1733,46 +1900,96 @@ def analyze_intraday_entry_timing(stock_code, target_config):
                     entry_signals.append("분봉 반등 신호 (+20)")
                 
                 recent_high = df_5m['high'].iloc[-min(10, data_length):].max()
-                if current_price >= recent_high * 0.98:  # 🔥 페널티 (차단 아님)
+                if current_price >= recent_high * 0.98:
                     entry_score -= 10
                     entry_signals.append("분봉 단기 고점 페널티 (-10)")
         except:
             pass
         
-        # 🎯 분봉 진입 기준 (적당히 강화)
-        min_entry_score = target_config.get('min_entry_score', 22)  # 20 → 22 (적당히 상향)
+        # 🔥 9단계: 진입 기준 결정 (시간대별 차등)
+        base_min_score = target_config.get('min_entry_score', 20)
         
+        if is_very_early:  # 09:15 이전
+            min_entry_score = base_min_score + 10  # 더 엄격
+            time_penalty_reason = "극초반 엄격 모드"
+        elif is_early_market:  # 09:15~09:30
+            min_entry_score = base_min_score + 5   # 약간 엄격
+            time_penalty_reason = "장 초반 엄격 모드"
+        else:  # 09:30 이후
+            min_entry_score = base_min_score        # 기본 기준
+            time_penalty_reason = "정상 시간대"
+        
+        # 데이터 부족시 기준 완화
         if data_length < 20:
-            min_entry_score = max(12, min_entry_score - 8)  # 할인 폭 적당히
-            entry_signals.append(f"데이터 부족으로 기준 완화 ({data_length}개)")
+            discount = min(8, base_min_score // 3)
+            min_entry_score = max(10, min_entry_score - discount)
+            entry_signals.append(f"데이터 부족으로 기준 완화 ({data_length}개, -{discount}점)")
         
+        # 🔥 10단계: 최종 진입 결정
         enter_now = entry_score >= min_entry_score
         
         result = {
             'enter_now': enter_now,
             'entry_score': entry_score,
-            'entry_signals': entry_signals,
-            'reason': f"{'분봉 진입 타이밍 양호' if enter_now else '분봉 진입 대기'} (점수: {entry_score}/{min_entry_score})",
+            'entry_signals': entry_signals if entry_signals else ["분봉 신호 없음"],
+            'reason': f"{'분봉 진입 타이밍 양호' if enter_now else '분봉 진입 대기'} (점수: {entry_score}/{min_entry_score}, {time_penalty_reason})",
             'data_info': {
                 'data_length': data_length,
+                'data_source': data_source,
                 'rsi_period': rsi_period,
                 'ma_periods': [ma_short, ma_long],
-                'intraday_extreme_count': intraday_extreme_count
+                'intraday_extreme_count': intraday_extreme_count,
+                'time_zone': 'very_early' if is_very_early else 'early' if is_early_market else 'normal',
+                'min_score_used': min_entry_score,
+                'base_min_score': base_min_score
             }
         }
         
-        logger.debug(f"{stock_code} 균형잡힌 분봉 분석 결과: {result['reason']}")
+        # 상세 로그
+        if enter_now:
+            logger.info(f"✅ {stock_name}: 분봉 진입 타이밍 양호 ({entry_score}/{min_entry_score}점)")
+        else:
+            logger.info(f"⏳ {stock_name}: 분봉 진입 대기 ({entry_score}/{min_entry_score}점)")
+        
+        # 주요 신호들 로그 (상위 3개만)
+        for signal in entry_signals[:3]:
+            logger.debug(f"   📊 {signal}")
+        
         return result
             
     except Exception as e:
-        logger.error(f"균형잡힌 분봉 진입 타이밍 분석 중 오류: {str(e)}")
-        # 🎯 오류 발생시 중립적 처리
-        return {
-            'enter_now': True,  # 분석 오류시에는 기회를 놓치지 않도록
-            'entry_score': 0,
-            'entry_signals': [f"분석 오류로 즉시 진입: {str(e)}"],
-            'reason': '분석 오류로 즉시 진입 (기회 보존)'
-        }
+        logger.error(f"❌ {stock_name if 'stock_name' in locals() else stock_code}: 분봉 분석 중 오류 - {str(e)}")
+        logger.exception(f"❌ {stock_code}: 분봉 분석 상세 오류")
+        
+        # 🔥 예외시에도 시간대별 처리
+        try:
+            current_time = datetime.datetime.now().time()
+            is_early = current_time < datetime.time(9, 30)
+            
+            if is_early:
+                return {
+                    'enter_now': False,
+                    'entry_score': 0,
+                    'entry_signals': [f"장 초반 분석 오류로 대기"],
+                    'reason': f'장 초반 분봉 분석 오류로 대기: {str(e)}',
+                    'data_info': {'error': str(e), 'time_zone': 'early'}
+                }
+            else:
+                return {
+                    'enter_now': True,
+                    'entry_score': 5,  # 최소 점수 부여
+                    'entry_signals': [f"장중 분석 오류로 조건부 진입"],
+                    'reason': f'분봉 분석 오류하지만 장중 조건부 진입: {str(e)}',
+                    'data_info': {'error': str(e), 'time_zone': 'normal'}
+                }
+        except:
+            # 최악의 상황: 시간 체크도 실패
+            return {
+                'enter_now': False,
+                'entry_score': 0,
+                'entry_signals': ["치명적 오류로 진입 금지"],
+                'reason': f'치명적 분봉 분석 오류: {str(e)}'
+            }
 
 def should_use_intraday_timing(opportunity, target_config):
     """신호 강도별 분봉 타이밍 사용 여부 결정"""
@@ -2386,105 +2603,168 @@ def save_trading_state(state):
 ################################### 매매 실행 ##################################
 
 def calculate_position_size(target_config, stock_code, stock_price, trading_state):
-    """포지션 크기 계산 - 종목별 예산 한도 적용 (개선됨)"""
+    """포지션 크기 계산 - 종목별 예산 한도 적용 (완전 개선 버전)"""
     try:
+        stock_name = target_config.get('name', stock_code)
+        
+        # 🔥 1단계: 기본 유효성 검사
         if stock_price <= 0:
+            logger.warning(f"❌ {stock_name}: 주가 오류 ({stock_price})")
             return 0
         
-        # 1. 종목별 남은 예산 확인
-        remaining_budget_for_stock = get_remaining_budget_for_stock(stock_code, trading_state)
+        logger.info(f"💰 {stock_name}({stock_code}) 포지션 크기 계산 시작")
+        logger.info(f"   현재가: {stock_price:,}원")
+        
+        # 🔥 2단계: 예산 한도 계산
+        per_stock_limit = get_per_stock_budget_limit()
+        if per_stock_limit <= 0:
+            logger.warning(f"❌ {stock_name}: 종목별 예산 한도 없음")
+            return 0
+        
+        # 🔥 3단계: 현재 투자 상태 확인 (수정된 함수 사용)
+        current_invested = get_invested_amount_for_stock(stock_code, trading_state)
+        
+        # 🔥 4단계: 미체결 주문 확인
+        pending_amount = 0
+        if 'pending_orders' in trading_state and stock_code in trading_state['pending_orders']:
+            pending_order = trading_state['pending_orders'][stock_code]
+            pending_quantity = pending_order.get('quantity', 0)
+            pending_price = pending_order.get('price', 0)
+            pending_amount = pending_quantity * pending_price
+        
+        # 🔥 5단계: 실제 사용 가능 예산 계산
+        total_committed = current_invested + pending_amount
+        remaining_budget_for_stock = per_stock_limit - total_committed
+        
+        logger.info(f"💰 {stock_name} 예산 현황:")
+        logger.info(f"   종목별 한도: {per_stock_limit:,}원")
+        logger.info(f"   현재 보유: {current_invested:,}원")
+        logger.info(f"   미체결 주문: {pending_amount:,}원")
+        logger.info(f"   총 사용중: {total_committed:,}원")
+        logger.info(f"   남은 예산: {remaining_budget_for_stock:,}원")
         
         if remaining_budget_for_stock <= 0:
-            stock_name = target_config.get('name', stock_code)
-            logger.info(f"❌ {stock_name}({stock_code}): 종목별 예산 한도 초과 (남은예산: {remaining_budget_for_stock:,.0f}원)")
+            logger.info(f"❌ {stock_name}: 종목별 예산 한도 초과 (남은예산: {remaining_budget_for_stock:,}원)")
             return 0
         
-        # 2. 전체 사용 가능 예산 확인
+        # 🔥 6단계: 전체 사용 가능 예산 확인
         total_available_budget = get_available_budget(trading_state)
-        
         if total_available_budget <= 0:
-            logger.info("❌ 전체 사용 가능 예산 부족")
+            logger.info(f"❌ {stock_name}: 전체 사용 가능 예산 부족 ({total_available_budget:,}원)")
             return 0
         
-        # 3. 실제 사용할 예산 결정 (둘 중 작은 값)
+        # 🔥 7단계: 실제 사용할 예산 결정 (둘 중 작은 값)
         usable_budget = min(remaining_budget_for_stock, total_available_budget)
+        logger.info(f"💰 {stock_name} 사용 가능 예산: {usable_budget:,}원")
         
-        # 4. 기본 배분율 적용
+        # 🔥 8단계: 배분율 적용
         base_allocation = get_safe_config_value(target_config, 'allocation_ratio', 0.35)
         
-        # 5. 신호 강도별 배분 조정
+        # 신호 강도별 배분 조정
         signal_strength = target_config.get('last_signal_strength', 'NORMAL')
         if signal_strength == 'STRONG':
-            strength_multiplier = 1.2  # 20% 증가 (기존 40%에서 축소)
+            strength_multiplier = 1.2  # 20% 증가
+            logger.info(f"🎯 {stock_name}: 강한 신호 감지 - 배분율 20% 증가")
         else:
             strength_multiplier = 1.0   # 기본값
         
-        # 6. 최종 배분 예산 계산
+        # 최종 배분율
         enhanced_allocation = base_allocation * strength_multiplier
         allocated_budget = usable_budget * enhanced_allocation
         
-        # 7. 최소 주문 금액 체크
+        logger.info(f"💰 {stock_name} 배분 계산:")
+        logger.info(f"   기본 배분율: {base_allocation*100:.1f}%")
+        logger.info(f"   신호 배수: {strength_multiplier:.2f}x ({signal_strength})")
+        logger.info(f"   최종 배분율: {enhanced_allocation*100:.1f}%")
+        logger.info(f"   배분 예산: {allocated_budget:,}원")
+        
+        # 🔥 9단계: 최소 주문 금액 체크
         min_order_amount = get_safe_config_value(target_config, 'min_order_amount', 10000)
         if allocated_budget < min_order_amount:
+            logger.info(f"❌ {stock_name}: 최소 주문금액 미달 ({allocated_budget:,}원 < {min_order_amount:,}원)")
             return 0
         
-        # 8. 기본 수량 계산
+        # 🔥 10단계: 기본 수량 계산
         base_quantity = int(allocated_budget / stock_price)
-
-        # 🆕 임시 디버깅 로그 추가
-        stock_name = target_config.get('name', stock_code)
-        logger.info(f"🔍 임시 디버깅 - {stock_name}({stock_code}): 사용예산 {usable_budget:,}원, 배분율 {enhanced_allocation*100:.1f}%, 배분예산 {allocated_budget:,}원, 현재가 {stock_price:,}원, 계산수량 {base_quantity}주, 최소주문금액 {min_order_amount:,}원")
-            
+        
         if base_quantity <= 0:
+            logger.info(f"❌ {stock_name}: 계산된 수량 부족 ({base_quantity}주)")
             return 0
         
-        # 9. 수수료 고려한 조정
+        logger.info(f"💰 {stock_name} 기본 계산:")
+        logger.info(f"   기본 수량: {base_quantity}주")
+        logger.info(f"   기본 금액: {base_quantity * stock_price:,}원")
+        
+        # 🔥 11단계: 수수료 고려한 조정
         estimated_fee = calculate_trading_fee(stock_price, base_quantity, True)
         total_needed = (stock_price * base_quantity) + estimated_fee
         
         # 예산 내에서 수량 조정
-        while total_needed > allocated_budget and base_quantity > 0:
-            base_quantity -= 1
-            if base_quantity > 0:
-                estimated_fee = calculate_trading_fee(stock_price, base_quantity, True)
-                total_needed = (stock_price * base_quantity) + estimated_fee
+        adjusted_quantity = base_quantity
+        while total_needed > allocated_budget and adjusted_quantity > 0:
+            adjusted_quantity -= 1
+            if adjusted_quantity > 0:
+                estimated_fee = calculate_trading_fee(stock_price, adjusted_quantity, True)
+                total_needed = (stock_price * adjusted_quantity) + estimated_fee
             else:
                 break
         
-        if base_quantity <= 0:
+        if adjusted_quantity <= 0:
+            logger.info(f"❌ {stock_name}: 수수료 고려 후 수량 부족")
             return 0
         
-        # 10. 최종 검증
-        final_amount = stock_price * base_quantity
-        final_fee = calculate_trading_fee(stock_price, base_quantity, True)
+        if adjusted_quantity != base_quantity:
+            logger.info(f"🔧 {stock_name} 수수료 조정:")
+            logger.info(f"   조정 전: {base_quantity}주")
+            logger.info(f"   조정 후: {adjusted_quantity}주")
+            logger.info(f"   절약된 수수료: {calculate_trading_fee(stock_price, base_quantity, True) - estimated_fee:,}원")
+        
+        # 🔥 12단계: 최종 안전 검증
+        final_amount = stock_price * adjusted_quantity
+        final_fee = calculate_trading_fee(stock_price, adjusted_quantity, True)
         final_total = final_amount + final_fee
         
-        # 🔥 종목별 한도 검증 엄격화 (여유 없음)
-        current_invested = get_invested_amount_for_stock(stock_code, trading_state)
-        per_stock_limit = get_per_stock_budget_limit()
-
-        if (current_invested + final_total) > per_stock_limit:  # 1% 여유 제거
-            logger.warning(f"❌ 종목별 한도 초과: {current_invested + final_total:,.0f}원 > {per_stock_limit:,.0f}원")
+        # 종목별 한도 재검증 (엄격)
+        if (total_committed + final_total) > per_stock_limit:
+            logger.error(f"❌ {stock_name} 최종 검증 실패 - 종목별 한도 초과:")
+            logger.error(f"   기존 투자: {total_committed:,}원")
+            logger.error(f"   신규 투자: {final_total:,}원")
+            logger.error(f"   합계: {total_committed + final_total:,}원")
+            logger.error(f"   한도: {per_stock_limit:,}원")
+            logger.error(f"   초과: {(total_committed + final_total) - per_stock_limit:,}원")
             return 0
-
-        # 🔥 추가: 이미 투자된 종목의 추가 투자 제한
-        if current_invested > 0:  # 이미 보유 중인 종목
-            remaining_limit = per_stock_limit - current_invested
-            if final_total > remaining_limit:
-                logger.warning(f"❌ 추가투자 한도 초과: 요청 {final_total:,.0f}원 > 남은한도 {remaining_limit:,.0f}원")
-                return 0
-
-        stock_name = target_config.get('name', stock_code)
-        logger.info(f"🎯 개선된 포지션 계산: {stock_name}({stock_code})")
-        logger.info(f"   종목별 남은예산: {remaining_budget_for_stock:,.0f}원")
-        logger.info(f"   배분율: {enhanced_allocation*100:.1f}% (기본: {base_allocation*100:.1f}% × {strength_multiplier:.2f})")
-        logger.info(f"   최종 수량: {base_quantity}주 ({final_total:,.0f}원)")
-        logger.info(f"   투자 후 종목별 총투자: {current_invested + final_total:,.0f}원 / {per_stock_limit:,.0f}원")
         
-        return base_quantity
+        # 전체 예산 재검증
+        if final_total > total_available_budget:
+            logger.error(f"❌ {stock_name} 최종 검증 실패 - 전체 예산 초과:")
+            logger.error(f"   필요 금액: {final_total:,}원")
+            logger.error(f"   사용가능: {total_available_budget:,}원")
+            return 0
+        
+        # 🔥 13단계: 최종 결과 로그
+        investment_ratio = (final_total / per_stock_limit) * 100
+        usage_after_invest = ((total_committed + final_total) / per_stock_limit) * 100
+        
+        logger.info(f"✅ {stock_name} 최종 포지션 계산 완료:")
+        logger.info(f"   📊 수량: {adjusted_quantity}주")
+        logger.info(f"   💰 투자금액: {final_amount:,}원")
+        logger.info(f"   💸 수수료: {final_fee:,}원")
+        logger.info(f"   💵 총 소요: {final_total:,}원")
+        logger.info(f"   📈 종목별 사용률: {usage_after_invest:.1f}% ({total_committed:,}원 → {total_committed + final_total:,}원)")
+        logger.info(f"   🎯 투자 비중: {investment_ratio:.1f}%")
+        
+        # 🔥 14단계: 위험도 체크 및 경고
+        if usage_after_invest > 90:
+            logger.warning(f"⚠️ {stock_name}: 종목별 한도 90% 초과 ({usage_after_invest:.1f}%)")
+        elif usage_after_invest > 80:
+            logger.info(f"🟡 {stock_name}: 종목별 한도 80% 이상 ({usage_after_invest:.1f}%)")
+        
+        # 🔥 15단계: 성공 반환
+        return adjusted_quantity
         
     except Exception as e:
-        logger.error(f"개선된 포지션 계산 중 에러: {str(e)}")
+        logger.error(f"❌ {stock_code} 포지션 크기 계산 중 오류: {str(e)}")
+        logger.exception(f"❌ {stock_code} 상세 오류 정보:")
         return 0
 
 def execute_buy_order(stock_code, target_config, quantity, price):
@@ -4114,7 +4394,7 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                     remaining_total_budget = total_target_budget - updated_total_invested
                     
                     # 종목별 투자 현황
-                    current_stock_invested = get_invested_amount_for_stock(stock_code, trading_state) + actual_investment
+                    current_stock_invested = get_invested_amount_for_stock(stock_code, trading_state)
                     stock_usage_rate = (current_stock_invested / per_stock_limit * 100) if per_stock_limit > 0 else 0
                     
                     # 🎉 매수 완료 알림 (상세 정보 포함)
@@ -4423,6 +4703,7 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
             # "max_positions": 3,                     # 🎯 3종목으로 설정
             "min_stock_price": 3000,                # 기존 유지
             "max_stock_price": 200000,              # 기존 유지
+            "market_open_wait_minutes": 30,            
             
             # 🎯 손익 관리 설정 - 백테스트 결과 반영
             "stop_loss_ratio": -0.04,               # -0.025 → -0.04 (완화)
