@@ -2803,7 +2803,8 @@ def execute_buy_order(stock_code, target_config, quantity, price):
             'price': price,
             'target_config': target_config,
             'signal_strength': target_config.get('last_signal_strength', 'NORMAL'),
-            'daily_score': target_config.get('last_signal_score', 0)
+            'daily_score': target_config.get('last_signal_score', 0),
+            'order_time': datetime.datetime.now().isoformat()
         }
         
         pending_manager.track_pending_order(trading_state, stock_code, order_info)
@@ -2843,7 +2844,19 @@ def execute_buy_order(stock_code, target_config, quantity, price):
         order_info['estimated_fee'] = estimated_fee
         pending_manager.send_order_alert('submit', stock_code, order_info)
         
-        # 5. 실제 주문 실행 (실제 현재가로)
+        # 🔥 5. 매수 전 보유량 기록 (주문 실행 직전에 한 번만!)
+        try:
+            my_stocks = KisKR.GetMyStockList()
+            if my_stocks:
+                for stock in my_stocks:
+                    if stock['StockCode'] == stock_code:
+                        initial_holdings = int(stock.get('StockAmt', 0))
+                        break
+            logger.info(f"📊 매수 전 보유량: {initial_holdings}주")
+        except Exception as e:
+            logger.warning(f"⚠️ 초기 보유량 확인 실패: {str(e)}")
+        
+        # 6. 실제 주문 실행 (실제 현재가로)
         logger.info(f"🔵 {stock_name}({stock_code}) 매수 주문: {quantity}주 @ {actual_price:,.0f}원")
         
         order_result = KisKR.MakeBuyLimitOrder(stock_code, quantity, int(actual_price))
@@ -2860,7 +2873,7 @@ def execute_buy_order(stock_code, target_config, quantity, price):
                 discord_alert.SendMessage(error_msg)
             return None, None
         
-        # 5. 주문 성공시 order_id 업데이트
+        # 7. 주문 성공시 order_id 업데이트
         if isinstance(order_result, dict):
             order_id = order_result.get('OrderNum', order_result.get('OrderNo', ''))
             if order_id:
@@ -2871,43 +2884,58 @@ def execute_buy_order(stock_code, target_config, quantity, price):
                     save_trading_state(trading_state)
                     logger.info(f"📋 주문번호 등록: {stock_name}({stock_code}) - {order_id}")
         
-        # 6. 체결 확인 (수정된 로직)
+        # 🔥 8. 체결 확인 (수정된 로직 - 시간 연장 + 보유량 증가 기반)
         start_time = time.time()
-        while time.time() - start_time < 180:  # 60 → 180초 연장
-            my_stocks = KisKR.GetMyStockList()
-            for stock in my_stocks:
-                if stock['StockCode'] == stock_code:
-                    current_holdings = int(stock.get('StockAmt', 0))
-                    holdings_increase = current_holdings - initial_holdings  # 🆕 증가분 계산
+        while time.time() - start_time < 300:  # 🔥 300초 (5분) 대기
+            try:
+                my_stocks = KisKR.GetMyStockList()
+                if my_stocks:
+                    for stock in my_stocks:
+                        if stock['StockCode'] == stock_code:
+                            current_holdings = int(stock.get('StockAmt', 0))
+                            holdings_increase = current_holdings - initial_holdings  # 🔥 증가분 계산
+                            
+                            if holdings_increase > 0:  # 🔥 증가분으로 체결 확인
+                                executed_amount = holdings_increase  # 🔥 실제 체결량
+                                avg_price = float(stock.get('AvrPrice', actual_price))
+                                
+                                # 체결가격 로그
+                                execution_diff = avg_price - actual_price
+                                logger.info(f"✅ 매수 체결 확인: {executed_amount}주")
+                                logger.info(f"   주문가격: {actual_price:,}원")
+                                logger.info(f"   체결가격: {avg_price:,}원")
+                                logger.info(f"   체결차이: {execution_diff:+,}원")
+                                logger.info(f"   보유량 변화: {initial_holdings}주 → {current_holdings}주")
+                                
+                                # 🆕 체결 완료시 pending 제거
+                                trading_state = load_trading_state()
+                                pending_manager.remove_pending_order(trading_state, stock_code, "체결 완료")
+                                save_trading_state(trading_state)
+                                
+                                # 🆕 체결 완료 알림
+                                pending_manager.send_order_alert('fill', stock_code, {
+                                    'executed_price': avg_price,
+                                    'executed_amount': executed_amount,
+                                    'order_price': actual_price,
+                                    'price_improvement': execution_diff,
+                                    'initial_holdings': initial_holdings,
+                                    'final_holdings': current_holdings
+                                })                        
+                                return avg_price, executed_amount
+                            break
+                
+                # 🔥 진행 상황 로그 (1분마다)
+                elapsed_time = time.time() - start_time
+                if int(elapsed_time) % 60 == 0 and elapsed_time > 0:
+                    logger.info(f"⏱️ 체결 대기 중: {elapsed_time:.0f}초/300초")
                     
-                    if holdings_increase > 0:  # 🔧 증가분으로 체결 확인
-                        executed_amount = holdings_increase  # 🔧 실제 체결량
-                        avg_price = float(stock.get('AvrPrice', actual_price))
-                        
-                        # 체결가격 로그 추가 (그대로 유지)
-                        execution_diff = avg_price - actual_price
-                        logger.info(f"✅ 매수 체결 확인: {executed_amount}주")
-                        logger.info(f"   주문가격: {actual_price:,}원")
-                        logger.info(f"   체결가격: {avg_price:,}원")
-                        logger.info(f"   체결차이: {execution_diff:+,}원")
-                        
-                        # 🆕 체결 완료시 pending 제거 (그대로 유지)
-                        trading_state = load_trading_state()
-                        pending_manager.remove_pending_order(trading_state, stock_code, "체결 완료")
-                        save_trading_state(trading_state)
-                        
-                        # 🆕 체결 완료 알림 (그대로 유지)
-                        pending_manager.send_order_alert('fill', stock_code, {
-                            'executed_price': avg_price,
-                            'executed_amount': executed_amount,
-                            'order_price': actual_price,
-                            'price_improvement': execution_diff
-                        })                        
-                        return avg_price, executed_amount
-            time.sleep(3)
+            except Exception as e:
+                logger.warning(f"⚠️ 체결 확인 중 오류: {str(e)}")
+            
+            time.sleep(5)  # 🔥 5초 간격으로 체크
         
         # 🆕 미체결시 알림 (라이브러리 사용)
-        logger.warning(f"체결 확인 실패: {stock_code}")
+        logger.warning(f"⏱️ 체결 확인 시간 초과: {stock_code} (5분)")
         pending_manager.send_order_alert('pending', stock_code, order_info)
         
         return None, None
@@ -3538,6 +3566,19 @@ def scan_target_stocks(trading_state):
         cached_news_count = 0  # 캐시 히트 카운트
         
         # 1단계: 기술적 분석 먼저 수행
+        # 🔥 실제 보유량 한 번에 조회 (성능 개선 + 중복 주문 방지)
+        actual_holdings = {}
+        try:
+            my_stocks = KisKR.GetMyStockList()
+            if my_stocks:
+                for stock in my_stocks:
+                    stock_code = stock['StockCode']
+                    if stock_code in trading_config.target_stocks:
+                        actual_holdings[stock_code] = int(stock.get('StockAmt', 0))
+                logger.info(f"📊 실제 보유량 조회 완료: {len(actual_holdings)}개 종목")
+        except Exception as e:
+            logger.warning(f"⚠️ 실제 보유량 조회 실패: {str(e)}")
+
         for stock_code, target_config in trading_config.target_stocks.items():
             # ========== 디버깅 코드 시작 ==========
             logger.info(f"🔍 [{stock_code}] 스캔 시작")
@@ -3554,6 +3595,30 @@ def scan_target_stocks(trading_state):
                 # 🆕 미체결 주문 체크 (라이브러리 사용)
                 if pending_manager.check_pending_orders(stock_code, trading_state):
                     logger.info(f"❌ [{stock_code}] 미체결 주문 있음")
+                    continue
+
+                # 🔥 실제 보유량 체크 (새로 추가되는 핵심 부분!)
+                actual_amount = actual_holdings.get(stock_code, 0)
+                if actual_amount > 0:
+                    stock_name = target_config.get('name', stock_code)
+                    logger.info(f"❌ [{stock_code}] 실제 보유 중: {actual_amount}주")
+                    
+                    # 봇 기록과 실제 보유량 불일치 감지
+                    if stock_code not in trading_state['positions']:
+                        logger.warning(f"⚠️ 보유량 불일치 감지: {stock_code}")
+                        logger.warning(f"   봇 기록: 없음")
+                        logger.warning(f"   실제 보유: {actual_amount}주")
+                        
+                        # Discord 알림
+                        if hasattr(trading_config, 'use_discord_alert') and trading_config.config.get('use_discord_alert', True):
+                            discord_alert.SendMessage(
+                                f"⚠️ 보유량 불일치 감지\n"
+                                f"종목: {stock_name}({stock_code})\n"
+                                f"봇 기록: 없음\n"
+                                f"실제 보유: {actual_amount}주\n"
+                                f"→ 다른 앱에서 매수한 것으로 추정\n"
+                                f"→ 매수 스캔에서 제외"
+                            )
                     continue
                 
                 # 재매수 방지 체크
