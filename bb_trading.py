@@ -2094,7 +2094,437 @@ def calculate_adaptive_stop_loss(stock_data, position, target_config):
         logger.error(f"적응형 손절 계산 중 오류: {str(e)}")
         return target_config.get('stop_loss', trading_config.stop_loss_ratio)
 
+def calculate_total_trading_cost_rate(price, amount):
+    """총 거래비용률 계산 (매수+매도 수수료+세금)"""
+    try:
+        total_value = price * amount
+        
+        # 매수 수수료 (0.00156%)
+        buy_commission = total_value * 0.000156
+        # 매도 수수료 (0.00156%)  
+        sell_commission = total_value * 0.000156
+        # 농특세 (매도시 0.15%)
+        special_tax = total_value * 0.0015
+        
+        total_cost = buy_commission + sell_commission + special_tax
+        cost_rate = total_cost / total_value
+        
+        logger.debug(f"거래비용 계산: 투자금액 {total_value:,}원, 총비용 {total_cost:.0f}원, 비용률 {cost_rate*100:.3f}%")
+        return cost_rate
+        
+    except Exception as e:
+        logger.error(f"거래비용 계산 오류: {str(e)}")
+        return 0.002  # 기본값 0.2%
+
+def detect_market_condition(stock_data):
+    """시장 상황 감지 - 약세장/강세장/불안정 구분"""
+    try:
+        df = stock_data.get('ohlcv_data')
+        if df is None or len(df) < 20:
+            return 'uncertain'
+        
+        # 최근 10일 변동성 체크
+        recent_volatility = df['close'].pct_change().iloc[-10:].std()
+        
+        # 20일 이동평균 기울기
+        ma20 = df['close'].rolling(20).mean()
+        ma20_slope = (ma20.iloc[-1] / ma20.iloc[-11] - 1) * 100 if len(ma20) >= 11 else 0
+        
+        # RSI 상태
+        rsi = stock_data.get('rsi', 50)
+        
+        # 거래량 변화
+        volume_change = 1.0
+        if len(df) >= 10:
+            recent_volume = df['volume'].iloc[-5:].mean()
+            past_volume = df['volume'].iloc[-15:-5].mean()
+            volume_change = recent_volume / past_volume if past_volume > 0 else 1.0
+        
+        logger.debug(f"시장상황 분석: 변동성 {recent_volatility:.3f}, MA기울기 {ma20_slope:.1f}%, RSI {rsi:.1f}")
+        
+        # 🌧️ 약세장/불안정 조건
+        if (recent_volatility > 0.035 or  # 일일 변동성 3.5% 이상
+            (ma20_slope < -1.5 and rsi < 45) or  # 하락추세 + 약세
+            volume_change > 2.5):  # 거래량 급증 (불안정)
+            return 'bearish_volatile'
+        
+        # 🌞 강세장 조건
+        elif (ma20_slope > 2 and rsi > 55 and recent_volatility < 0.025):
+            return 'bullish'
+        
+        # 🌤️ 보통/불확실
+        else:
+            return 'uncertain'
+            
+    except Exception as e:
+        logger.error(f"시장상황 감지 오류: {str(e)}")
+        return 'uncertain'
+
+def calculate_market_adaptive_partial_sell(stock_data, position, target_config):
+    """시장 상황 적응형 분할매도 전략 계산"""
+    try:
+        entry_price = position.get('entry_price', 0)
+        current_price = stock_data['current_price']
+        total_amount = position.get('amount', 0)
+        high_price = position.get('high_price', entry_price)
+        stock_name = position.get('stock_name', 'Unknown')
+        
+        if entry_price <= 0 or total_amount <= 0:
+            return None
+        
+        profit_rate = (current_price - entry_price) / entry_price
+        drawdown_from_high = (high_price - current_price) / high_price if high_price > entry_price else 0
+        
+        # 🎯 시장 상황 감지
+        market_condition = detect_market_condition(stock_data)
+        
+        # 🔥 수수료 고려한 최소 수익률 계산
+        trading_cost_rate = calculate_total_trading_cost_rate(entry_price, total_amount)
+        min_profit_threshold = trading_cost_rate * 8  # 수수료의 8배 이상
+        
+        # 🎯 과열도 체크 (시장상황별 기준 조정)
+        rsi = stock_data.get('rsi', 50)
+        bb_upper = stock_data.get('bb_upper', 0)
+        bb_ratio = current_price / bb_upper if bb_upper > 0 else 0.5
+        
+        # 거래량 급증 체크
+        df = stock_data.get('ohlcv_data')
+        volume_surge = 1.0
+        if df is not None and len(df) >= 20:
+            recent_volume = df['volume'].iloc[-1]
+            avg_volume = df['volume'].rolling(20).mean().iloc[-1]
+            volume_surge = recent_volume / avg_volume if avg_volume > 0 else 1.0
+        
+        # 시장상황별 과열 기준 조정
+        if market_condition == 'bearish_volatile':
+            rsi_threshold = 65  # 약세장에서는 더 민감하게
+            bb_threshold = 0.93
+            volume_threshold = 2.0
+        else:
+            rsi_threshold = 75  # 일반적인 기준
+            bb_threshold = 0.98
+            volume_threshold = 3.0
+        
+        is_overheated = (
+            rsi >= rsi_threshold or 
+            bb_ratio >= bb_threshold or 
+            volume_surge >= volume_threshold
+        )
+        
+        logger.info(f"🔍 {stock_name} 분할매도 분석:")
+        logger.info(f"   수익률: {profit_rate*100:.2f}%, 최소기준: {min_profit_threshold*100:.2f}%")
+        logger.info(f"   시장상황: {market_condition}, 과열여부: {is_overheated}")
+        logger.info(f"   고점대비: -{drawdown_from_high*100:.1f}%")
+        
+        # 최소 수익 기준 미달시 분할매도 안함
+        if profit_rate < min_profit_threshold:
+            logger.debug(f"   → 최소 수익 기준 미달로 분할매도 안함")
+            return None
+        
+        # 🎯 시장상황별 분할매도 전략
+        partial_strategies = []
+        
+        if market_condition == 'bearish_volatile':
+            # 🌧️ 약세장/불안정: 방어적 분할매도
+            partial_strategies = calculate_defensive_partial_strategies(
+                profit_rate, total_amount, is_overheated, drawdown_from_high, min_profit_threshold
+            )
+        else:
+            # 🌞 강세장/보통: 기존 공격적 분할매도
+            partial_strategies = calculate_normal_partial_strategies(
+                profit_rate, total_amount, is_overheated, drawdown_from_high, min_profit_threshold
+            )
+        
+        # 🎯 최우선 전략 선택
+        if partial_strategies:
+            best_strategy = max(partial_strategies, key=lambda x: x['priority'])
+            
+            # 실제 매도 수량 계산
+            sell_quantity = max(1, int(total_amount * best_strategy['sell_ratio']))
+            sell_quantity = min(sell_quantity, total_amount)  # 보유량 초과 방지
+            
+            logger.info(f"   ✅ 분할매도 전략: {best_strategy['reason']}")
+            logger.info(f"   📊 매도 수량: {sell_quantity}주 / {total_amount}주 ({best_strategy['sell_ratio']*100:.0f}%)")
+            
+            return {
+                'should_partial_sell': True,
+                'sell_quantity': sell_quantity,
+                'sell_ratio': sell_quantity / total_amount,
+                'strategy_type': best_strategy['type'],
+                'reason': best_strategy['reason'],
+                'remaining_amount': total_amount - sell_quantity,
+                'market_condition': market_condition,
+                'analysis': {
+                    'profit_rate': profit_rate,
+                    'drawdown_from_high': drawdown_from_high,
+                    'is_overheated': is_overheated,
+                    'rsi': rsi,
+                    'volume_surge': volume_surge,
+                    'min_profit_threshold': min_profit_threshold
+                }
+            }
+        
+        logger.debug(f"   → 분할매도 조건 불만족")
+        return None
+        
+    except Exception as e:
+        logger.error(f"시장 적응형 분할매도 계산 중 오류: {str(e)}")
+        return None
+
+def calculate_defensive_partial_strategies(profit_rate, total_amount, is_overheated, drawdown_from_high, min_threshold):
+    """방어적 분할매도 전략 (약세장/불안정 시장용)"""
+    strategies = []
+    
+    # 🔥 점진적 단계별 매도 (수수료 고려)
+    if profit_rate >= 0.15:  # 15% 이상 - 거의 확정
+        strategies.append({
+            'type': 'defensive_high_profit',
+            'sell_ratio': 0.8,  # 80% 매도 (20% 만 남김)
+            'reason': f'약세장 고수익 확정 {profit_rate*100:.1f}%',
+            'priority': 10
+        })
+        
+    elif profit_rate >= 0.12:  # 12% 이상 - 대량 확정
+        strategies.append({
+            'type': 'defensive_target_profit',
+            'sell_ratio': 0.6,  # 60% 매도
+            'reason': f'약세장 목표수익 달성 {profit_rate*100:.1f}%',
+            'priority': 9
+        })
+        
+    elif profit_rate >= 0.08:  # 8% 이상 - 절반 확정
+        strategies.append({
+            'type': 'defensive_good_profit',
+            'sell_ratio': 0.5,  # 50% 매도
+            'reason': f'약세장 양호수익 확정 {profit_rate*100:.1f}%',
+            'priority': 8
+        })
+        
+    elif profit_rate >= 0.05:  # 5% 이상 - 부분 확정
+        strategies.append({
+            'type': 'defensive_moderate_profit',
+            'sell_ratio': 0.4,  # 40% 매도
+            'reason': f'약세장 중간수익 확정 {profit_rate*100:.1f}%',
+            'priority': 7
+        })
+        
+    elif profit_rate >= 0.03:  # 3% 이상 - 소량 확정
+        strategies.append({
+            'type': 'defensive_small_profit',
+            'sell_ratio': 0.3,  # 30% 매도
+            'reason': f'약세장 소량수익 확정 {profit_rate*100:.1f}%',
+            'priority': 6
+        })
+        
+    elif profit_rate >= 0.015:  # 1.5% 이상 - 최소 확정
+        if is_overheated:  # 과열 상태일 때만
+            strategies.append({
+                'type': 'defensive_minimal_profit',
+                'sell_ratio': 0.25,  # 25% 매도
+                'reason': f'약세장 최소수익 보호 {profit_rate*100:.1f}%',
+                'priority': 5
+            })
+    
+    # 🔥 고점 보호 (더 민감하게)
+    if profit_rate > min_threshold and drawdown_from_high >= 0.015:  # 고점대비 1.5% 하락
+        strategies.append({
+            'type': 'defensive_high_protection',
+            'sell_ratio': 0.4,  # 40% 매도
+            'reason': f'약세장 고점보호 (고점대비 -{drawdown_from_high*100:.1f}%)',
+            'priority': 8
+        })
+    
+    return strategies
+
+def calculate_normal_partial_strategies(profit_rate, total_amount, is_overheated, drawdown_from_high, min_threshold):
+    """일반적 분할매도 전략 (강세장/보통 시장용)"""
+    strategies = []
+    
+    # 기존보다 약간 보수적으로 조정
+    if profit_rate >= 0.15:  # 15% 이상
+        strategies.append({
+            'type': 'normal_high_profit',
+            'sell_ratio': 0.7,  # 70% 매도
+            'reason': f'고수익 달성 {profit_rate*100:.1f}%',
+            'priority': 10
+        })
+        
+    elif profit_rate >= 0.12:  # 12% 이상
+        strategies.append({
+            'type': 'normal_target_profit',
+            'sell_ratio': 0.5,  # 50% 매도
+            'reason': f'목표수익 달성 {profit_rate*100:.1f}%',
+            'priority': 9
+        })
+        
+    elif profit_rate >= 0.08:  # 8% 이상
+        strategies.append({
+            'type': 'normal_good_profit',
+            'sell_ratio': 0.4,  # 40% 매도
+            'reason': f'양호한 수익 {profit_rate*100:.1f}%',
+            'priority': 8
+        })
+        
+    elif profit_rate >= 0.05:  # 5% 이상
+        if is_overheated:
+            strategies.append({
+                'type': 'normal_moderate_overheated',
+                'sell_ratio': 0.3,  # 30% 매도
+                'reason': f'과열상태 부분익절 {profit_rate*100:.1f}%',
+                'priority': 7
+            })
+    
+    # 고점 보호 (일반적 기준)
+    if profit_rate > min_threshold and drawdown_from_high >= 0.025:  # 고점대비 2.5% 하락
+        strategies.append({
+            'type': 'normal_high_protection',
+            'sell_ratio': 0.3,  # 30% 매도
+            'reason': f'고점보호 부분매도 (고점대비 -{drawdown_from_high*100:.1f}%)',
+            'priority': 7
+        })
+    
+    return strategies
+
+def should_execute_partial_sell(partial_strategy, position, target_config):
+    """분할매도 실행 여부 최종 검증"""
+    try:
+        if not partial_strategy:
+            return False
+        
+        # 🔥 분할매도 기능 활성화 체크
+        use_partial_sell = target_config.get('use_partial_sell', True)
+        if not use_partial_sell:
+            logger.debug("분할매도 기능 비활성화됨")
+            return False
+        
+        # 🔥 최소 보유량 체크
+        remaining_amount = partial_strategy['remaining_amount']
+        min_holding = target_config.get('min_holding_amount', 1)
+        
+        if remaining_amount < min_holding:
+            # 남은 수량이 너무 적으면 전량매도로 전환
+            partial_strategy['sell_quantity'] = position['amount']
+            partial_strategy['strategy_type'] = 'full_sell_min_holding'
+            partial_strategy['reason'] += ' (최소보유량 미달로 전량매도)'
+            logger.info(f"최소보유량 미달로 전량매도 전환: {remaining_amount}주 < {min_holding}주")
+        
+        # 🔥 매도 쿨다운 체크 (너무 자주 매도 방지)
+        last_partial_sell = position.get('last_partial_sell_time')
+        if last_partial_sell:
+            try:
+                last_sell_time = datetime.datetime.fromisoformat(last_partial_sell)
+                cooldown_hours = target_config.get('partial_sell_cooldown_hours', 1)
+                elapsed_hours = (datetime.datetime.now() - last_sell_time).total_seconds() / 3600
+                
+                if elapsed_hours < cooldown_hours:
+                    logger.debug(f"분할매도 쿨다운 중: {elapsed_hours:.1f}/{cooldown_hours}시간")
+                    return False
+            except:
+                pass
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"분할매도 실행 검증 중 오류: {str(e)}")
+        return False        
+
 def analyze_sell_signal(stock_data, position, target_config):
+    """통합 매도 신호 분석 - 분할매도 우선, 전량매도 후순위"""
+    try:
+        stock_code = stock_data['stock_code']
+        current_price = stock_data['current_price']
+        entry_price = position.get('entry_price', 0)
+        stock_name = position.get('stock_name', stock_code)
+        
+        if entry_price <= 0:
+            return {'is_sell_signal': False, 'sell_type': None, 'reason': 'entry_price 정보 없음'}
+        
+        profit_rate = (current_price - entry_price) / entry_price
+        
+        logger.debug(f"🔍 {stock_name} 매도 신호 분석 시작: 수익률 {profit_rate*100:.2f}%")
+        
+        # 🎯 1단계: 긴급 전량매도 우선 (손절, 급락 등)
+        legacy_result = analyze_sell_signal_legacy(stock_data, position, target_config)
+        
+        if legacy_result['is_sell_signal']:
+            sell_type = legacy_result.get('sell_type', '')
+            
+            # 긴급 매도는 분할매도보다 우선
+            urgent_types = [
+                'emergency_exit', 'improved_stop_loss', 'time_based_stop_loss',
+                'consecutive_decline', 'emergency_stop_loss'
+            ]
+            
+            if any(urgent_type in sell_type for urgent_type in urgent_types):
+                logger.info(f"🚨 {stock_name} 긴급 전량매도: {legacy_result['reason']}")
+                legacy_result['sell_quantity'] = position['amount']
+                legacy_result['remaining_amount'] = 0
+                legacy_result['sell_method'] = 'urgent_full_sell'
+                return legacy_result
+        
+        # 🎯 2단계: 분할매도 검토 (수익 상태에서)
+        if profit_rate > 0:  # 수익 상태에서만 분할매도 고려
+            partial_strategy = calculate_market_adaptive_partial_sell(stock_data, position, target_config)
+            
+            if partial_strategy and should_execute_partial_sell(partial_strategy, position, target_config):
+                logger.info(f"🎯 {stock_name} 분할매도 신호: {partial_strategy['reason']}")
+                
+                return {
+                    'is_sell_signal': True,
+                    'sell_type': 'partial_sell',
+                    'sell_quantity': partial_strategy['sell_quantity'],
+                    'remaining_amount': partial_strategy['remaining_amount'],
+                    'strategy_type': partial_strategy['strategy_type'],
+                    'reason': partial_strategy['reason'],
+                    'market_condition': partial_strategy['market_condition'],
+                    'analysis': partial_strategy['analysis'],
+                    'sell_method': 'partial_sell',
+                    'urgent': False
+                }
+        
+        # 🎯 3단계: 일반 전량매도 (기준 조정)
+        if legacy_result['is_sell_signal']:
+            sell_type = legacy_result.get('sell_type', '')
+            
+            # 익절의 경우 기준 상향 조정 (분할매도 후에만 전량매도)
+            if 'profit' in sell_type:
+                if profit_rate >= 0.18:  # 18% 이상에서만 전량매도
+                    logger.info(f"✅ {stock_name} 고수익 전량매도: {legacy_result['reason']}")
+                    legacy_result['sell_quantity'] = position['amount']
+                    legacy_result['remaining_amount'] = 0
+                    legacy_result['sell_method'] = 'high_profit_full_sell'
+                    return legacy_result
+                else:
+                    logger.debug(f"📊 {stock_name} 익절 기준 미달: {profit_rate*100:.1f}% < 18%")
+            else:
+                # 손절, 트레일링 스탑 등은 그대로 적용
+                logger.info(f"📉 {stock_name} 일반 전량매도: {legacy_result['reason']}")
+                legacy_result['sell_quantity'] = position['amount']
+                legacy_result['remaining_amount'] = 0
+                legacy_result['sell_method'] = 'normal_full_sell'
+                return legacy_result
+        
+        # 매도 신호 없음
+        return {
+            'is_sell_signal': False,
+            'sell_type': None,
+            'reason': f"매도 신호 없음 (수익률: {profit_rate*100:.2f}%)",
+            'sell_quantity': 0,
+            'remaining_amount': position['amount'],
+            'sell_method': 'hold'
+        }
+        
+    except Exception as e:
+        logger.error(f"통합 매도 신호 분석 중 에러: {str(e)}")
+        logger.exception("상세 에러 정보:")
+        return {
+            'is_sell_signal': False, 
+            'sell_type': None, 
+            'reason': f'분석 오류: {str(e)}',
+            'sell_method': 'error'
+        }        
+
+def analyze_sell_signal_legacy(stock_data, position, target_config):
     """개선된 매도 신호 분석 - 자본 보호 우선 손절 + 트레일링 스탑 보완"""
     try:
         stock_code = stock_data['stock_code']
@@ -3380,6 +3810,32 @@ def process_buy_candidates(trading_state):
         logger.exception("상세 에러 정보:")
         return trading_state
 
+def execute_partial_sell_order(stock_code, target_config, sell_quantity, remaining_amount, strategy_type, reason):
+    """분할매도 주문 실행"""
+    try:
+        stock_name = target_config.get('name', stock_code)
+        total_amount = sell_quantity + remaining_amount
+        
+        logger.info(f"🎯 {stock_name}({stock_code}) 분할매도 주문: {sell_quantity}주 (전체 {total_amount}주 중)")
+        logger.info(f"   매도 사유: {reason}")
+        logger.info(f"   잔여 수량: {remaining_amount}주")
+        
+        # 기존 매도 함수 활용
+        executed_price, executed_amount = execute_sell_order(stock_code, target_config, sell_quantity)
+        
+        if executed_price and executed_amount:
+            logger.info(f"✅ 분할매도 체결: {executed_amount}주 @ {executed_price:,.0f}원")
+            logger.info(f"   남은 보유: {remaining_amount}주")
+            
+            return executed_price, executed_amount, remaining_amount
+        else:
+            logger.error(f"❌ 분할매도 주문 실패: {stock_name}({stock_code})")
+            return None, None, total_amount  # 실패시 원래 수량 유지
+            
+    except Exception as e:
+        logger.error(f"분할매도 주문 실행 중 에러: {str(e)}")
+        return None, None, sell_quantity + remaining_amount    
+
 def execute_sell_order(stock_code, target_config, quantity):
     """매도 주문 실행"""
     try:
@@ -3956,8 +4412,140 @@ def update_trailing_stop(position, current_price, target_config):
         logger.error(f"개선된 트레일링 스탑 업데이트 중 에러: {str(e)}")
         return position
 
+def check_delayed_executions(trading_state):
+    """미체결 주문의 지연 체결 확인 - 지정가 주문 지연 체결 대응"""
+    try:
+        if 'pending_orders' not in trading_state or not trading_state['pending_orders']:
+            return trading_state
+        
+        logger.info(f"🔍 지연 체결 확인 시작: {len(trading_state['pending_orders'])}개 미체결 주문")
+        
+        my_stocks = KisKR.GetMyStockList()
+        if not my_stocks:
+            logger.warning("⚠️ 보유종목 조회 실패 - 지연 체결 확인 건너뜀")
+            return trading_state
+        
+        executed_orders = []
+        
+        for stock_code, pending_info in trading_state['pending_orders'].items():
+            try:
+                stock_name = pending_info.get('target_config', {}).get('name', stock_code)
+                expected_quantity = pending_info.get('quantity', 0)
+                order_time_str = pending_info.get('order_time', '')
+                
+                logger.debug(f"🔍 {stock_name}({stock_code}) 지연 체결 확인 중...")
+                
+                # 실제 보유량 확인
+                actual_amount = 0
+                avg_price = 0
+                
+                for stock in my_stocks:
+                    if stock['StockCode'] == stock_code:
+                        actual_amount = int(stock.get('StockAmt', 0))
+                        avg_price = float(stock.get('AvrPrice', 0))
+                        break
+                
+                logger.debug(f"   예상 수량: {expected_quantity}주, 실제 수량: {actual_amount}주")
+                
+                # 🎯 체결 조건: 실제 보유량이 예상 수량 이상이고 평균가가 있음
+                if actual_amount >= expected_quantity and avg_price > 0:
+                    
+                    # 주문 지연 시간 계산
+                    delay_minutes = calculate_order_delay_minutes(order_time_str)
+                    
+                    logger.info(f"✅ 지연 체결 감지: {stock_name}({stock_code})")
+                    logger.info(f"   예상 수량: {expected_quantity}주 → 실제 수량: {actual_amount}주")
+                    logger.info(f"   체결 평균가: {avg_price:,.0f}원")
+                    logger.info(f"   주문 지연: {delay_minutes}분")
+                    
+                    # 🔥 포지션 생성
+                    target_config = pending_info.get('target_config', {})
+                    signal_strength = pending_info.get('signal_strength', 'NORMAL')
+                    daily_score = pending_info.get('daily_score', 0)
+                    
+                    # 트레일링 스탑 계산
+                    trailing_stop_ratio = target_config.get('trailing_stop', trading_config.trailing_stop_ratio)
+                    trailing_stop = avg_price * (1 - trailing_stop_ratio)
+                    
+                    position_info = {
+                        'stock_code': stock_code,
+                        'stock_name': stock_name,
+                        'entry_price': avg_price,
+                        'amount': actual_amount,
+                        'buy_fee': calculate_trading_fee(avg_price, actual_amount, True),
+                        'entry_time': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        'high_price': avg_price,
+                        'trailing_stop': trailing_stop,
+                        'target_config': target_config,
+                        'signal_strength': signal_strength,
+                        'daily_score': daily_score,
+                        'entry_method': 'delayed_execution',  # 🔥 지연 체결 표시
+                        'original_order_time': order_time_str,
+                        'execution_delay_minutes': delay_minutes,
+                        'buy_analysis': {'delayed_execution': True}
+                    }
+                    
+                    # 포지션 저장
+                    trading_state['positions'][stock_code] = position_info
+                    executed_orders.append(stock_code)
+                    
+                    # 🎉 지연 체결 알림
+                    actual_investment = avg_price * actual_amount
+                    msg = f"⏰ 지연 체결 확인: {stock_name}({stock_code})\n"
+                    msg += f"체결가: {avg_price:,.0f}원 × {actual_amount}주\n"
+                    msg += f"투자금액: {actual_investment:,.0f}원\n"
+                    msg += f"주문 지연: {delay_minutes}분\n"
+                    msg += f"신호 강도: {signal_strength} ({daily_score}점)\n"
+                    msg += f"→ 포지션 자동 등록 완료"
+                    
+                    logger.info(msg)
+                    if hasattr(trading_config, 'use_discord_alert') and trading_config.config.get('use_discord_alert', True):
+                        discord_alert.SendMessage(msg)
+                
+                else:
+                    logger.debug(f"   아직 미체결: {stock_name}({stock_code})")
+                    
+            except Exception as e:
+                logger.error(f"❌ 지연 체결 확인 중 오류 ({stock_code}): {str(e)}")
+                continue
+        
+        # 🗑️ 체결된 주문들을 미체결 목록에서 제거
+        for stock_code in executed_orders:
+            if stock_code in trading_state['pending_orders']:
+                pending_info = trading_state['pending_orders'][stock_code]
+                stock_name = pending_info.get('target_config', {}).get('name', stock_code)
+                
+                del trading_state['pending_orders'][stock_code]
+                logger.info(f"🗑️ 미체결 주문 제거: {stock_name}({stock_code}) - 지연 체결 완료")
+        
+        if executed_orders:
+            logger.info(f"✅ 지연 체결 처리 완료: {len(executed_orders)}개 주문")
+        else:
+            logger.debug("🔍 지연 체결된 주문 없음")
+        
+        return trading_state
+        
+    except Exception as e:
+        logger.error(f"❌ 지연 체결 확인 중 전체 오류: {str(e)}")
+        logger.exception("❌ 지연 체결 확인 상세 오류:")
+        return trading_state
+
+def calculate_order_delay_minutes(order_time_str):
+    """주문 시간부터 현재까지의 지연 시간 계산 (분)"""
+    try:
+        if not order_time_str:
+            return 0
+        
+        order_time = datetime.datetime.fromisoformat(order_time_str)
+        delay = datetime.datetime.now() - order_time
+        return int(delay.total_seconds() / 60)
+        
+    except Exception as e:
+        logger.debug(f"주문 지연 시간 계산 오류: {str(e)}")
+        return 0
+
 def process_positions(trading_state):
-    """보유 포지션 관리 - API 보유 vs 봇 미기록 케이스 처리 추가 + 디버깅 로그"""
+    """보유 포지션 관리 - API 보유 vs 봇 미기록 케이스 처리 + 분할매도 통합"""
     try:
         logger.info("🔍 포지션 관리 시작 - GetMyStockList 호출 전")
         
@@ -3990,7 +4578,10 @@ def process_positions(trading_state):
         
         logger.info(f"🔄 봇 기록 포지션 처리 시작: {len(trading_state['positions'])}개")
         
-        # 🔥 1단계: 봇 기록 종목들 처리 (기존 로직)
+        # 🔥 1단계: 지연 체결 확인 먼저
+        trading_state = check_delayed_executions(trading_state)
+        
+        # 🔥 2단계: 봇 기록 종목들 처리 (기존 로직 + 분할매도 통합)
         for stock_code, position in trading_state['positions'].items():
             try:
                 logger.info(f"🔍 포지션 처리 시작: {stock_code}")
@@ -4023,8 +4614,7 @@ def process_positions(trading_state):
                 
                 logger.info(f"💼 봇 기록 수량: {current_amount}주")
                 
-                # 🔥 ========== 여기에 수량 검증 로직 추가 ==========
-                # API 조회 성공시 실제 보유량 검증
+                # 🔥 실제 보유량과 봇 기록 검증
                 actual_amount = 0
                 if my_stocks and actual_holding:
                     actual_amount = int(actual_holding.get('StockAmt', 0))
@@ -4054,17 +4644,10 @@ def process_positions(trading_state):
                         
                         # 봇 기록도 실제 수량으로 조정
                         position['amount'] = actual_amount
+                        current_amount = actual_amount
                         trading_state['positions'][stock_code] = position
                 else:
                     logger.warning(f"⚠️ API 조회 실패 - 봇 기록으로만 관리: {stock_name}({stock_code})")
-                
-                # API 검증 결과 알림 (기존 로직 유지하되 더 간단하게)
-                if my_stocks and actual_holding:
-                    if actual_amount != current_amount and actual_amount > 0:
-                        logger.debug(f"수량 차이 감지 (이미 조정됨): {stock_name}({stock_code}) "
-                                   f"봇:{current_amount}주 → 실제:{actual_amount}주")
-                elif not my_stocks:
-                    logger.debug(f"API 조회 실패 - 봇 기록으로만 관리: {stock_name}({stock_code})")
                 
                 # 종목 데이터 조회
                 logger.info(f"📈 {stock_name} 종목 데이터 조회 시작...")
@@ -4097,7 +4680,7 @@ def process_positions(trading_state):
                 position = update_trailing_stop(position, current_price, target_config)
                 trading_state['positions'][stock_code] = position
                 
-                # 매도 신호 분석
+                # 🔥 통합 매도 신호 분석 (분할매도 + 전량매도)
                 logger.info(f"🔍 {stock_name} 매도 신호 분석 시작...")
                 sell_analysis = analyze_sell_signal(stock_data, position, target_config)
                 
@@ -4107,90 +4690,197 @@ def process_positions(trading_state):
                 logger.info(f"   매도 이유: {sell_analysis.get('reason', 'None')}")
                 
                 if sell_analysis['is_sell_signal']:
+                    sell_type = sell_analysis.get('sell_type', 'unknown')
+                    sell_quantity = sell_analysis.get('sell_quantity', current_amount)
+                    remaining_amount = sell_analysis.get('remaining_amount', 0)
+                    sell_method = sell_analysis.get('sell_method', 'unknown')
+                    
                     logger.info(f"🔴 매도 신호 감지: {stock_name}({stock_code})")
-                    logger.info(f"   유형: {sell_analysis['sell_type']}")
-                    logger.info(f"   이유: {sell_analysis['reason']}")
+                    logger.info(f"   매도 유형: {sell_type}")
+                    logger.info(f"   매도 방식: {sell_method}")
+                    logger.info(f"   매도 사유: {sell_analysis['reason']}")
+                    logger.info(f"   매도 수량: {sell_quantity}주 / {current_amount}주")
                     
-                    # 🔥 검증된 수량으로 매도 주문 실행
-                    logger.info(f"🔥 매도 주문 실행 시작: {stock_name}")
-                    logger.info(f"   매도 수량: {sell_amount}주 (검증완료)")
-                    
-                    executed_price, executed_amount = execute_sell_order(
-                        stock_code, target_config, sell_amount  # 검증된 수량 사용
-                    )
-                    
-                    if executed_price and executed_amount:
-                        logger.info(f"✅ 매도 체결 성공: {stock_name}")
-                        logger.info(f"   체결가: {executed_price:,.0f}원")
-                        logger.info(f"   체결량: {executed_amount}주")
+                    # 🎯 분할매도 vs 전량매도 처리
+                    if sell_method == 'partial_sell' and remaining_amount > 0:
+                        # 🎯 분할매도 실행
+                        logger.info(f"🎯 분할매도 실행: {stock_name}")
                         
-                        # 손익 계산 (기존 로직 유지)
-                        entry_price = position['entry_price']
-                        buy_fee = position.get('buy_fee', 0)
-                        sell_fee = calculate_trading_fee(executed_price, executed_amount, False)
+                        # 실제 보유량과 매도 수량 재검증
+                        actual_sell_quantity = min(sell_quantity, sell_amount)  # 실제 보유량 고려
                         
-                        gross_profit = (executed_price - entry_price) * executed_amount
-                        net_profit = gross_profit - buy_fee - sell_fee
-                        profit_rate = (net_profit / (entry_price * executed_amount)) * 100
+                        executed_price, executed_amount = execute_sell_order(
+                            stock_code, target_config, actual_sell_quantity
+                        )
                         
-                        # 일일 통계 업데이트
-                        trading_state['daily_stats']['total_profit'] += net_profit
-                        trading_state['daily_stats']['total_trades'] += 1
-                        if net_profit > 0:
-                            trading_state['daily_stats']['winning_trades'] += 1
-                        
-                        # 🔥 재매수 방지 기록
-                        if 'recent_sells' not in trading_state:
-                            trading_state['recent_sells'] = {}
-                                                
-                        # 과열 매도시 더 긴 쿨다운
-                        if 'overheated' in sell_analysis['sell_type']:
-                            cooldown_hours = 24  # 과열 매도시 24시간
+                        if executed_price and executed_amount:
+                            # 🔥 포지션 업데이트 (전량매도 아님!)
+                            sell_fee = calculate_trading_fee(executed_price, executed_amount, False)
+                            
+                            # 부분 손익 계산
+                            buy_fee = position.get('buy_fee', 0)
+                            partial_gross_profit = (executed_price - entry_price) * executed_amount
+                            
+                            # 수수료 배분 (매도 수량 비율로)
+                            fee_ratio = executed_amount / current_amount
+                            allocated_buy_fee = buy_fee * fee_ratio
+                            
+                            partial_net_profit = partial_gross_profit - allocated_buy_fee - sell_fee
+                            profit_rate_partial = (partial_net_profit / (entry_price * executed_amount)) * 100
+                            
+                            # 일일 통계 업데이트 (부분 거래)
+                            trading_state['daily_stats']['total_profit'] += partial_net_profit
+                            trading_state['daily_stats']['total_trades'] += 1
+                            if partial_net_profit > 0:
+                                trading_state['daily_stats']['winning_trades'] += 1
+                            
+                            # 🔥 포지션 수량 차감 (핵심!)
+                            new_amount = current_amount - executed_amount
+                            position['amount'] = new_amount
+                            position['buy_fee'] = position.get('buy_fee', 0) - allocated_buy_fee  # 수수료도 차감
+                            position['last_partial_sell_time'] = datetime.datetime.now().isoformat()
+                            position['last_partial_sell_price'] = executed_price
+                            position['last_partial_sell_amount'] = executed_amount
+                            position['partial_sell_count'] = position.get('partial_sell_count', 0) + 1
+                            position['partial_sell_history'] = position.get('partial_sell_history', [])
+                            
+                            # 분할매도 이력 기록
+                            position['partial_sell_history'].append({
+                                'sell_time': datetime.datetime.now().isoformat(),
+                                'sell_price': executed_price,
+                                'sell_amount': executed_amount,
+                                'gross_profit': partial_gross_profit,
+                                'net_profit': partial_net_profit,
+                                'profit_rate': profit_rate_partial,
+                                'strategy_type': sell_analysis.get('strategy_type', 'unknown'),
+                                'market_condition': sell_analysis.get('market_condition', 'unknown'),
+                                'sell_fee': sell_fee,
+                                'allocated_buy_fee': allocated_buy_fee
+                            })
+                            
+                            # 포지션 업데이트 저장
+                            trading_state['positions'][stock_code] = position
+                            
+                            # 🎉 분할매도 완료 알림
+                            strategy_type = sell_analysis.get('strategy_type', 'unknown')
+                            market_condition = sell_analysis.get('market_condition', 'unknown')
+                            
+                            msg = f"🎯 분할매도 완료: {stock_name}({stock_code})\n"
+                            msg += f"매도: {executed_price:,.0f}원 × {executed_amount}주\n"
+                            msg += f"총손익: {partial_gross_profit:,.0f}원\n"
+                            msg += f"순손익: {partial_net_profit:,.0f}원 ({profit_rate_partial:.2f}%)\n"
+                            msg += f"남은보유: {new_amount}주\n"
+                            msg += f"시장상황: {market_condition}\n"
+                            msg += f"매도전략: {strategy_type}\n"
+                            msg += f"매도사유: {sell_analysis['reason']}"
+                            
+                            # 분할매도 이력 추가 정보
+                            total_partial_count = position['partial_sell_count']
+                            if total_partial_count > 1:
+                                msg += f"\n분할매도 횟수: {total_partial_count}회"
+                            
+                            logger.info(msg)
+                            if hasattr(trading_config, 'use_discord_alert') and trading_config.config.get('use_discord_alert', True):
+                                discord_alert.SendMessage(msg)
+                            
+                            logger.info(f"✅ 분할매도 완료: {stock_name} - {executed_amount}주 매도, {new_amount}주 보유")
+                            
                         else:
-                            cooldown_hours = 6   # 일반 매도시 6시간
-
-                        trading_state['recent_sells'][stock_code] = {
-                            'sell_time': datetime.datetime.now().isoformat(),
-                            'sell_reason': sell_analysis['sell_type'],
-                            'cooldown_hours': cooldown_hours
-                        }
-                        
-                        # 매도 완료 알림
-                        msg = f"💰 매도 완료: {stock_name}({stock_code})\n"
-                        msg += f"매도가: {executed_price:,.0f}원\n"
-                        msg += f"수량: {executed_amount}주\n"
-                        msg += f"순손익: {net_profit:,.0f}원 ({profit_rate:.2f}%)\n"
-                        msg += f"매도사유: {sell_analysis['reason']}\n"
-                        msg += f"재매수 방지: {cooldown_hours}시간"
-                        if cooldown_hours == 24:
-                            msg += " (과열매도)"
-
-                        # 🔥 수량 조정이 있었다면 추가 안내
-                        if sell_amount != current_amount:
-                            msg += f"\n⚠️ 수량 조정: 봇기록 {current_amount}주 → 실제매도 {executed_amount}주"
-                        
-                        logger.info(msg)
-                        discord_alert.SendMessage(msg)
-                        
-                        # 적응형 전략 학습 (기존 로직 유지)
-                        if trading_config.use_adaptive_strategy:
-                            try:
-                                stock_env = sell_analysis.get('stock_environment', 'sideways')
-                                adaptive_strategy = AdaptiveMarketStrategy("bb_adaptive_strategy.json")
-                                adaptive_strategy.update_performance(
-                                    stock_code, 
-                                    stock_env, 
-                                    win=(net_profit > 0)
-                                )
-                                win_lose = "승리" if net_profit > 0 else "패배"
-                                logger.info(f"🧠 적응형 전략 학습: {stock_code} ({stock_env}) - {win_lose}")
-                            except Exception as e:
-                                logger.error(f"적응형 전략 학습 오류: {str(e)}")
-                        
-                        # 포지션 제거
-                        positions_to_remove.append(stock_code)
+                            logger.error(f"❌ 분할매도 실패: {stock_name}")
+                    
                     else:
-                        logger.error(f"❌ 매도 주문 실패: {stock_name}({stock_code})")
+                        # 🔥 전량매도 실행 (기존 로직)
+                        logger.info(f"🔥 전량매도 실행: {stock_name}")
+                        logger.info(f"   매도 방식: {sell_method}")
+                        
+                        # 실제 보유량과 매도 수량 재검증
+                        actual_sell_quantity = min(sell_quantity, sell_amount)
+                        
+                        executed_price, executed_amount = execute_sell_order(
+                            stock_code, target_config, actual_sell_quantity
+                        )
+                        
+                        if executed_price and executed_amount:
+                            # 기존 전량매도 처리 로직 그대로 사용
+                            buy_fee = position.get('buy_fee', 0)
+                            sell_fee = calculate_trading_fee(executed_price, executed_amount, False)
+                            gross_profit = (executed_price - entry_price) * executed_amount
+                            net_profit = gross_profit - buy_fee - sell_fee
+                            profit_rate = (net_profit / (entry_price * executed_amount)) * 100
+                            
+                            # 일일 통계 업데이트
+                            trading_state['daily_stats']['total_profit'] += net_profit
+                            trading_state['daily_stats']['total_trades'] += 1
+                            if net_profit > 0:
+                                trading_state['daily_stats']['winning_trades'] += 1
+                            
+                            # 🔥 재매수 방지 기록
+                            if 'recent_sells' not in trading_state:
+                                trading_state['recent_sells'] = {}
+                            
+                            # 매도 유형별 쿨다운 차등 적용
+                            if 'overheated' in sell_analysis.get('sell_type', ''):
+                                cooldown_hours = 24
+                            elif sell_method == 'high_profit_full_sell':
+                                cooldown_hours = 12  # 고수익 전량매도는 짧은 쿨다운
+                            elif sell_method == 'urgent_full_sell':
+                                cooldown_hours = 6   # 긴급매도는 기본 쿨다운
+                            else:
+                                cooldown_hours = 6
+                            
+                            trading_state['recent_sells'][stock_code] = {
+                                'sell_time': datetime.datetime.now().isoformat(),
+                                'sell_reason': sell_analysis.get('sell_type', 'unknown'),
+                                'sell_method': sell_method,
+                                'cooldown_hours': cooldown_hours
+                            }
+                            
+                            # 전량매도 완료 알림
+                            msg = f"💰 전량매도 완료: {stock_name}({stock_code})\n"
+                            msg += f"매도가: {executed_price:,.0f}원 × {executed_amount}주\n"
+                            msg += f"총손익: {gross_profit:,.0f}원\n"
+                            msg += f"순손익: {net_profit:,.0f}원 ({profit_rate:.2f}%)\n"
+                            msg += f"매도방식: {sell_method}\n"
+                            msg += f"매도사유: {sell_analysis['reason']}\n"
+                            msg += f"재매수 방지: {cooldown_hours}시간"
+                            
+                            # 분할매도 이력이 있었다면 추가 정보
+                            partial_count = position.get('partial_sell_count', 0)
+                            if partial_count > 0:
+                                msg += f"\n분할매도 이력: {partial_count}회"
+                                
+                                # 분할매도 총 수익 계산
+                                partial_history = position.get('partial_sell_history', [])
+                                total_partial_profit = sum(h.get('net_profit', 0) for h in partial_history)
+                                total_profit_with_partial = net_profit + total_partial_profit
+                                msg += f"\n총 누적손익: {total_profit_with_partial:,.0f}원"
+                            
+                            logger.info(msg)
+                            if hasattr(trading_config, 'use_discord_alert') and trading_config.config.get('use_discord_alert', True):
+                                discord_alert.SendMessage(msg)
+                            
+                            # 적응형 전략 학습 (기존 로직 유지)
+                            if trading_config.use_adaptive_strategy:
+                                try:
+                                    from technical_analysis import AdaptiveMarketStrategy
+                                    stock_env = sell_analysis.get('stock_environment', 'sideways')
+                                    adaptive_strategy = AdaptiveMarketStrategy("bb_adaptive_strategy.json")
+                                    adaptive_strategy.update_performance(
+                                        stock_code, 
+                                        stock_env, 
+                                        win=(net_profit > 0)
+                                    )
+                                    win_lose = "승리" if net_profit > 0 else "패배"
+                                    logger.info(f"🧠 적응형 전략 학습: {stock_code} ({stock_env}) - {win_lose}")
+                                except Exception as e:
+                                    logger.error(f"적응형 전략 학습 오류: {str(e)}")
+                            
+                            # 포지션 완전 제거
+                            positions_to_remove.append(stock_code)
+                        
+                        else:
+                            logger.error(f"❌ 전량매도 주문 실패: {stock_name}")
+
                 else:
                     logger.info(f"⏳ 매도 신호 없음: {stock_name} - 포지션 유지")
                 
@@ -4201,7 +4891,7 @@ def process_positions(trading_state):
                 logger.exception(f"❌ {stock_code} 상세 에러 정보:")
                 continue
         
-        # 🔥 2단계: API에는 있지만 봇 기록에 없는 종목 체크 (기존 로직 유지)
+        # 🔥 3단계: API에는 있지만 봇 기록에 없는 종목 체크 (지연 체결 고려)
         logger.info("🔍 API 보유 vs 봇 미기록 종목 체크 시작...")
         if my_stocks:  # API 조회 성공시에만
             bot_tracked_stocks = set(trading_state['positions'].keys())
@@ -4218,21 +4908,65 @@ def process_positions(trading_state):
                     stock_name = trading_config.target_stocks[stock_code].get('name', stock_code)
                     current_price = float(stock.get('NowPrice', 0))
                     
-                    warning_msg = f"📊 외부 보유 감지: {stock_name}({stock_code})\n"
-                    warning_msg += f"실제 계좌: {actual_amount}주 (현재가: {current_price:,.0f}원)\n"
-                    warning_msg += f"봇 기록: 없음\n"
-                    warning_msg += f"→ 다른 앱에서 매수한 것으로 추정\n"
-                    warning_msg += f"→ 봇 관리 대상 아님 (독립 운영)"
+                    # 🎯 미체결 주문 확인
+                    is_pending_order = stock_code in trading_state.get('pending_orders', {})
                     
-                    logger.info(warning_msg)
-                    discord_alert.SendMessage(warning_msg)
+                    if is_pending_order:
+                        # 미체결 주문이 있으면 지연 체결 가능성으로 판단
+                        pending_info = trading_state['pending_orders'][stock_code]
+                        order_time_str = pending_info.get('order_time', '')
+                        
+                        try:
+                            order_time = datetime.datetime.fromisoformat(order_time_str)
+                            delay_minutes = (datetime.datetime.now() - order_time).total_seconds() / 60
+                        except:
+                            delay_minutes = 0
+                        
+                        logger.info(f"⏳ 미체결 주문 대기 중: {stock_name}({stock_code})")
+                        logger.info(f"   실제 보유: {actual_amount}주")
+                        logger.info(f"   주문 경과: {delay_minutes:.0f}분")
+                        logger.info(f"   → 다음 지연 체결 확인에서 자동 처리 예정")
+                        
+                        # 30분 이상 지연시에만 알림
+                        if delay_minutes >= 30:
+                            delay_warning = f"⏰ 장시간 미체결: {stock_name}({stock_code})\n"
+                            delay_warning += f"주문 경과: {delay_minutes:.0f}분\n"
+                            delay_warning += f"실제 보유: {actual_amount}주\n"
+                            delay_warning += f"→ 지연 체결 확인 중..."
+                            
+                            logger.warning(delay_warning)
+                            discord_alert.SendMessage(delay_warning)
+                    else:
+                        # 미체결 주문도 없으면 정말 외부 매수
+                        warning_msg = f"🤔 확인 필요: {stock_name}({stock_code})\n"
+                        warning_msg += f"실제 계좌: {actual_amount}주 (현재가: {current_price:,.0f}원)\n"
+                        warning_msg += f"봇 기록: 없음\n"
+                        warning_msg += f"미체결 주문: 없음\n"
+                        warning_msg += f"→ 외부 매수 또는 데이터 불일치\n"
+                        warning_msg += f"→ 수동 확인 후 필요시 포지션 등록"
+                        
+                        logger.warning(warning_msg)
+                        discord_alert.SendMessage(warning_msg)
         
-        # 제거할 포지션 정리
+        # 🗑️ 제거할 포지션 정리
         logger.info(f"🗑️ 포지션 정리 시작: {len(positions_to_remove)}개")
         for stock_code in positions_to_remove:
             if stock_code in trading_state['positions']:
+                removed_position = trading_state['positions'][stock_code]
+                stock_name = removed_position.get('stock_name', stock_code)
+                
+                # 분할매도 이력이 있었다면 최종 정리 로그
+                partial_count = removed_position.get('partial_sell_count', 0)
+                if partial_count > 0:
+                    partial_history = removed_position.get('partial_sell_history', [])
+                    total_partial_profit = sum(h.get('net_profit', 0) for h in partial_history)
+                    
+                    logger.info(f"📊 {stock_name} 최종 거래 요약:")
+                    logger.info(f"   분할매도 횟수: {partial_count}회")
+                    logger.info(f"   분할매도 총손익: {total_partial_profit:,.0f}원")
+                
                 del trading_state['positions'][stock_code]
-                logger.info(f"🗑️ 포지션 제거 완료: {stock_code}")
+                logger.info(f"🗑️ 포지션 제거 완료: {stock_name}({stock_code})")
         
         logger.info(f"🏁 모든 포지션 처리 완료")
         return trading_state
@@ -4644,7 +5378,22 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
                 "intraday_volume_threshold": 1.2,
                 "use_bb_entry_timing": True,
                 "bb_lower_margin": 0.02,
-                "ma_support_margin": 0.01
+                "ma_support_margin": 0.01,
+
+                # 🆕 분할매도 설정 추가
+                "use_partial_sell": True,                    # 분할매도 사용 여부
+                "min_holding_amount": 1,                     # 최소 보유 수량
+                "partial_sell_cooldown_hours": 1,            # 분할매도 쿨다운 (시간)
+                "partial_sell_min_profit": 0.015,            # 분할매도 최소 수익률 (1.5%)
+                
+                # 🆕 시장상황별 설정
+                "defensive_mode_threshold": 0.015,           # 방어모드 최소 수익률
+                "normal_mode_threshold": 0.02,               # 일반모드 최소 수익률
+                
+                # 🆕 전량매도 기준 상향 조정
+                "full_sell_profit_threshold": 0.18,         # 전량매도 최소 수익률 (18%)
+                "emergency_full_sell_loss": -0.08          # 긴급 전량매도 손실 기준 (-8%)
+
             },
             "balanced": {
                 "allocation_ratio": 0.5,
@@ -4664,7 +5413,17 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
                 "intraday_volume_threshold": 1.15,
                 "use_bb_entry_timing": True,
                 "bb_lower_margin": 0.025,
-                "ma_support_margin": 0.015
+                "ma_support_margin": 0.015,
+                # 🆕 동일한 분할매도 설정 추가
+                "use_partial_sell": True,
+                "min_holding_amount": 1,
+                "partial_sell_cooldown_hours": 1,
+                "partial_sell_min_profit": 0.015,
+                "defensive_mode_threshold": 0.015,
+                "normal_mode_threshold": 0.02,
+                "full_sell_profit_threshold": 0.15,         # balanced는 15%
+                "emergency_full_sell_loss": -0.07
+
             },
             "value": {
                 "allocation_ratio": 0.5,
@@ -4685,7 +5444,16 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
                 "intraday_volume_threshold": 1.1,
                 "use_bb_entry_timing": True,
                 "bb_lower_margin": 0.03,
-                "ma_support_margin": 0.02
+                "ma_support_margin": 0.02,
+                # 🆕 동일한 분할매도 설정 추가 (더 보수적)
+                "use_partial_sell": True,
+                "min_holding_amount": 1,
+                "partial_sell_cooldown_hours": 2,            # value는 더 보수적
+                "partial_sell_min_profit": 0.02,             # 2%
+                "defensive_mode_threshold": 0.02,
+                "normal_mode_threshold": 0.025,
+                "full_sell_profit_threshold": 0.12,         # value는 12%
+                "emergency_full_sell_loss": -0.06
             }
         }
 
@@ -5128,10 +5896,16 @@ def main():
                 time.sleep(300)  # 5분 대기
                 continue
 
-            # 🆕 미체결 주문 자동 관리 (5분마다) - 라이브러리 사용
+            # 🆕 미체결 주문 지연 체결 확인 및 자동 관리 (5분마다)
             if (now - last_pending_check).total_seconds() >= 300:
-                logger.info("🔍 미체결 주문 자동 관리 실행")
+                logger.info("🔍 지연 체결 확인 및 미체결 주문 자동 관리 실행")
+                
+                # 🎯 1단계: 지연 체결 확인 먼저 실행
+                trading_state = check_delayed_executions(trading_state)
+                
+                # 🎯 2단계: 여전히 미체결인 주문들 관리
                 trading_state = pending_manager.auto_cancel_pending_orders(trading_state, max_pending_minutes=15)
+                
                 save_trading_state(trading_state)
                 last_pending_check = now
             
