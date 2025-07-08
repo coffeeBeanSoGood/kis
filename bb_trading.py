@@ -71,8 +71,8 @@ class TradingConfig:
             "max_stock_price": 200000,
             
             # 🔥 손익 관리 설정 - 개선된 버전
-            "stop_loss_ratio": -0.045,          # -2.5% → -4.5%로 완화
-            "take_profit_ratio": 0.08,          # 5.5% → 8%로 상향
+            "stop_loss_ratio": -0.04,          # -2.5% → -4.0%로 완화
+            "take_profit_ratio": 0.05,          # 분할매도 도입 후 8%에서 하향
             "trailing_stop_ratio": 0.025,       # 1.8% → 2.5%로 완화
             "max_daily_loss": -0.06,            # -4% → -6%로 완화
             "max_daily_profit": 0.08,           # 6% → 8%로 상향
@@ -3504,6 +3504,22 @@ def process_buy_candidates(trading_state):
                     logger.info(f"   🎯 강제매수 결정: {force_reason}")
                     
                     if should_force_buy:
+
+                        # 🆕 과열 상태 재검증 (5줄 추가)
+                        current_stock_data = get_stock_data(stock_code)
+                        current_buy_analysis = analyze_buy_signal(current_stock_data, target_config)
+                        if not current_buy_analysis['is_buy_signal']:
+                            logger.info(f"❌ 강제매수 차단: 과열 상태 감지")
+                            candidates_expired.append({
+                                'stock_code': stock_code,
+                                'stock_name': stock_name,
+                                'reason': '강제매수시 과열 상태 감지',  # ← 이 부분 추가
+                                'daily_score': daily_score,
+                                'wait_time': wait_hours
+                            })
+                            candidates_to_remove.append(stock_code)
+                            continue
+
                         # 💰 예산 재확인
                         remaining_budget = get_remaining_budget_for_stock(stock_code, trading_state)
                         total_available_budget = get_available_budget(trading_state)
@@ -3867,59 +3883,95 @@ def execute_partial_sell_order(stock_code, target_config, sell_quantity, remaini
         # 기존 매도 함수 활용
         executed_price, executed_amount = execute_sell_order(stock_code, target_config, sell_quantity)
         
-        if executed_price and executed_amount:
+        if executed_price == "DELAYED_EXECUTION":
+            # 🆕 지연 체결 처리
+            logger.warning(f"⏰ 분할매도 지연 체결: {stock_name}")
+            logger.warning(f"   📋 주문 접수됨 - 다음 루프에서 수익 기록 예정")
+            
+            # 지연 매도 정보 임시 저장
+            trading_state = load_trading_state()
+            if 'delayed_sells' not in trading_state:
+                trading_state['delayed_sells'] = {}
+            
+            trading_state['delayed_sells'][stock_code] = {
+                'expected_amount': executed_amount,  # quantity와 동일
+                'strategy_type': strategy_type,
+                'reason': reason,
+                'order_time': datetime.datetime.now().isoformat()
+            }
+            save_trading_state(trading_state)
+            
+            return "DELAYED", executed_amount, remaining_amount
+            
+        elif executed_price and executed_amount:
+            # 즉시 체결 성공 (기존 로직)
             logger.info(f"✅ 분할매도 체결: {executed_amount}주 @ {executed_price:,.0f}원")
-            logger.info(f"   남은 보유: {remaining_amount}주")
-            
             return executed_price, executed_amount, remaining_amount
-        else:
-            logger.error(f"❌ 분할매도 주문 실패: {stock_name}({stock_code})")
-            return None, None, total_amount  # 실패시 원래 수량 유지
             
+        else:
+            # 진짜 실패
+            logger.error(f"❌ 분할매도 주문 실패: {stock_name}")
+            return None, None, total_amount
+           
     except Exception as e:
         logger.error(f"분할매도 주문 실행 중 에러: {str(e)}")
         return None, None, sell_quantity + remaining_amount    
 
 def execute_sell_order(stock_code, target_config, quantity):
-    """매도 주문 실행"""
-    try:
-        stock_name = target_config.get('name', stock_code)
-        logger.info(f"{stock_name}({stock_code}) 매도 주문: {quantity}주")
-        
-        # 시장가 매도 주문
-        order_result = KisKR.MakeSellMarketOrder(stock_code, quantity)
-        
-        if not order_result or isinstance(order_result, str):
-            logger.error(f"매도 주문 실패: {order_result}")
-            return None, None
-        
-        # 체결 확인 (최대 60초 대기)
-        start_time = time.time()
-        initial_amount = quantity
-        
-        while time.time() - start_time < 60:
-            my_stocks = KisKR.GetMyStockList()
-            current_amount = 0
-            
-            for stock in my_stocks:
-                if stock['StockCode'] == stock_code:
-                    current_amount = int(stock.get('StockAmt', 0))
-                    break
-            
-            if current_amount < initial_amount:
-                executed_amount = initial_amount - current_amount
-                current_price = KisKR.GetCurrentPrice(stock_code)
-                logger.info(f"매도 체결 확인: {executed_amount}주 @ {current_price:,.0f}원")
-                return current_price, executed_amount
-            
-            time.sleep(3)
-        
-        logger.warning(f"매도 체결 확인 실패: {stock_code}")
-        return None, None
-        
-    except Exception as e:
-        logger.error(f"매도 주문 실행 중 에러: {str(e)}")
-        return None, None
+   """매도 주문 실행 - 체결 확인 개선"""
+   try:
+       stock_name = target_config.get('name', stock_code)
+       logger.info(f"{stock_name}({stock_code}) 매도 주문: {quantity}주")
+       
+       # 🔥 매도 전 보유량 정확히 기록
+       my_stocks_before = KisKR.GetMyStockList()
+       initial_amount = 0
+       if my_stocks_before:
+           for stock in my_stocks_before:
+               if stock['StockCode'] == stock_code:
+                   initial_amount = int(stock.get('StockAmt', 0))
+                   break
+       
+       # 시장가 매도 주문
+       order_result = KisKR.MakeSellMarketOrder(stock_code, quantity)
+       
+       if not order_result or isinstance(order_result, str):
+           logger.error(f"매도 주문 실패: {order_result}")
+           return None, None
+       
+       # 🔥 체결 확인 (60초 → 180초)
+       start_time = time.time()
+       
+       while time.time() - start_time < 180:  # 3분으로 연장
+           my_stocks = KisKR.GetMyStockList()
+           current_amount = 0
+           
+           for stock in my_stocks:
+               if stock['StockCode'] == stock_code:
+                   current_amount = int(stock.get('StockAmt', 0))
+                   break
+           
+           # 보유량이 감소했으면 체결됨
+           if current_amount < initial_amount:
+               executed_amount = initial_amount - current_amount
+               current_price = KisKR.GetCurrentPrice(stock_code)
+               logger.info(f"✅ 매도 체결 확인: {executed_amount}주 @ {current_price:,.0f}원")
+               return current_price, executed_amount
+           
+           time.sleep(5)  # 3초 → 5초 (API 부하 고려)
+       
+       # 🔥 180초 후에도 체결 확인 안됨 - 지연 가능성 높음
+       elapsed_time = time.time() - start_time
+       logger.warning(f"⏰ 매도 체결 확인 지연: {stock_code} ({elapsed_time:.0f}초)")
+       logger.warning(f"   📋 주문 접수됨 - 실제 체결 가능성 높음")
+       logger.warning(f"   🔄 다음 포지션 관리에서 보유량 기준 재확인 예정")
+
+       # 🆕 지연 매도 플래그 반환 (None 대신)
+       return "DELAYED_EXECUTION", quantity
+       
+   except Exception as e:
+       logger.error(f"매도 주문 실행 중 에러: {str(e)}")
+       return None, None
 
 ################################### 보고서 생성 ##################################
 
@@ -4697,20 +4749,64 @@ def process_positions(trading_state):
                         discord_alert.SendMessage(warning_msg)
                         positions_to_remove.append(stock_code)
                         continue
-                        
+
                     elif actual_amount < current_amount:
-                        # 실제 보유량이 적음 - 실제 보유량만큼만 매도
-                        sell_amount = actual_amount
-                        warning_msg = f"⚠️ 보유량 불일치로 매도량 조정: {stock_name}({stock_code})\n"
+                        # 실제 보유량이 적음 - 부분 매도 감지
+                        sold_amount = current_amount - actual_amount
+                        current_price = stock_data['current_price']
+                        entry_price = position.get('entry_price', 0)
+                        
+                        warning_msg = f"⚠️ 보유량 불일치로 매도량 조정: {stock_name}\n"
                         warning_msg += f"봇 기록: {current_amount}주 → 실제: {actual_amount}주\n"
-                        warning_msg += f"매도 예정: {sell_amount}주"
-                        logger.warning(warning_msg)
+                        warning_msg += f"감지된 매도: {sold_amount}주"
+                        
+                        # 🆕 지연 매도 수익 계산 및 기록
+                        if entry_price > 0 and current_price > 0:
+                            # 수수료 계산 (추정)
+                            buy_fee_ratio = sold_amount / current_amount if current_amount > 0 else 0
+                            allocated_buy_fee = position.get('buy_fee', 0) * buy_fee_ratio
+                            estimated_sell_fee = calculate_trading_fee(current_price, sold_amount, False)
+                            
+                            # 수익 계산
+                            gross_profit = (current_price - entry_price) * sold_amount
+                            net_profit = gross_profit - allocated_buy_fee - estimated_sell_fee
+                            
+                            # 🔥 일일 통계 업데이트 (핵심!)
+                            trading_state['daily_stats']['total_profit'] += net_profit
+                            trading_state['daily_stats']['total_trades'] += 1
+                            if net_profit > 0:
+                                trading_state['daily_stats']['winning_trades'] += 1
+                            
+                            # 로그 및 알림 추가
+                            warning_msg += f"\n📊 추정 수익: {net_profit:,.0f}원 ({((current_price-entry_price)/entry_price)*100:.2f}%)"
+                            warning_msg += f"\n일일 통계에 자동 반영됨"
+                            
+                            logger.info(f"📊 지연 매도 수익 기록: {stock_name}")
+                            logger.info(f"   매도량: {sold_amount}주")
+                            logger.info(f"   매도가: {current_price:,}원 (추정)")
+                            logger.info(f"   총수익: {gross_profit:,}원")
+                            logger.info(f"   순수익: {net_profit:,}원")
+                            logger.info(f"   수익률: {((current_price-entry_price)/entry_price)*100:.2f}%")
+                        
                         discord_alert.SendMessage(warning_msg)
                         
-                        # 봇 기록도 실제 수량으로 조정
+                        # 봇 기록을 실제 수량으로 조정
                         position['amount'] = actual_amount
-                        current_amount = actual_amount
+                        
+                        # 🆕 매도 이력 기록 (선택사항)
+                        if 'delayed_sell_history' not in position:
+                            position['delayed_sell_history'] = []
+                        
+                        position['delayed_sell_history'].append({
+                            'sell_time': datetime.datetime.now().isoformat(),
+                            'sold_amount': sold_amount,
+                            'estimated_price': current_price,
+                            'estimated_profit': net_profit if 'net_profit' in locals() else 0,
+                            'detection_method': 'holdings_mismatch'
+                        })
+                        
                         trading_state['positions'][stock_code] = position
+
                 else:
                     logger.warning(f"⚠️ API 조회 실패 - 봇 기록으로만 관리: {stock_name}({stock_code})")
                 
@@ -5957,6 +6053,24 @@ def main():
 
             # 거래 시간이 아니면 대기
             if not is_trading_time:
+
+                # 장 마감 후 일일 보고서
+                if now.hour >= 15 and now.minute >= 30 and not daily_report_sent:
+                    send_daily_report(trading_state)
+                    
+                    # 🆕 미체결 주문 정리 보고서 (라이브러리 사용)
+                    pending_status = pending_manager.get_pending_orders_status(trading_state)
+                    if pending_status['count'] > 0:
+                        final_pending_msg = f"📋 장 마감 미체결 주문 현황: {pending_status['count']}개\n"
+                        for order in pending_status['orders']:
+                            final_pending_msg += f"• {order['stock_name']}: {order['quantity']}주 @ {order['price']:,}원\n"
+                        final_pending_msg += "→ 내일 장 시작 전 자동 정리됩니다."
+                        
+                        logger.info(final_pending_msg)
+                        discord_alert.SendMessage(final_pending_msg)
+                    
+                    daily_report_sent = True
+               
                 logger.info("장 시간 외입니다.")
                 time.sleep(300)  # 5분 대기
                 continue
@@ -5973,7 +6087,10 @@ def main():
                 
                 save_trading_state(trading_state)
                 last_pending_check = now
-            
+
+            # 🆕 지연 체결 확인 (기존 함수 활용)
+            trading_state = check_delayed_executions(trading_state)
+
             # 포지션 관리 (매도 신호 체크)
             logger.info("=== 타겟 종목 포지션 관리 ===")
             trading_state = process_positions(trading_state)
@@ -6009,23 +6126,6 @@ def main():
                     discord_alert.SendMessage(pending_msg)
                 
                 last_status_report = now
-            
-            # 장 마감 후 일일 보고서
-            if now.hour >= 15 and now.minute >= 30 and not daily_report_sent:
-                send_daily_report(trading_state)
-                
-                # 🆕 미체결 주문 정리 보고서 (라이브러리 사용)
-                pending_status = pending_manager.get_pending_orders_status(trading_state)
-                if pending_status['count'] > 0:
-                    final_pending_msg = f"📋 장 마감 미체결 주문 현황: {pending_status['count']}개\n"
-                    for order in pending_status['orders']:
-                        final_pending_msg += f"• {order['stock_name']}: {order['quantity']}주 @ {order['price']:,}원\n"
-                    final_pending_msg += "→ 내일 장 시작 전 자동 정리됩니다."
-                    
-                    logger.info(final_pending_msg)
-                    discord_alert.SendMessage(final_pending_msg)
-                
-                daily_report_sent = True
 
             # 30초 대기
             # time.sleep(30)
