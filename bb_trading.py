@@ -3360,7 +3360,7 @@ def execute_buy_order(stock_code, target_config, quantity, price):
         
         # 🔥 8. 체결 확인 (수정된 로직 - 시간 연장 + 보유량 증가 기반)
         start_time = time.time()
-        while time.time() - start_time < 300:  # 🔥 300초 (5분) 대기
+        while time.time() - start_time < 600:  # 300 → 600초 (10분)
             try:
                 my_stocks = KisKR.GetMyStockList()
                 if my_stocks:
@@ -3398,11 +3398,12 @@ def execute_buy_order(stock_code, target_config, quantity, price):
                                 return avg_price, executed_amount
                             break
                 
-                # 🔥 진행 상황 로그 (1분마다)
+                # 🆕 진행 상황 로그 추가 (2분마다)
                 elapsed_time = time.time() - start_time
-                if int(elapsed_time) % 60 == 0 and elapsed_time > 0:
-                    logger.info(f"⏱️ 체결 대기 중: {elapsed_time:.0f}초/300초")
-                    
+                if int(elapsed_time) % 120 == 0 and elapsed_time > 0:
+                    remaining_minutes = (600 - elapsed_time) / 60
+                    logger.info(f"⏱️ 체결 대기 중: {elapsed_time/60:.0f}분/10분 "
+                              f"(남은시간: {remaining_minutes:.0f}분)")
             except Exception as e:
                 logger.warning(f"⚠️ 체결 확인 중 오류: {str(e)}")
             
@@ -3455,7 +3456,7 @@ def process_buy_candidates(trading_state):
                 wait_start = datetime.datetime.fromisoformat(candidate_info['wait_start_time'])
                 wait_hours = (datetime.datetime.now() - wait_start).total_seconds() / 3600
                 wait_minutes = wait_hours * 60
-                max_wait_hours = candidate_info.get('max_wait_hours', 2.0)
+                max_wait_hours = candidate_info.get('max_wait_hours', 3.0)  # 2.0 → 3.0시간
                 
                 logger.info(f"\n🔍 대기 종목 검토: {stock_name}({stock_code})")
                 logger.info(f"   대기시간: {wait_minutes:.0f}분 / {max_wait_hours*60:.0f}분")
@@ -6076,14 +6077,14 @@ def main():
                 continue
 
             # 🆕 미체결 주문 지연 체결 확인 및 자동 관리 (5분마다)
-            if (now - last_pending_check).total_seconds() >= 300:
+            if (now - last_pending_check).total_seconds() >= 180:
                 logger.info("🔍 지연 체결 확인 및 미체결 주문 자동 관리 실행")
                 
                 # 🎯 1단계: 지연 체결 확인 먼저 실행
                 trading_state = check_delayed_executions(trading_state)
                 
                 # 🎯 2단계: 여전히 미체결인 주문들 관리
-                trading_state = pending_manager.auto_cancel_pending_orders(trading_state, max_pending_minutes=15)
+                trading_state = pending_manager.auto_cancel_pending_orders(trading_state, max_pending_minutes=60)
                 
                 save_trading_state(trading_state)
                 last_pending_check = now
