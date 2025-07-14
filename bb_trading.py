@@ -2847,6 +2847,537 @@ def analyze_sell_signal_legacy(stock_data, position, target_config):
         logger.error(f"개선된 매도 신호 분석 중 에러: {str(e)}")
         return {'is_sell_signal': False, 'sell_type': None, 'reason': f'분석 오류: {str(e)}'}
 
+#//////////////////////////// 상승 강도 기반 적응형 분할매도//////////////////////////////////////////////
+
+def detect_surge_strength(stock_data, position):
+    """
+    상승 강도 분석하여 매도 전략 결정
+    기존 함수들을 재활용하여 복잡도 최소화
+    """
+    try:
+        df = stock_data.get('ohlcv_data')
+        current_price = stock_data['current_price']
+        
+        if df is None or len(df) < 10:
+            return {
+                'surge_score': 0,
+                'surge_signals': ['데이터 부족'],
+                'surge_strength': 'WEAK'
+            }
+        
+        surge_signals = []
+        surge_score = 0
+        
+        # 🔥 1. 거래량 급증 분석 (기존 로직 재활용)
+        try:
+            recent_volume = df['volume'].iloc[-1]
+            avg_volume_20d = df['volume'].rolling(20).mean().iloc[-1]
+            volume_ratio = recent_volume / avg_volume_20d if avg_volume_20d > 0 else 1.0
+            
+            if volume_ratio >= 4.0:
+                surge_score += 40
+                surge_signals.append(f"거래량 폭증 {volume_ratio:.1f}배")
+            elif volume_ratio >= 2.5:
+                surge_score += 30
+                surge_signals.append(f"거래량 급증 {volume_ratio:.1f}배")
+            elif volume_ratio >= 1.5:
+                surge_score += 15
+                surge_signals.append(f"거래량 증가 {volume_ratio:.1f}배")
+                
+        except Exception as e:
+            logger.debug(f"거래량 분석 오류: {str(e)}")
+        
+        # 🔥 2. 연속 상승 패턴 분석 (기존 로직 개선)
+        try:
+            recent_changes = df['close'].pct_change().iloc[-5:]  # 최근 5일
+            consecutive_up = 0
+            total_gain = 0
+            
+            for change in recent_changes:
+                if change > 0.01:  # 1% 이상 상승
+                    consecutive_up += 1
+                    total_gain += change
+                else:
+                    break
+            
+            avg_daily_gain = total_gain / max(consecutive_up, 1)
+            
+            if consecutive_up >= 3 and avg_daily_gain >= 0.04:
+                surge_score += 35
+                surge_signals.append(f"강한 연속상승 {consecutive_up}일({avg_daily_gain*100:.1f}%)")
+            elif consecutive_up >= 3 and avg_daily_gain >= 0.02:
+                surge_score += 25
+                surge_signals.append(f"연속상승 {consecutive_up}일({avg_daily_gain*100:.1f}%)")
+            elif consecutive_up >= 2:
+                surge_score += 10
+                surge_signals.append(f"단기상승 {consecutive_up}일")
+                
+        except Exception as e:
+            logger.debug(f"연속상승 분석 오류: {str(e)}")
+        
+        # 🔥 3. 기술적 돌파 분석 (기존 볼린저밴드/저항선 로직 활용)
+        try:
+            bb_upper = stock_data.get('bb_upper', 0)
+            resistance = stock_data.get('resistance', 0)
+            
+            # 볼린저밴드 상단 돌파
+            if bb_upper > 0 and current_price >= bb_upper * 1.02:
+                surge_score += 25
+                surge_signals.append("볼린저밴드 돌파")
+            elif bb_upper > 0 and current_price >= bb_upper * 0.98:
+                surge_score += 15
+                surge_signals.append("볼린저밴드 근접")
+            
+            # 저항선 돌파
+            if resistance > 0 and current_price >= resistance * 1.01:
+                surge_score += 20
+                surge_signals.append("저항선 돌파")
+                
+        except Exception as e:
+            logger.debug(f"기술적 돌파 분석 오류: {str(e)}")
+        
+        # 🔥 4. 모멘텀 분석 (기존 RSI 로직 활용)
+        try:
+            rsi = stock_data.get('rsi', 50)
+            
+            if rsi >= 85:
+                surge_score += 25
+                surge_signals.append(f"강한 모멘텀(RSI {rsi:.1f})")
+            elif rsi >= 75:
+                surge_score += 15
+                surge_signals.append(f"상승 모멘텀(RSI {rsi:.1f})")
+            elif rsi >= 70:
+                surge_score += 5
+                surge_signals.append(f"약한 모멘텀(RSI {rsi:.1f})")
+                
+        except Exception as e:
+            logger.debug(f"모멘텀 분석 오류: {str(e)}")
+        
+        # 🔥 5. 단기 급등률 분석
+        try:
+            if len(df) >= 3:
+                price_3days_ago = df['close'].iloc[-4]  # 3일 전
+                recent_gain = (current_price - price_3days_ago) / price_3days_ago
+                
+                if recent_gain >= 0.20:  # 3일간 20% 이상
+                    surge_score += 40
+                    surge_signals.append(f"3일간 급등 {recent_gain*100:.1f}%")
+                elif recent_gain >= 0.15:  # 3일간 15% 이상
+                    surge_score += 30
+                    surge_signals.append(f"3일간 강상승 {recent_gain*100:.1f}%")
+                elif recent_gain >= 0.10:  # 3일간 10% 이상
+                    surge_score += 20
+                    surge_signals.append(f"3일간 상승 {recent_gain*100:.1f}%")
+                    
+        except Exception as e:
+            logger.debug(f"단기 급등률 분석 오류: {str(e)}")
+        
+        # 🔥 6. 상승 강도 분류
+        surge_strength = classify_surge_strength(surge_score)
+        
+        logger.debug(f"상승 강도 분석 완료: 점수 {surge_score}, 강도 {surge_strength}")
+        
+        return {
+            'surge_score': surge_score,
+            'surge_signals': surge_signals,
+            'surge_strength': surge_strength
+        }
+        
+    except Exception as e:
+        logger.error(f"상승 강도 분석 중 오류: {str(e)}")
+        return {
+            'surge_score': 0,
+            'surge_signals': [f"분석 오류: {str(e)}"],
+            'surge_strength': 'WEAK'
+        }
+
+def classify_surge_strength(surge_score):
+    """상승 강도 분류"""
+    if surge_score >= 100:
+        return 'EXPLOSIVE'      # 폭발적 상승 (100점 이상)
+    elif surge_score >= 70:
+        return 'STRONG'         # 강한 상승 (70-99점)
+    elif surge_score >= 40:
+        return 'MODERATE'       # 중간 상승 (40-69점)
+    else:
+        return 'WEAK'           # 약한 상승 (0-39점)
+
+def calculate_surge_adaptive_partial_sell(stock_data, position, target_config):
+    """
+    상승 강도 기반 적응형 분할매도 전략
+    기존 calculate_market_adaptive_partial_sell 함수를 개선
+    """
+    try:
+        entry_price = position.get('entry_price', 0)
+        current_price = stock_data['current_price']
+        total_amount = position.get('amount', 0)
+        high_price = position.get('high_price', entry_price)
+        stock_name = position.get('stock_name', 'Unknown')
+        
+        if entry_price <= 0 or total_amount <= 0:
+            return None
+        
+        profit_rate = (current_price - entry_price) / entry_price
+        drawdown_from_high = (high_price - current_price) / high_price if high_price > entry_price else 0
+        
+        # 🔥 상승 강도 분석
+        surge_analysis = detect_surge_strength(stock_data, position)
+        surge_strength = surge_analysis['surge_strength']
+        surge_score = surge_analysis['surge_score']
+        surge_signals = surge_analysis['surge_signals']
+        
+        logger.info(f"🔍 {stock_name} 상승 강도 분석:")
+        logger.info(f"   강도: {surge_strength} (점수: {surge_score})")
+        logger.info(f"   신호: {', '.join(surge_signals[:3])}")
+        
+        # 🔥 기존 수수료 및 최소 수익률 로직 재활용
+        trading_cost_rate = calculate_total_trading_cost_rate(entry_price, total_amount)
+        min_profit_threshold = trading_cost_rate * 8
+        
+        if profit_rate < min_profit_threshold:
+            logger.debug(f"   → 최소 수익 기준 미달로 분할매도 안함")
+            return None
+        
+        # 🔥 기존 과열도 체크 로직 재활용
+        rsi = stock_data.get('rsi', 50)
+        bb_upper = stock_data.get('bb_upper', 0)
+        bb_ratio = current_price / bb_upper if bb_upper > 0 else 0.5
+        
+        df = stock_data.get('ohlcv_data')
+        volume_surge = 1.0
+        if df is not None and len(df) >= 20:
+            recent_volume = df['volume'].iloc[-1]
+            avg_volume = df['volume'].rolling(20).mean().iloc[-1]
+            volume_surge = recent_volume / avg_volume if avg_volume > 0 else 1.0
+        
+        is_overheated = (rsi >= 80 or bb_ratio >= 1.0 or volume_surge >= 5.0)
+        
+        # 🔥 상승 강도별 분할매도 전략 선택
+        if surge_strength == 'EXPLOSIVE':
+            partial_strategies = calculate_explosive_surge_strategies(
+                profit_rate, total_amount, is_overheated, min_profit_threshold, surge_score
+            )
+        elif surge_strength == 'STRONG':
+            partial_strategies = calculate_strong_surge_strategies(
+                profit_rate, total_amount, is_overheated, min_profit_threshold, surge_score
+            )
+        elif surge_strength == 'MODERATE':
+            partial_strategies = calculate_moderate_surge_strategies(
+                profit_rate, total_amount, is_overheated, min_profit_threshold, surge_score
+            )
+        else:  # WEAK
+            partial_strategies = calculate_weak_surge_strategies(
+                profit_rate, total_amount, is_overheated, min_profit_threshold, surge_score
+            )
+        
+        # 🎯 최우선 전략 선택 (기존 로직 재활용)
+        if partial_strategies:
+            best_strategy = max(partial_strategies, key=lambda x: x['priority'])
+            
+            sell_quantity = max(1, int(total_amount * best_strategy['sell_ratio']))
+            sell_quantity = min(sell_quantity, total_amount)
+            
+            logger.info(f"   ✅ 상승강도별 분할매도: {best_strategy['reason']}")
+            logger.info(f"   📊 매도 수량: {sell_quantity}주 / {total_amount}주 ({best_strategy['sell_ratio']*100:.0f}%)")
+            
+            return {
+                'should_partial_sell': True,
+                'sell_quantity': sell_quantity,
+                'sell_ratio': sell_quantity / total_amount,
+                'strategy_type': best_strategy['type'],
+                'reason': best_strategy['reason'],
+                'remaining_amount': total_amount - sell_quantity,
+                'surge_analysis': surge_analysis,  # 🔥 상승 분석 정보 추가
+                'analysis': {
+                    'profit_rate': profit_rate,
+                    'drawdown_from_high': drawdown_from_high,
+                    'is_overheated': is_overheated,
+                    'surge_strength': surge_strength,
+                    'surge_score': surge_score,
+                    'min_profit_threshold': min_profit_threshold
+                }
+            }
+        
+        logger.debug(f"   → 분할매도 조건 불만족")
+        return None
+        
+    except Exception as e:
+        logger.error(f"상승강도 적응형 분할매도 계산 중 오류: {str(e)}")
+        return None
+
+def calculate_explosive_surge_strategies(profit_rate, total_amount, is_overheated, min_threshold, surge_score):
+    """폭발적 상승 시: 매도 지연으로 큰 수익 추구"""
+    strategies = []
+    
+    # 매우 높은 수익률까지 기다림 (기존보다 2-3배 높은 기준)
+    if profit_rate >= 0.25:  # 25% 이상에서 60% 매도
+        strategies.append({
+            'type': 'explosive_major_sell',
+            'sell_ratio': 0.6,
+            'reason': f'폭발적 상승 주요 확정 {profit_rate*100:.1f}% (점수:{surge_score})',
+            'priority': 10
+        })
+    elif profit_rate >= 0.18:  # 18% 이상에서 40% 매도
+        strategies.append({
+            'type': 'explosive_moderate_sell',
+            'sell_ratio': 0.4,
+            'reason': f'폭발적 상승 중간 확정 {profit_rate*100:.1f}% (점수:{surge_score})',
+            'priority': 8
+        })
+    elif profit_rate >= 0.12:  # 12% 이상에서 25% 매도
+        strategies.append({
+            'type': 'explosive_minimal_sell',
+            'sell_ratio': 0.25,
+            'reason': f'폭발적 상승 최소 확정 {profit_rate*100:.1f}% (점수:{surge_score})',
+            'priority': 6
+        })
+    
+    # 과열시에도 덜 적극적으로 매도
+    if is_overheated and profit_rate >= 0.08:
+        strategies.append({
+            'type': 'explosive_overheated',
+            'sell_ratio': 0.3,
+            'reason': f'폭발적 상승 중 과열 보호 {profit_rate*100:.1f}%',
+            'priority': 7
+        })
+    
+    return strategies
+
+def calculate_strong_surge_strategies(profit_rate, total_amount, is_overheated, min_threshold, surge_score):
+    """강한 상승 시: 보수적 분할매도"""
+    strategies = []
+    
+    if profit_rate >= 0.15:  # 15% 이상에서 70% 매도
+        strategies.append({
+            'type': 'strong_major_sell',
+            'sell_ratio': 0.7,
+            'reason': f'강한 상승 주요 확정 {profit_rate*100:.1f}% (점수:{surge_score})',
+            'priority': 10
+        })
+    elif profit_rate >= 0.10:  # 10% 이상에서 50% 매도
+        strategies.append({
+            'type': 'strong_moderate_sell',
+            'sell_ratio': 0.5,
+            'reason': f'강한 상승 중간 확정 {profit_rate*100:.1f}% (점수:{surge_score})',
+            'priority': 9
+        })
+    elif profit_rate >= 0.06:  # 6% 이상에서 30% 매도
+        strategies.append({
+            'type': 'strong_partial_sell',
+            'sell_ratio': 0.3,
+            'reason': f'강한 상승 부분 확정 {profit_rate*100:.1f}% (점수:{surge_score})',
+            'priority': 7
+        })
+    elif profit_rate >= 0.04:  # 4% 이상에서 20% 매도
+        strategies.append({
+            'type': 'strong_minimal_sell',
+            'sell_ratio': 0.2,
+            'reason': f'강한 상승 최소 확정 {profit_rate*100:.1f}% (점수:{surge_score})',
+            'priority': 5
+        })
+    
+    # 과열시 추가 매도
+    if is_overheated and profit_rate >= 0.03:
+        strategies.append({
+            'type': 'strong_overheated',
+            'sell_ratio': 0.4,
+            'reason': f'강한 상승 중 과열 보호 {profit_rate*100:.1f}%',
+            'priority': 8
+        })
+    
+    return strategies
+
+def calculate_moderate_surge_strategies(profit_rate, total_amount, is_overheated, min_threshold, surge_score):
+    """중간 상승 시: 기본 분할매도 (기존보다 약간 적극적)"""
+    strategies = []
+    
+    if profit_rate >= 0.12:  # 12% 이상에서 80% 매도
+        strategies.append({
+            'type': 'moderate_major_sell',
+            'sell_ratio': 0.8,
+            'reason': f'중간 상승 주요 확정 {profit_rate*100:.1f}% (점수:{surge_score})',
+            'priority': 10
+        })
+    elif profit_rate >= 0.08:  # 8% 이상에서 60% 매도
+        strategies.append({
+            'type': 'moderate_high_sell',
+            'sell_ratio': 0.6,
+            'reason': f'중간 상승 고확정 {profit_rate*100:.1f}% (점수:{surge_score})',
+            'priority': 9
+        })
+    elif profit_rate >= 0.05:  # 5% 이상에서 40% 매도
+        strategies.append({
+            'type': 'moderate_partial_sell',
+            'sell_ratio': 0.4,
+            'reason': f'중간 상승 부분 확정 {profit_rate*100:.1f}% (점수:{surge_score})',
+            'priority': 8
+        })
+    elif profit_rate >= 0.03:  # 3% 이상에서 25% 매도
+        strategies.append({
+            'type': 'moderate_minimal_sell',
+            'sell_ratio': 0.25,
+            'reason': f'중간 상승 최소 확정 {profit_rate*100:.1f}% (점수:{surge_score})',
+            'priority': 6
+        })
+    
+    # 과열시 적극적 매도
+    if is_overheated and profit_rate >= 0.02:
+        strategies.append({
+            'type': 'moderate_overheated',
+            'sell_ratio': 0.5,
+            'reason': f'중간 상승 중 과열 보호 {profit_rate*100:.1f}%',
+            'priority': 9
+        })
+    
+    return strategies
+
+def calculate_weak_surge_strategies(profit_rate, total_amount, is_overheated, min_threshold, surge_score):
+    """약한 상승 시: 적극적 분할매도 (한화시스템 케이스 방지)"""
+    strategies = []
+    
+    # 🔥 핵심: 낮은 수익률부터 적극적 매도 (한화시스템 케이스 방지)
+    if profit_rate >= 0.08:  # 8% 이상에서 85% 매도
+        strategies.append({
+            'type': 'weak_aggressive_major',
+            'sell_ratio': 0.85,
+            'reason': f'약한 상승 적극 확정 {profit_rate*100:.1f}% (점수:{surge_score})',
+            'priority': 10
+        })
+    elif profit_rate >= 0.05:  # 5% 이상에서 70% 매도
+        strategies.append({
+            'type': 'weak_aggressive_sell',
+            'sell_ratio': 0.7,
+            'reason': f'약한 상승 대량 확정 {profit_rate*100:.1f}% (점수:{surge_score})',
+            'priority': 9
+        })
+    elif profit_rate >= 0.03:  # 3% 이상에서 50% 매도
+        strategies.append({
+            'type': 'weak_moderate_sell',
+            'sell_ratio': 0.5,
+            'reason': f'약한 상승 중간 확정 {profit_rate*100:.1f}% (점수:{surge_score})',
+            'priority': 8
+        })
+    elif profit_rate >= 0.02:  # 2% 이상에서 35% 매도
+        strategies.append({
+            'type': 'weak_early_sell',
+            'sell_ratio': 0.35,
+            'reason': f'약한 상승 조기 확정 {profit_rate*100:.1f}% (점수:{surge_score})',
+            'priority': 7
+        })
+    
+    # 과열시 즉시 대량 매도
+    if is_overheated and profit_rate >= 0.015:
+        strategies.append({
+            'type': 'weak_overheated_emergency',
+            'sell_ratio': 0.8,
+            'reason': f'약한 상승 과열 긴급매도 {profit_rate*100:.1f}%',
+            'priority': 11  # 최우선
+        })
+    
+    return strategies
+
+def analyze_sell_signal_with_surge_adaptive(stock_data, position, target_config):
+    """
+    기존 analyze_sell_signal 함수를 개선
+    상승 강도 기반 적응형 분할매도 통합
+    """
+    try:
+        stock_code = stock_data['stock_code']
+        current_price = stock_data['current_price']
+        entry_price = position.get('entry_price', 0)
+        stock_name = position.get('stock_name', stock_code)
+        
+        if entry_price <= 0:
+            return {'is_sell_signal': False, 'sell_type': None, 'reason': 'entry_price 정보 없음'}
+        
+        profit_rate = (current_price - entry_price) / entry_price
+        
+        logger.debug(f"🔍 {stock_name} 통합 매도 신호 분석 시작: 수익률 {profit_rate*100:.2f}%")
+        
+        # 🎯 1단계: 긴급 전량매도 우선 (기존 로직 재활용)
+        legacy_result = analyze_sell_signal_legacy(stock_data, position, target_config)
+        
+        if legacy_result['is_sell_signal']:
+            sell_type = legacy_result.get('sell_type', '')
+            
+            # 긴급 매도는 분할매도보다 우선
+            urgent_types = [
+                'emergency_exit', 'improved_stop_loss', 'time_based_stop_loss',
+                'consecutive_decline', 'emergency_stop_loss'
+            ]
+            
+            if any(urgent_type in sell_type for urgent_type in urgent_types):
+                logger.info(f"🚨 {stock_name} 긴급 전량매도: {legacy_result['reason']}")
+                legacy_result['sell_quantity'] = position['amount']
+                legacy_result['remaining_amount'] = 0
+                legacy_result['sell_method'] = 'urgent_full_sell'
+                return legacy_result
+        
+        # 🎯 2단계: 상승 강도 기반 분할매도 검토 (수익 상태에서)
+        if profit_rate > 0:  # 수익 상태에서만 분할매도 고려
+            # 🔥 기존 함수 대신 개선된 함수 호출
+            partial_strategy = calculate_surge_adaptive_partial_sell(stock_data, position, target_config)
+            
+            if partial_strategy and should_execute_partial_sell(partial_strategy, position, target_config):
+                logger.info(f"🎯 {stock_name} 상승강도별 분할매도: {partial_strategy['reason']}")
+                
+                return {
+                    'is_sell_signal': True,
+                    'sell_type': 'surge_adaptive_partial_sell',  # 🔥 새로운 타입
+                    'sell_quantity': partial_strategy['sell_quantity'],
+                    'remaining_amount': partial_strategy['remaining_amount'],
+                    'strategy_type': partial_strategy['strategy_type'],
+                    'reason': partial_strategy['reason'],
+                    'surge_analysis': partial_strategy['surge_analysis'],  # 🔥 상승 분석 정보
+                    'analysis': partial_strategy['analysis'],
+                    'sell_method': 'surge_adaptive_partial_sell',
+                    'urgent': False
+                }
+        
+        # 🎯 3단계: 일반 전량매도 (기존 로직 재활용)
+        if legacy_result['is_sell_signal']:
+            sell_type = legacy_result.get('sell_type', '')
+            
+            # 익절의 경우 기준 상향 조정 (분할매도 후에만 전량매도)
+            if 'profit' in sell_type:
+                if profit_rate >= 0.20:  # 18% → 20%로 상향 (더 엄격)
+                    logger.info(f"✅ {stock_name} 고수익 전량매도: {legacy_result['reason']}")
+                    legacy_result['sell_quantity'] = position['amount']
+                    legacy_result['remaining_amount'] = 0
+                    legacy_result['sell_method'] = 'high_profit_full_sell'
+                    return legacy_result
+                else:
+                    logger.debug(f"📊 {stock_name} 익절 기준 미달: {profit_rate*100:.1f}% < 20%")
+            else:
+                # 손절, 트레일링 스탑 등은 그대로 적용
+                logger.info(f"📉 {stock_name} 일반 전량매도: {legacy_result['reason']}")
+                legacy_result['sell_quantity'] = position['amount']
+                legacy_result['remaining_amount'] = 0
+                legacy_result['sell_method'] = 'normal_full_sell'
+                return legacy_result
+        
+        # 매도 신호 없음
+        return {
+            'is_sell_signal': False,
+            'sell_type': None,
+            'reason': f"매도 신호 없음 (수익률: {profit_rate*100:.2f}%)",
+            'sell_quantity': 0,
+            'remaining_amount': position['amount'],
+            'sell_method': 'hold'
+        }
+        
+    except Exception as e:
+        logger.error(f"상승강도 통합 매도 신호 분석 중 에러: {str(e)}")
+        logger.exception("상세 에러 정보:")
+        return {
+            'is_sell_signal': False, 
+            'sell_type': None, 
+            'reason': f'분석 오류: {str(e)}',
+            'sell_method': 'error'
+        }
+
+#////////////////////////////////////////////////////////////////////////////////////////
+
 def analyze_intraday_entry_timing(stock_code, target_config):
     """분봉 기준 최적 진입 타이밍 분석 - API 호출 방식 수정"""
     try:
@@ -4844,7 +5375,8 @@ def process_positions(trading_state):
                 
                 # 🔥 통합 매도 신호 분석 (분할매도 + 전량매도)
                 logger.info(f"🔍 {stock_name} 매도 신호 분석 시작...")
-                sell_analysis = analyze_sell_signal(stock_data, position, target_config)
+                # sell_analysis = analyze_sell_signal(stock_data, position, target_config)
+                sell_analysis = analyze_sell_signal_with_surge_adaptive(stock_data, position, target_config)
                 
                 logger.info(f"📊 매도 신호 분석 결과:")
                 logger.info(f"   매도 신호: {sell_analysis['is_sell_signal']}")
