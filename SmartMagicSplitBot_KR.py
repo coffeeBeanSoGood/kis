@@ -1899,101 +1899,216 @@ class SmartMagicSplit:
                 logger.error(f"{stock_code} 처리 중 오류 발생: {str(e)}")
 
     def send_daily_summary(self):
-        """장 종료 후 각 종목 및 전체 누적수익률 요약 알림 전송 - 개선된 버전"""
+        """장 종료 후 각 종목 및 전체 누적수익률 요약 알림 전송 - 봇 성과 기준 개선된 버전"""
         try:
-            # 동적 예산 정보 추가
-            total_realized_pnl = 0
+            # 🔥 봇 전용 성과 계산
+            bot_budget = self.total_money  # 동적 예산
+            total_realized_pnl = sum(data.get('RealizedPNL', 0) for data in self.split_data_list)
+            
+            # 현재 보유 종목의 미실현 손익 계산
+            total_unrealized_pnl = 0
+            total_current_holdings_value = 0
+            
+            for data in self.split_data_list:
+                holdings = self.get_current_holdings(data['StockCode'])
+                total_unrealized_pnl += holdings['revenue_money']
+                if holdings['amount'] > 0:
+                    current_price = KisKR.GetCurrentPrice(data['StockCode'])
+                    total_current_holdings_value += holdings['amount'] * current_price
+            
+            # 봇 성과 계산
+            total_bot_pnl = total_realized_pnl + total_unrealized_pnl
+            bot_realized_performance = (total_realized_pnl / bot_budget) * 100 if bot_budget > 0 else 0
+            bot_total_performance = (total_bot_pnl / bot_budget) * 100 if bot_budget > 0 else 0
+            
+            # 요약 메시지 시작
             summary_message = "📈 스마트매직스플릿 수익률 요약 📈\n\n"
             
-            # 🔥 예산 정보 추가
-            current_budget = self.total_money
-            initial_asset = config.initial_total_asset
-            performance_rate = 0
+            # 🔥 봇 예산 정보 (개선된 버전)
+            summary_message += f"💰 봇 예산 현황:\n"
+            summary_message += f"• 봇 전용 예산: {bot_budget:,.0f}원\n"
+            summary_message += f"• 예산 전략: {config.absolute_budget_strategy}\n"
+            summary_message += f"• 봇 실현 수익률: {bot_realized_performance:+.2f}%\n"
+            summary_message += f"• 봇 총 수익률: {bot_total_performance:+.2f}% (실현+미실현)\n"
             
-            if initial_asset > 0:
-                balance = KisKR.GetBalance()
-                current_total = float(balance.get('TotalMoney', 0)) if balance else initial_asset
-                performance_rate = (current_total - initial_asset) / initial_asset * 100
+            # 동적 예산 조정 정보
+            if config.absolute_budget_strategy == "proportional":
+                base_budget = config.absolute_budget
+                budget_multiplier = bot_budget / base_budget if base_budget > 0 else 1.0
+                summary_message += f"• 예산 배수: {budget_multiplier:.2f}x (기준: {base_budget:,.0f}원)\n"
             
-            summary_message += f"💰 예산 현황:\n"
-            summary_message += f"• 현재 예산: {current_budget:,.0f}원\n"
-            summary_message += f"• 전략: {config.absolute_budget_strategy}\n"
-            if initial_asset > 0:
-                summary_message += f"• 전체 계좌 성과: {performance_rate:+.2f}%\n"
             summary_message += "\n"
             
-            # 종목별 요약
-            summary_message += "[ 종목별 누적 수익 ]\n"
+            # 🔥 종목별 요약 (개선된 버전)
+            summary_message += "📊 종목별 상세 현황:\n"
             
             for data_info in self.split_data_list:
                 stock_code = data_info['StockCode']
                 stock_name = data_info['StockName']
                 realized_pnl = data_info.get('RealizedPNL', 0)
-                total_realized_pnl += realized_pnl
                 
                 # 현재 보유 상태 확인
                 holdings = self.get_current_holdings(stock_code)
                 current_price = KisKR.GetCurrentPrice(stock_code)
                 
                 # 미실현 손익 계산
-                unrealized_pnl = 0
-                if holdings['amount'] > 0:
-                    unrealized_pnl = holdings['revenue_money']
+                unrealized_pnl = holdings['revenue_money'] if holdings['amount'] > 0 else 0
+                
+                # 종목별 할당 예산 계산
+                target_stocks = config.target_stocks
+                stock_weight = target_stocks.get(stock_code, {}).get('weight', 0)
+                allocated_budget = bot_budget * stock_weight
+                
+                # 종목별 수익률 계산
+                stock_total_pnl = realized_pnl + unrealized_pnl
+                stock_performance = (stock_total_pnl / allocated_budget) * 100 if allocated_budget > 0 else 0
                 
                 # 현재 활성화된 차수 확인
                 active_positions = []
+                total_invested = 0
+                
                 for magic_data in data_info['MagicDataList']:
                     if magic_data['IsBuy']:
-                        current_return = (current_price - magic_data['EntryPrice']) / magic_data['EntryPrice'] * 100
-                        active_positions.append(f"{magic_data['Number']}차({round(current_return, 2)}%)")
+                        current_amt = magic_data.get('CurrentAmt', magic_data['EntryAmt'])
+                        if current_amt > 0:
+                            current_return = (current_price - magic_data['EntryPrice']) / magic_data['EntryPrice'] * 100
+                            invested_amount = magic_data['EntryPrice'] * current_amt
+                            total_invested += invested_amount
+                            active_positions.append({
+                                'number': magic_data['Number'],
+                                'return': current_return,
+                                'amount': current_amt,
+                                'invested': invested_amount
+                            })
                 
                 # 월별 수익 정보
                 current_month = datetime.now().strftime('%Y-%m')
                 monthly_pnl = data_info.get('MonthlyPNL', {}).get(current_month, 0)
                 
                 # 종목 요약 정보 추가
-                summary_message += f"• {stock_name}({stock_code}):\n"
-                summary_message += f"  - 누적실현손익: {realized_pnl:,.0f}원\n"
-                summary_message += f"  - 이번달실현: {monthly_pnl:,.0f}원\n"
+                summary_message += f"\n🎯 {stock_name}({stock_code}):\n"
+                summary_message += f"  📊 할당예산: {allocated_budget:,.0f}원 ({stock_weight*100:.1f}%)\n"
+                summary_message += f"  💰 종목수익률: {stock_performance:+.2f}%\n"
+                summary_message += f"  ├─ 실현손익: {realized_pnl:+,.0f}원\n"
+                summary_message += f"  ├─ 미실현손익: {unrealized_pnl:+,.0f}원\n"
+                summary_message += f"  └─ 이번달실현: {monthly_pnl:+,.0f}원\n"
                 
                 if holdings['amount'] > 0:
-                    summary_message += f"  - 현재보유: {holdings['amount']}주 (평균단가: {holdings['avg_price']:,.0f}원)\n"
-                    summary_message += f"  - 미실현손익: {unrealized_pnl:,.0f}원 ({holdings['revenue_rate']:.2f}%)\n"
+                    summary_message += f"  🏠 현재보유: {holdings['amount']:,}주\n"
+                    summary_message += f"  ├─ 평균단가: {holdings['avg_price']:,.0f}원\n"
+                    summary_message += f"  ├─ 현재가: {current_price:,.0f}원\n"
+                    summary_message += f"  └─ 보유수익률: {holdings['revenue_rate']:+.2f}%\n"
                 else:
-                    summary_message += f"  - 현재보유: 없음\n"
-                    
-                if active_positions:
-                    summary_message += f"  - 진행차수: {', '.join(active_positions)}\n"
-                else:
-                    summary_message += f"  - 진행차수: 없음\n"
+                    summary_message += f"  🏠 현재보유: 없음\n"
                 
-                summary_message += "\n"
+                if active_positions:
+                    summary_message += f"  🎲 진행차수: "
+                    position_info = []
+                    for pos in active_positions:
+                        position_info.append(f"{pos['number']}차({pos['return']:+.2f}%)")
+                    summary_message += ", ".join(position_info) + "\n"
+                    summary_message += f"  💵 투입자금: {total_invested:,.0f}원\n"
+                else:
+                    summary_message += f"  🎲 진행차수: 없음 (대기중)\n"
             
-            # 총 누적 수익 요약
-            summary_message += "[ 총 누적 실현 손익 ]\n"
-            summary_message += f"💰 {total_realized_pnl:,.0f}원\n\n"
+            # 🔥 전체 봇 성과 요약 (개선된 버전)
+            summary_message += f"\n" + "="*30 + "\n"
+            summary_message += f"📈 봇 전체 성과 요약:\n"
+            summary_message += f"💰 실현손익: {total_realized_pnl:+,.0f}원 ({bot_realized_performance:+.2f}%)\n"
+            summary_message += f"💎 미실현손익: {total_unrealized_pnl:+,.0f}원\n"
+            summary_message += f"🏆 총손익: {total_bot_pnl:+,.0f}원 ({bot_total_performance:+.2f}%)\n"
             
-            # 성과 추적 정보 추가
+            if total_current_holdings_value > 0:
+                summary_message += f"💼 보유자산가치: {total_current_holdings_value:,.0f}원\n"
+            
+            # 🔥 성과 추적 정보 (개선된 버전)
             tracking = config.config.get("performance_tracking", {})
             total_trades = tracking.get("total_trades", 0)
             winning_trades = tracking.get("winning_trades", 0)
-            win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
             
-            summary_message += f"📊 성과 통계:\n"
-            summary_message += f"• 총 거래 횟수: {total_trades}회\n"
-            summary_message += f"• 승률: {win_rate:.1f}% ({winning_trades}/{total_trades})\n"
-            summary_message += f"• 최고 성과: {tracking.get('best_performance', 0)*100:+.2f}%\n"
-            summary_message += f"• 최저 성과: {tracking.get('worst_performance', 0)*100:+.2f}%\n\n"
+            if total_trades > 0:
+                win_rate = (winning_trades / total_trades * 100)
+                avg_profit_per_trade = total_realized_pnl / total_trades
+                
+                summary_message += f"\n📊 봇 거래 통계:\n"
+                summary_message += f"• 총 거래: {total_trades}회\n"
+                summary_message += f"• 승률: {win_rate:.1f}% ({winning_trades}/{total_trades})\n"
+                summary_message += f"• 거래당 평균: {avg_profit_per_trade:+,.0f}원\n"
+                
+                # 운영 기간 계산
+                start_date = tracking.get("start_date", "")
+                if start_date:
+                    try:
+                        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+                        days_running = (datetime.now() - start_dt).days
+                        if days_running > 0:
+                            daily_avg = total_realized_pnl / days_running
+                            weekly_avg = daily_avg * 7
+                            monthly_avg = daily_avg * 30
+                            summary_message += f"• 운영기간: {days_running}일\n"
+                            summary_message += f"• 일평균: {daily_avg:+,.0f}원\n"
+                            summary_message += f"• 주평균: {weekly_avg:+,.0f}원\n"
+                            summary_message += f"• 월평균: {monthly_avg:+,.0f}원\n"
+                    except:
+                        pass
             
-            # 현재 투자 예산 정보
-            summary_message += f"💼 현재 할당된 총 투자 예산: {self.total_money:,.0f}원"
+            # 🔥 참고용 계좌 전체 정보 (구분해서 표시)
+            try:
+                balance = KisKR.GetBalance()
+                if balance and config.initial_total_asset > 0:
+                    current_total = float(balance.get('TotalMoney', 0))
+                    account_performance = (current_total - config.initial_total_asset) / config.initial_total_asset * 100
+                    remain_money = float(balance.get('RemainMoney', 0))
+                    
+                    summary_message += f"\n💳 계좌 전체 참고 정보:\n"
+                    summary_message += f"• 전체자산: {current_total:,.0f}원\n"
+                    summary_message += f"• 현금잔고: {remain_money:,.0f}원\n"
+                    summary_message += f"• 전체성과: {account_performance:+.2f}% (봇과 무관한 투자 포함)\n"
+                    summary_message += f"• ⚠️ 위 수치는 봇 외 다른 투자도 포함된 전체 계좌 기준입니다\n"
+            except Exception as balance_e:
+                logger.warning(f"계좌 정보 조회 중 오류: {str(balance_e)}")
+            
+            # 마무리 정보
+            summary_message += f"\n🔄 다음 거래까지 대기 중... (47초 주기)\n"
+            summary_message += f"📅 요약 생성 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             
             # Discord로 알림 전송
             discord_alert.SendMessage(summary_message)
-            logger.info("일일 요약 알림 전송 완료")
+            logger.info("개선된 일일 요약 알림 전송 완료")
             
         except Exception as e:
             logger.error(f"일일 요약 알림 전송 중 오류: {str(e)}")
+            
+            # 🔥 오류 발생시 최소한의 요약이라도 전송
+            try:
+                simple_summary = f"📈 스마트매직스플릿 간단 요약 📈\n\n"
+                
+                # 기본 성과 정보
+                total_realized = sum(data.get('RealizedPNL', 0) for data in self.split_data_list)
+                simple_performance = (total_realized / self.total_money) * 100 if self.total_money > 0 else 0
+                
+                simple_summary += f"💰 봇 예산: {self.total_money:,.0f}원\n"
+                simple_summary += f"📊 실현수익률: {simple_performance:+.2f}%\n"
+                simple_summary += f"💵 실현손익: {total_realized:+,.0f}원\n"
+                
+                # 보유 현황
+                holding_count = 0
+                for data in self.split_data_list:
+                    holdings = self.get_current_holdings(data['StockCode'])
+                    if holdings['amount'] > 0:
+                        holding_count += 1
+                        simple_summary += f"• {data['StockName']}: {holdings['amount']}주 보유\n"
+                
+                if holding_count == 0:
+                    simple_summary += f"• 현재 보유 종목: 없음\n"
+                
+                simple_summary += f"\n⚠️ 상세 요약 생성 중 오류 발생, 기본 동작은 정상"
+                
+                discord_alert.SendMessage(simple_summary)
+                logger.info("간단 요약 알림 전송 완료")
+                
+            except Exception as simple_e:
+                logger.error(f"간단 요약 전송도 실패: {str(simple_e)}")
 
 ################################### 거래 시간 체크 ##################################
 
@@ -2090,7 +2205,7 @@ def run_bot():
         logger.error(f"실행 중 오류 발생: {str(e)}")
 
 def send_startup_message():
-    """시작 메시지 전송"""
+    """시작 메시지 전송 - 봇 성과 기준으로 개선된 버전"""
     try:
         target_stocks = config.target_stocks
         
@@ -2100,19 +2215,27 @@ def send_startup_message():
         
         if config.use_absolute_budget:
             msg += f"📊 예산 전략: {config.absolute_budget_strategy}\n"
-            msg += f"💵 설정 예산: {config.absolute_budget:,.0f}원\n"
+            msg += f"💵 봇 전용 예산: {config.absolute_budget:,.0f}원\n"
             
-            if config.initial_total_asset > 0:
-                balance = KisKR.GetBalance()
-                if balance:
-                    current_total = float(balance.get('TotalMoney', 0))
-                    performance = (current_total - config.initial_total_asset) / config.initial_total_asset * 100
-                    msg += f"📈 계좌 성과: {performance:+.2f}%\n"
+            # 🔥 봇 성과 계산 (올바른 방식)
+            tracking = config.config.get("performance_tracking", {})
+            total_realized_pnl = tracking.get("total_realized_pnl", 0)
+            
+            if total_realized_pnl != 0:
+                bot_realized_performance = (total_realized_pnl / config.absolute_budget) * 100
+                msg += f"📈 봇 실현 수익률: {bot_realized_performance:+.2f}%\n"
+                msg += f"💰 봇 실현 손익: {total_realized_pnl:+,.0f}원\n"
+            else:
+                msg += f"📈 봇 실현 수익률: 0.00% (운영 초기)\n"
         
         msg += f"\n🎯 타겟 종목 ({len(target_stocks)}개):\n"
         for stock_code, stock_config in target_stocks.items():
             weight = stock_config.get('weight', 0)
-            msg += f"• {stock_config['name']}: {weight*100:.1f}% 비중\n"
+            allocated_budget = config.absolute_budget * weight
+            stock_type = stock_config.get('stock_type', 'normal')
+            target_profit = stock_config.get('hold_profit_target', 6)
+            msg += f"• {stock_config['name']}: {weight*100:.1f}% ({allocated_budget:,.0f}원)\n"
+            msg += f"  └─ {stock_type} 타입, 목표수익률 {target_profit}%\n"
         
         msg += f"\n⚙️ 주요 설정:\n"
         msg += f"• 분할 수: {config.div_num}차수\n"
@@ -2120,14 +2243,59 @@ def send_startup_message():
         msg += f"• RSI 기준: {config.config.get('rsi_lower_bound', 30)}-{config.config.get('rsi_upper_bound', 78)}\n"
         msg += f"• 조정 요구: {config.config.get('pullback_rate', 5)}%\n"
         
-        # 성과 추적 정보
+        # 🔥 성과 추적 정보 (개선된 버전)
         tracking = config.config.get("performance_tracking", {})
-        if tracking.get("total_trades", 0) > 0:
-            win_rate = (tracking.get("winning_trades", 0) / tracking["total_trades"]) * 100
-            msg += f"\n📊 누적 성과:\n"
-            msg += f"• 총 거래: {tracking['total_trades']}회\n"
-            msg += f"• 승률: {win_rate:.1f}%\n"
-            msg += f"• 실현손익: {tracking.get('total_realized_pnl', 0):,.0f}원\n"
+        total_trades = tracking.get("total_trades", 0)
+        winning_trades = tracking.get("winning_trades", 0)
+        
+        if total_trades > 0:
+            win_rate = (winning_trades / total_trades) * 100
+            avg_realized_per_trade = total_realized_pnl / total_trades if total_trades > 0 else 0
+            
+            msg += f"\n📊 누적 성과 (봇 전용):\n"
+            msg += f"• 총 거래: {total_trades}회\n"
+            msg += f"• 승률: {win_rate:.1f}% ({winning_trades}/{total_trades})\n"
+            msg += f"• 총 실현손익: {total_realized_pnl:+,.0f}원\n"
+            msg += f"• 거래당 평균: {avg_realized_per_trade:+,.0f}원\n"
+            
+            # 운영 기간 계산
+            start_date = tracking.get("start_date", "")
+            if start_date:
+                from datetime import datetime
+                try:
+                    start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+                    days_running = (datetime.now() - start_dt).days
+                    if days_running > 0:
+                        daily_avg = total_realized_pnl / days_running
+                        msg += f"• 운영 기간: {days_running}일\n"
+                        msg += f"• 일평균 수익: {daily_avg:+,.0f}원\n"
+                except:
+                    pass
+            
+            # 최고/최저 성과 (전체 계좌 기준이므로 참고용으로만)
+            best_performance = tracking.get("best_performance", 0) * 100
+            worst_performance = tracking.get("worst_performance", 0) * 100
+            msg += f"\n📈 계좌 전체 성과 참고:\n"
+            msg += f"• 최고 성과: {best_performance:+.2f}%\n"
+            msg += f"• 최저 성과: {worst_performance:+.2f}%\n"
+            msg += f"• ⚠️ 계좌 전체 기준이므로 봇 성과와 다를 수 있음\n"
+        else:
+            msg += f"\n📊 성과 추적: 운영 시작 준비 완료\n"
+        
+        # 동적 예산 정보
+        msg += f"\n💼 동적 예산 시스템:\n"
+        strategy_desc = {
+            "proportional": "성과 기반 동적 조정 (70%~140%)",
+            "strict": "고정 예산 유지",
+            "adaptive": "손실 허용도 기반 조정"
+        }
+        current_strategy = config.absolute_budget_strategy
+        msg += f"• 전략: {strategy_desc.get(current_strategy, current_strategy)}\n"
+        
+        if current_strategy == "proportional":
+            msg += f"• 성과에 따라 예산이 자동 조정됩니다\n"
+            msg += f"• +30% 이상 시 예산 140% 확대\n"
+            msg += f"• -20% 이하 시 예산 70% 축소\n"
         
         logger.info(msg)
         if config.config.get("use_discord_alert", True):
@@ -2135,6 +2303,132 @@ def send_startup_message():
             
     except Exception as e:
         logger.error(f"시작 메시지 전송 중 오류: {str(e)}")
+        
+        # 🔥 오류 발생시 최소한의 정보라도 전송
+        try:
+            simple_msg = f"🚀 스마트 매직 스플릿 봇 시작!\n"
+            simple_msg += f"💰 예산: {config.absolute_budget:,.0f}원\n"
+            simple_msg += f"📊 전략: {config.absolute_budget_strategy}\n"
+            simple_msg += f"⚠️ 상세 정보 로드 중 오류 발생, 기본 동작은 정상"
+            
+            logger.info(simple_msg)
+            if config.config.get("use_discord_alert", True):
+                discord_alert.SendMessage(simple_msg)
+        except:
+            logger.error("간단한 시작 메시지 전송도 실패")
+
+def send_startup_message():
+    """시작 메시지 전송 - 봇 성과 기준으로 개선된 버전"""
+    try:
+        target_stocks = config.target_stocks
+        
+        msg = "🚀 개선된 스마트 매직 스플릿 봇 시작!\n"
+        msg += "=" * 40 + "\n"
+        msg += f"💰 예산 관리: {'절대 예산 기반' if config.use_absolute_budget else '비율 기반'}\n"
+        
+        if config.use_absolute_budget:
+            msg += f"📊 예산 전략: {config.absolute_budget_strategy}\n"
+            msg += f"💵 봇 전용 예산: {config.absolute_budget:,.0f}원\n"
+            
+            # 🔥 봇 성과 계산 (올바른 방식)
+            tracking = config.config.get("performance_tracking", {})
+            total_realized_pnl = tracking.get("total_realized_pnl", 0)
+            
+            if total_realized_pnl != 0:
+                bot_realized_performance = (total_realized_pnl / config.absolute_budget) * 100
+                msg += f"📈 봇 실현 수익률: {bot_realized_performance:+.2f}%\n"
+                msg += f"💰 봇 실현 손익: {total_realized_pnl:+,.0f}원\n"
+            else:
+                msg += f"📈 봇 실현 수익률: 0.00% (운영 초기)\n"
+        
+        msg += f"\n🎯 타겟 종목 ({len(target_stocks)}개):\n"
+        for stock_code, stock_config in target_stocks.items():
+            weight = stock_config.get('weight', 0)
+            allocated_budget = config.absolute_budget * weight
+            stock_type = stock_config.get('stock_type', 'normal')
+            target_profit = stock_config.get('hold_profit_target', 6)
+            msg += f"• {stock_config['name']}: {weight*100:.1f}% ({allocated_budget:,.0f}원)\n"
+            msg += f"  └─ {stock_type} 타입, 목표수익률 {target_profit}%\n"
+        
+        msg += f"\n⚙️ 주요 설정:\n"
+        msg += f"• 분할 수: {config.div_num}차수\n"
+        msg += f"• 수수료: {config.config.get('commission_rate', 0.00015)*100:.3f}%\n"
+        msg += f"• RSI 기준: {config.config.get('rsi_lower_bound', 30)}-{config.config.get('rsi_upper_bound', 78)}\n"
+        msg += f"• 조정 요구: {config.config.get('pullback_rate', 5)}%\n"
+        
+        # 🔥 성과 추적 정보 (개선된 버전)
+        tracking = config.config.get("performance_tracking", {})
+        total_trades = tracking.get("total_trades", 0)
+        winning_trades = tracking.get("winning_trades", 0)
+        
+        if total_trades > 0:
+            win_rate = (winning_trades / total_trades) * 100
+            avg_realized_per_trade = total_realized_pnl / total_trades if total_trades > 0 else 0
+            
+            msg += f"\n📊 누적 성과 (봇 전용):\n"
+            msg += f"• 총 거래: {total_trades}회\n"
+            msg += f"• 승률: {win_rate:.1f}% ({winning_trades}/{total_trades})\n"
+            msg += f"• 총 실현손익: {total_realized_pnl:+,.0f}원\n"
+            msg += f"• 거래당 평균: {avg_realized_per_trade:+,.0f}원\n"
+            
+            # 운영 기간 계산
+            start_date = tracking.get("start_date", "")
+            if start_date:
+                from datetime import datetime
+                try:
+                    start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+                    days_running = (datetime.now() - start_dt).days
+                    if days_running > 0:
+                        daily_avg = total_realized_pnl / days_running
+                        msg += f"• 운영 기간: {days_running}일\n"
+                        msg += f"• 일평균 수익: {daily_avg:+,.0f}원\n"
+                except:
+                    pass
+            
+            # 최고/최저 성과 (전체 계좌 기준이므로 참고용으로만)
+            best_performance = tracking.get("best_performance", 0) * 100
+            worst_performance = tracking.get("worst_performance", 0) * 100
+            msg += f"\n📈 계좌 전체 성과 참고:\n"
+            msg += f"• 최고 성과: {best_performance:+.2f}%\n"
+            msg += f"• 최저 성과: {worst_performance:+.2f}%\n"
+            msg += f"• ⚠️ 계좌 전체 기준이므로 봇 성과와 다를 수 있음\n"
+        else:
+            msg += f"\n📊 성과 추적: 운영 시작 준비 완료\n"
+        
+        # 동적 예산 정보
+        msg += f"\n💼 동적 예산 시스템:\n"
+        strategy_desc = {
+            "proportional": "성과 기반 동적 조정 (70%~140%)",
+            "strict": "고정 예산 유지",
+            "adaptive": "손실 허용도 기반 조정"
+        }
+        current_strategy = config.absolute_budget_strategy
+        msg += f"• 전략: {strategy_desc.get(current_strategy, current_strategy)}\n"
+        
+        if current_strategy == "proportional":
+            msg += f"• 성과에 따라 예산이 자동 조정됩니다\n"
+            msg += f"• +30% 이상 시 예산 140% 확대\n"
+            msg += f"• -20% 이하 시 예산 70% 축소\n"
+        
+        logger.info(msg)
+        if config.config.get("use_discord_alert", True):
+            discord_alert.SendMessage(msg)
+            
+    except Exception as e:
+        logger.error(f"시작 메시지 전송 중 오류: {str(e)}")
+        
+        # 🔥 오류 발생시 최소한의 정보라도 전송
+        try:
+            simple_msg = f"🚀 스마트 매직 스플릿 봇 시작!\n"
+            simple_msg += f"💰 예산: {config.absolute_budget:,.0f}원\n"
+            simple_msg += f"📊 전략: {config.absolute_budget_strategy}\n"
+            simple_msg += f"⚠️ 상세 정보 로드 중 오류 발생, 기본 동작은 정상"
+            
+            logger.info(simple_msg)
+            if config.config.get("use_discord_alert", True):
+                discord_alert.SendMessage(simple_msg)
+        except:
+            logger.error("간단한 시작 메시지 전송도 실패")
 
 def main():
     """메인 함수 - 설정 파일 자동 생성 포함"""
