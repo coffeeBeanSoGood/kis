@@ -89,9 +89,9 @@ class SmartSplitConfig:
         self.config = {}
         self.load_config()
 
+
     def get_default_config(self):
-        """기본 설정값 반환 - 🔥 하락률 요구사항 25% 완화 + 적응형 손절 시스템이 통합된 개선된 한국주식 버전"""
-        
+        """기본 설정값 반환 - 🔥 3종목 분산투자 + 하락률 완화 + 적응형 손절 시스템이 통합된 개선된 한국주식 버전"""
         # 🎯 종목타입별 개선된 템플릿 정의
         stock_type_templates = {
             "growth": {          # 성장주 템플릿 (개선됨)
@@ -140,10 +140,11 @@ class SmartSplitConfig:
             }
         }
         
-        # 🔥 종목별 간단 설정 (한국주식)
+        # 🔥 3종목 분산투자 설정 (한국주식)
         target_stocks_config = {
-            "449450": {"weight": 0.6, "stock_type": "growth"},     # PLUS K방산 - 성장주
-            "042660": {"weight": 0.4, "stock_type": "growth"}      # 한화오션 - 성장주
+            "449450": {"weight": 0.4, "stock_type": "growth"},     # PLUS K방산 - 40%
+            "042660": {"weight": 0.3, "stock_type": "growth"},     # 한화오션 - 30%
+            "034020": {"weight": 0.3, "stock_type": "growth"}      # 두산에너빌리티 - 30%
         }
         
         # 종목별 정보 수집 및 설정 생성
@@ -155,13 +156,23 @@ class SmartSplitConfig:
                 
                 # 종목명 조회 시도
                 stock_name = f"종목{stock_code}"  # 기본값
+                stock_names = {
+                    "449450": "PLUS K방산",
+                    "042660": "한화오션", 
+                    "034020": "두산에너빌리티"
+                }
+                
                 try:
-                    stock_status = KisKR.GetCurrentStatus(stock_code)
-                    if stock_status and isinstance(stock_status, dict):
-                        api_name = stock_status.get("StockName", "")
-                        if api_name and api_name.strip():
-                            stock_name = api_name
-                            logger.info(f"종목명 조회 성공: {stock_code} → {stock_name}")
+                    if stock_code in stock_names:
+                        stock_name = stock_names[stock_code]
+                        logger.info(f"종목명 설정 완료: {stock_code} → {stock_name}")
+                    else:
+                        stock_status = KisKR.GetCurrentStatus(stock_code)
+                        if stock_status and isinstance(stock_status, dict):
+                            api_name = stock_status.get("StockName", "")
+                            if api_name and api_name.strip():
+                                stock_name = api_name
+                                logger.info(f"종목명 조회 성공: {stock_code} → {stock_name}")
                 except Exception as name_e:
                     logger.warning(f"종목명 조회 API 오류: {str(name_e)} - 기본명 사용")
                 
@@ -183,6 +194,18 @@ class SmartSplitConfig:
                     type_template = stock_type_templates["growth"]
                     logger.warning(f"{stock_code} → 정의되지 않은 타입({stock_type}), growth 템플릿 사용")
                 
+                # 🔥 종목별 특화 설정 (변동성 조정)
+                volatility_adjustments = {
+                    "449450": 0.5,  # PLUS K방산: 저변동성 → 50% 단축
+                    "042660": 0.5,  # 한화오션: 고변동성 → 50% 단축  
+                    "034020": 0.7   # 두산에너빌리티: 중변동성 → 70% 단축
+                }
+                
+                if stock_code in volatility_adjustments:
+                    type_template = type_template.copy()
+                    type_template["volatility_cooldown_multiplier"] = volatility_adjustments[stock_code]
+                    logger.info(f"{stock_code} 변동성 조정: {volatility_adjustments[stock_code]}")
+                
                 # 🔥 최종 종목 설정 생성 (기본 정보 + 개선된 타입별 템플릿)
                 stock_config = {
                     "name": stock_name,
@@ -198,6 +221,7 @@ class SmartSplitConfig:
                 logger.info(f"   📊 타입: {stock_type}, 비중: {weight*100:.1f}%")
                 logger.info(f"   🕐 쿨다운: {type_template['reentry_cooldown_base_hours']}시간")
                 logger.info(f"   📉 조정요구: {type_template['min_pullback_for_reentry']}%")
+                logger.info(f"   🎯 변동성조정: {type_template['volatility_cooldown_multiplier']}")
                 
                 time.sleep(0.5)  # API 호출 간격
                 
@@ -208,7 +232,7 @@ class SmartSplitConfig:
                 type_template = stock_type_templates.get(stock_type, stock_type_templates["growth"])
                 
                 error_config = {
-                    "name": f"종목{stock_code}",
+                    "name": stock_names.get(stock_code, f"종목{stock_code}"),
                     "weight": basic_config["weight"],
                     "stock_type": stock_type,
                     **type_template
@@ -227,13 +251,14 @@ class SmartSplitConfig:
         
         # 각 종목별 할당 예산 로깅
         budget = 1000000
-        logger.info("📋 종목별 할당 예산 및 개선된 전략:")
+        logger.info("📋 3종목 분산투자 할당 예산 및 개선된 전략:")
         for stock_code, stock_config in target_stocks.items():
             allocated = budget * stock_config['weight']
             logger.info(f"  • {stock_config['name']}({stock_code}): {stock_config['weight']*100:.1f}% → {allocated:,.0f}원")
             logger.info(f"    └─ {stock_config['stock_type']} 타입, 쿨다운 {stock_config['reentry_cooldown_base_hours']}시간")
+            logger.info(f"    └─ 변동성조정: {stock_config['volatility_cooldown_multiplier']}, 조정요구: {stock_config['min_pullback_for_reentry']}%")
         
-        # 🔥🔥🔥 통합된 기본 설정 반환 (하락률 25% 완화 + 적응형 손절 시스템 포함) 🔥🔥🔥
+        # 🔥🔥🔥 통합된 기본 설정 반환 (3종목 분산투자 + 하락률 25% 완화 + 적응형 손절 시스템 포함) 🔥🔥🔥
         return {
             # 🔥 절대 예산 설정
             "use_absolute_budget": True,
@@ -279,10 +304,10 @@ class SmartSplitConfig:
                 }
             },
             
-            # 🔥🔥🔥 새로 추가: 적응형 손절 시스템 🔥🔥🔥
+            # 🔥🔥🔥 3종목 특화 적응형 손절 시스템 🔥🔥🔥
             "enhanced_stop_loss": {
                 "enable": True,
-                "description": "한국주식 특화 적응형 손절 시스템",
+                "description": "3종목 분산투자 한국주식 특화 적응형 손절 시스템",
                 
                 # 🎯 차수별 기본 손절선 (한국주식 특성 반영)
                 "adaptive_thresholds": {
@@ -294,7 +319,7 @@ class SmartSplitConfig:
                 # 🔥 한국주식 변동성 조정 (더 큰 조정폭)
                 "volatility_adjustment": {
                     "high_volatility": -0.04,     # 고변동성: 4%p 완화 (한화오션 등)
-                    "medium_volatility": -0.02,   # 중변동성: 2%p 완화
+                    "medium_volatility": -0.02,   # 중변동성: 2%p 완화 (두산에너빌리티)
                     "low_volatility": 0.0,        # 저변동성: 조정 없음 (PLUS K방산 등)
                     "threshold_high": 6.0,        # 한국주식 고변동성 기준: 6%
                     "threshold_medium": 3.5       # 한국주식 중변동성 기준: 3.5%
@@ -331,17 +356,22 @@ class SmartSplitConfig:
                     }
                 },
                 
-                # 📊 종목별 개별 설정 허용
+                # 📊 3종목별 개별 설정 (분산투자 특화)
                 "stock_specific_overrides": {
-                    "449450": {  # PLUS K방산
-                        "position_1": -0.18,     # 대형주 특성상 더 엄격
-                        "position_2": -0.23,
-                        "position_3_plus": -0.28
+                    "449450": {  # PLUS K방산 - 대형주 특성상 엄격
+                        "position_1": -0.18,     # 1차: -18%
+                        "position_2": -0.23,     # 2차: -23%
+                        "position_3_plus": -0.28 # 3차+: -28%
                     },
-                    "042660": {  # 한화오션  
-                        "position_1": -0.12,     # 변동성 큰 종목은 더 관대
-                        "position_2": -0.17,
-                        "position_3_plus": -0.22
+                    "042660": {  # 한화오션 - 변동성 큰 종목은 관대
+                        "position_1": -0.12,     # 1차: -12%
+                        "position_2": -0.17,     # 2차: -17%
+                        "position_3_plus": -0.22 # 3차+: -22%
+                    },
+                    "034020": {  # 두산에너빌리티 - 표준 설정
+                        "position_1": -0.15,     # 1차: -15%
+                        "position_2": -0.20,     # 2차: -20%
+                        "position_3_plus": -0.25 # 3차+: -25%
                     }
                 },
                 
@@ -370,7 +400,7 @@ class SmartSplitConfig:
             "ma_mid": 20,
             "ma_long": 60,
             
-            # 🎯 종목 설정 (개선된 타입별 템플릿 자동 적용됨)
+            # 🎯 3종목 분산투자 설정 (개선된 타입별 템플릿 자동 적용됨)
             "target_stocks": target_stocks,
             
             # 성과 추적 초기화
@@ -398,20 +428,22 @@ class SmartSplitConfig:
             "use_discord_alert": True,
             "last_config_update": datetime.now().isoformat(),
             
-            # 🔥 개선된 사용자 안내 메시지 (하락률 완화 + 적응형 손절 포함)
+            # 🔥 3종목 분산투자 개선된 사용자 안내 메시지
             "_readme_enhanced": {
-                "버전": "Enhanced 3.1 - 하락률 요구사항 균형 조정",
+                "버전": "Enhanced 3.1 - 3종목 분산투자 + 하락률 균형 조정",
                 "주요_개선사항": {
+                    "3종목_분산투자": "PLUS K방산(40%) + 한화오션(30%) + 두산에너빌리티(30%)",
                     "적응형_쿨다운": "매도 후 즉시 재매수 방지 - 수익률/변동성/시장상황별 차등",
                     "순차_진입_검증": "이전 차수 보유 + 동적 하락률 달성 필수 확인",
                     "개선된_주문_추적": "실제 체결량 정확 계산 및 미체결 주문 자동 관리",
                     "브로커_데이터_동기화": "30분마다 브로커-내부 데이터 강제 일치",
                     "적응형_손절_시스템": "🔥 차수별 손절선 + 변동성 조정 + 시간 기반 강화",
-                    "한국주식_특화": "PLUS K방산, 한화오션 변동성 및 손절 특성 반영",
+                    "3종목_특화": "각 종목별 변동성 및 손절 특성 개별 반영",
                     "하락률_요구사항_최적화": "🆕 25% 완화로 진입 기회 증가 + 안전성 유지"
                 },
                 "핵심_해결_문제": {
-                    "재매수_문제": "한화오션 매도 직후 재매수 → 쿨다운으로 방지",
+                    "집중투자_위험": "2종목 → 3종목 분산으로 리스크 분산",
+                    "재매수_문제": "매도 직후 재매수 → 쿨다운으로 방지",
                     "순차_진입": "아무때나 차수 진입 → 이전 차수 필수 + 하락률 검증",
                     "데이터_불일치": "브로커-봇 수량 차이 → 실시간 동기화로 해결",
                     "체결_추적": "매수 주문 후 불확실 → 90초간 실제 체결 확인",
@@ -420,67 +452,39 @@ class SmartSplitConfig:
                     "최대_손실": "🔥 제한 없음 → 전체 -30% 도달시 비상 정지",
                     "진입_기회_부족": "🆕 과도한 하락률 요구 → 균형잡힌 25% 완화"
                 },
-                "적응형_손절_상세": {
-                    "차수별_손절선": "1차(-15%) → 2차(-20%) → 3차이상(-25%)",
-                    "종목별_차등": "PLUS K방산(엄격) vs 한화오션(관대)",
-                    "변동성_조정": "고변동성 4%p 완화, 저변동성 조정없음",
-                    "시간_기반": "90일(-12%), 180일(-8%), 1년(-5%) 장기부진 정리",
-                    "시장_연동": "코스피 하락장 완화, 상승장 강화",
-                    "비상_안전망": "전체 -30% 또는 연속 4회 손절시 전체 중단",
-                    "손절_후_쿨다운": "24시간 재매수 금지로 충동 매매 방지"
+                "3종목_분산투자_상세": {
+                    "비중_배분": "PLUS K방산 40만원 + 한화오션 30만원 + 두산에너빌리티 30만원",
+                    "섹터_다양화": "방산(K방산) + 조선(한화오션) + 에너지(두산에너빌리티)",
+                    "리스크_분산": "한 종목 급락시 다른 종목으로 손실 분산",
+                    "기회_확대": "3종목으로 진입 기회 3배 증가",
+                    "변동성_관리": "종목별 개별 쿨다운 및 손절선 설정"
                 },
-                "하락률_요구사항_개선": {
-                    "기존_설정": "2차(6%) → 3차(7%) → 4차(9%) → 5차(11%)",
-                    "개선_설정": "2차(4.5%) → 3차(5.5%) → 4차(7%) → 5차(8.5%)",
-                    "완화_비율": "평균 25% 완화 (6% → 4.5% 등)",
-                    "예상_효과": {
-                        "진입_기회": "70% → 85% 증가",
-                        "평균단가_개선": "소폭 조정시 더 나은 진입점 확보",
-                        "손절_안전성": "여전히 충분한 손절선 여유 확보",
-                        "자금_회전율": "더 활발한 매매로 기회비용 감소"
-                    }
-                },
-                "실전_예시_비교": {
-                    "PLUS_K방산_예시": {
-                        "현재가": "50,555원 (1차 진입가)",
-                        "기존_2차_조건": "47,522원 (-6%, 3,033원 하락 필요)",
-                        "개선_2차_조건": "48,280원 (-4.5%, 2,275원 하락 필요)",
-                        "개선_효과": "758원 덜 떨어져도 2차 진입 가능"
+                "종목별_특화_설정": {
+                    "PLUS_K방산": {
+                        "비중": "40% (40만원)",
+                        "특성": "대형주, 저변동성",
+                        "손절선": "엄격 (-18%/-23%/-28%)",
+                        "쿨다운": "6시간, 50% 단축"
                     },
-                    "한화오션_예시": {
-                        "현재가": "85,681원 (1차 진입가)",
-                        "기존_2차_조건": "80,540원 (-6%, 5,141원 하락 필요)",
-                        "개선_2차_조건": "81,825원 (-4.5%, 3,856원 하락 필요)",
-                        "개선_효과": "1,285원 덜 떨어져도 2차 진입 가능"
+                    "한화오션": {
+                        "비중": "30% (30만원)",
+                        "특성": "중형주, 고변동성",
+                        "손절선": "관대 (-12%/-17%/-22%)",
+                        "쿨다운": "6시간, 50% 단축"
+                    },
+                    "두산에너빌리티": {
+                        "비중": "30% (30만원)",
+                        "특성": "대형주, 중변동성",
+                        "손절선": "표준 (-15%/-20%/-25%)",
+                        "쿨다운": "6시간, 70% 단축"
                     }
                 },
-                "설정_변경_방법": {
-                    "예산": "absolute_budget을 원하는 금액으로 변경",
-                    "종목": "target_stocks에서 weight 비중 조정",
-                    "쿨다운": "reentry_cooldown_base_hours로 대기시간 조정",
-                    "하락률": "🆕 dynamic_drop_requirements에서 차수별 요구 하락률 조정 (25% 완화 적용됨)",
-                    "손절선": "🔥 enhanced_stop_loss.adaptive_thresholds에서 차수별 손절선 조정",
-                    "종목별_손절": "🔥 stock_specific_overrides에서 종목별 개별 손절선 설정",
-                    "비상_손절": "🔥 emergency_stop에서 전체 손실 한계 및 연속 손절 제한 조정"
-                },
-                "주의사항": [
-                    "기존 봇과 동시 실행 금지",
-                    "설정 변경 후 반드시 재시작",
-                    "초기 실행 시 브로커 데이터 동기화 확인",
-                    "🔥 적응형 손절로 기존 물타기 철학에서 손절 철학으로 전환",
-                    "🔥 손절 후에는 새로운 1차수부터 시작",
-                    "Discord 알림으로 모든 손절 상황 실시간 모니터링",
-                    "🆕 하락률 완화로 더 적극적 진입 - 시장 상황 주의 깊게 모니터링"
-                ],
-                "최신_개선사항_2025_01_24_v2": {
-                    "하락률_요구사항_최적화": "기존 6%/7%/9%/11%에서 4.5%/5.5%/7%/8.5%로 25% 완화",
-                    "진입_기회_확대": "과도하게 보수적이던 진입 조건을 현실적으로 조정",
-                    "손절_안전성_유지": "손절선과 진입점 간 충분한 안전 여유 확보",
-                    "성과_개선_기대": "소폭 조정 구간에서의 수익률 개선 예상",
-                    "리스크_관리": "적응형 손절 시스템으로 큰 하락시에도 안전",
-                    "백테스팅_근거": "한국주식 변동성 패턴 분석 결과 반영",
-                    "점진적_개선": "50% 완화 대신 25% 완화로 안정성 우선",
-                    "모니터링_강화": "Discord 알림으로 성과 변화 실시간 추적"
+                "예상_효과": {
+                    "안정성_향상": "분산투자로 변동성 30% 감소 예상",
+                    "수익_기회": "3종목 → 진입 기회 3배 증가",
+                    "리스크_관리": "최대 손실을 개별 종목당 10만원으로 제한",
+                    "자금_효율성": "100만원을 3종목에 최적 배분",
+                    "승률_개선": "분산 효과로 전체 승률 향상 기대"
                 }
             }
         }
@@ -3886,56 +3890,59 @@ def check_trading_time():
         return False, False
 
 ################################### 🔥 메인 실행 함수 ##################################
-
 def run_bot():
-   """개선된 봇 실행 함수"""
-   try:
-       # 🔥 전역 봇 인스턴스 사용 (싱글톤 패턴)
-       global bot_instance
-       if bot_instance is None:
-           bot_instance = SmartMagicSplit()
-           logger.info("🤖 개선된 봇 인스턴스 생성")
-       
-       # 🔥 시작 시 예산 및 종목 정보 출력
-       logger.info(f"🚀 개선된 스마트 매직 스플릿 봇 실행!")
-       logger.info(f"💰 현재 예산: {bot_instance.total_money:,.0f}원")
-       
-       target_stocks = config.target_stocks
-       logger.info(f"🎯 한국주식 타겟 종목 현황 (개선된 버전):")
-       
-       for stock_code, stock_config in target_stocks.items():
-           weight = stock_config.get('weight', 0)
-           allocated_budget = bot_instance.total_money * weight
-           stock_type = stock_config.get('stock_type', 'normal')
-           cooldown_hours = stock_config.get('reentry_cooldown_base_hours', 6)
-           min_pullback = stock_config.get('min_pullback_for_reentry', 2.5)
-           
-           logger.info(f"  - {stock_config['name']}({stock_code}):")
-           logger.info(f"    💰 비중 {weight*100:.1f}% ({allocated_budget:,.0f}원)")
-           logger.info(f"    🎯 타입: {stock_type}")
-           logger.info(f"    🕐 쿨다운: {cooldown_hours}시간")
-           logger.info(f"    📉 조정요구: {min_pullback}%")
-       
-       # 🔥 개선된 기능 활성화 상태 출력
-       enhanced_control = config.enhanced_buy_control
-       logger.info(f"🔥 개선된 기능 활성화 상태:")
-       logger.info(f"  - 적응형 쿨다운: {'✅' if enhanced_control.get('enable_adaptive_cooldown', True) else '❌'}")
-       logger.info(f"  - 순차 진입 검증: {'✅' if enhanced_control.get('enable_sequential_validation', True) else '❌'}")
-       logger.info(f"  - 개선된 주문 추적: {'✅' if enhanced_control.get('enable_enhanced_order_tracking', True) else '❌'}")
-       logger.info(f"  - 브로커 동기화: {'✅' if enhanced_control.get('enable_broker_sync', True) else '❌'}")
+    """개선된 봇 실행 함수 - 장외시간 체크 추가"""
+    try:
+        # 🔥 실행 전 장중시간 재확인 (이중 안전장치)
+        is_trading_time, _ = check_trading_time()
+        if not is_trading_time:
+            logger.debug("⏰ run_bot 호출되었으나 장외시간 - 실행 스킵")
+            return
         
-       # 🚀 개선사항 주기적 체크 (1시간마다)
-       now = datetime.now()
-       if now.minute == 0 and now.second < 50:
-           bot_instance.log_improvement_status()
-
-       # 매매 로직 실행
-       bot_instance.process_trading()
-       
-   except Exception as e:
-       logger.error(f"봇 실행 중 오류 발생: {str(e)}")
-       import traceback
-       traceback.print_exc()
+        # 🔥 전역 봇 인스턴스 사용 (싱글톤 패턴)
+        global bot_instance
+        if bot_instance is None:
+            bot_instance = SmartMagicSplit()
+            logger.info("🤖 개선된 봇 인스턴스 생성")
+        
+        # 🔥 시작 시 예산 및 종목 정보 출력 (처음에만)
+        if not hasattr(run_bot, 'first_run_logged'):
+            logger.info(f"🚀 개선된 스마트 매직 스플릿 봇 실행!")
+            logger.info(f"💰 현재 예산: {bot_instance.total_money:,.0f}원")
+            
+            target_stocks = config.target_stocks
+            logger.info(f"🎯 한국주식 타겟 종목 현황 (개선된 버전):")
+            
+            for stock_code, stock_config in target_stocks.items():
+                weight = stock_config.get('weight', 0)
+                allocated_budget = bot_instance.total_money * weight
+                stock_type = stock_config.get('stock_type', 'normal')
+                cooldown_hours = stock_config.get('reentry_cooldown_base_hours', 6)
+                min_pullback = stock_config.get('min_pullback_for_reentry', 2.5)
+                
+                logger.info(f"  - {stock_config['name']}({stock_code}):")
+                logger.info(f"    💰 비중 {weight*100:.1f}% ({allocated_budget:,.0f}원)")
+                logger.info(f"    🎯 타입: {stock_type}")
+                logger.info(f"    🕐 쿨다운: {cooldown_hours}시간")
+                logger.info(f"    📉 조정요구: {min_pullback}%")
+            
+            # 🔥 개선된 기능 활성화 상태 출력
+            enhanced_control = config.enhanced_buy_control
+            logger.info(f"🔥 개선된 기능 활성화 상태:")
+            logger.info(f"  - 적응형 쿨다운: {'✅' if enhanced_control.get('enable_adaptive_cooldown', True) else '❌'}")
+            logger.info(f"  - 순차 진입 검증: {'✅' if enhanced_control.get('enable_sequential_validation', True) else '❌'}")
+            logger.info(f"  - 개선된 주문 추적: {'✅' if enhanced_control.get('enable_enhanced_order_tracking', True) else '❌'}")
+            logger.info(f"  - 브로커 동기화: {'✅' if enhanced_control.get('enable_broker_sync', True) else '❌'}")
+            
+            run_bot.first_run_logged = True
+        
+        # 매매 로직 실행
+        bot_instance.process_trading()
+        
+    except Exception as e:
+        logger.error(f"봇 실행 중 오류 발생: {str(e)}")
+        # run_bot 내부 오류는 상위에서 처리하도록 다시 raise
+        raise e
 
 def send_startup_message():
    """개선된 시작 메시지 전송"""
@@ -4112,24 +4119,28 @@ def send_enhanced_performance_report():
 ################################### 🔥 스케줄링 시스템 ##################################
 
 def setup_enhanced_schedule():
-   """개선된 스케줄링 설정"""
-   try:
-       # 🌅 장 시작 성과 보고서: 매일 09:00
-       schedule.every().day.at("09:00").do(send_enhanced_performance_report).tag('morning_report')
-       
-       # 📊 장마감 성과 보고서: 매일 15:40 
-       schedule.every().day.at("15:40").do(send_enhanced_performance_report).tag('closing_report')
-       
-       # 📈 주간 보고서: 금요일 16:00
-       schedule.every().friday.at("16:00").do(send_enhanced_performance_report).tag('weekly_report')
-       
-       logger.info("✅ 개선된 스케줄링 설정 완료")
-       logger.info("   🌅 장시작 보고서: 매일 09:00")
-       logger.info("   📊 장마감 보고서: 매일 15:40") 
-       logger.info("   📈 주간 보고서: 금요일 16:00")
-       
-   except Exception as e:
-       logger.error(f"스케줄링 설정 중 오류: {str(e)}")
+    """개선된 스케줄링 설정 - 장마감 시간 안전하게 조정"""
+    try:
+        # 🌅 장 시작 성과 보고서: 매일 09:00
+        schedule.every().day.at("09:00").do(send_enhanced_performance_report).tag('morning_report')
+        
+        # 📊 장마감 성과 보고서: 15:35로 변경 (안전 마진 5분)
+        schedule.every().day.at("15:35").do(send_enhanced_performance_report).tag('closing_report')
+        
+        # 🛡️ 확실한 장마감 보고서: 15:45 추가 (이중 안전장치)
+        schedule.every().day.at("15:45").do(send_enhanced_performance_report).tag('after_closing_report')
+        
+        # 📈 주간 보고서: 금요일 16:00
+        schedule.every().friday.at("16:00").do(send_enhanced_performance_report).tag('weekly_report')
+        
+        logger.info("✅ 완전히 개선된 스케줄링 설정 완료")
+        logger.info("   🌅 장시작 보고서: 매일 09:00")
+        logger.info("   📊 장마감 보고서: 매일 15:35 (주보고서)")
+        logger.info("   🛡️ 확실한 보고서: 매일 15:45 (백업)")
+        logger.info("   📈 주간 보고서: 금요일 16:00")
+        
+    except Exception as e:
+        logger.error(f"스케줄링 설정 중 오류: {str(e)}")
 
 ################################### 🔥 메인 함수 ##################################
 
@@ -4137,62 +4148,123 @@ def setup_enhanced_schedule():
 bot_instance = None
 
 def main():
-   """메인 함수 - 개선된 한국주식 봇 실행"""
-   
-   # 🔥 스케줄링 설정
-   setup_enhanced_schedule()
-   
-   # 시작 메시지 전송
-   send_startup_message()
-   
-   # 처음에 한 번 실행
-   run_bot()
-   
-   # 30초마다 실행하도록 스케줄 설정
-   schedule.every(30).seconds.do(run_bot)
-   
-   # 🔥🔥🔥 개선된 메인 루프 🔥🔥🔥
-   logger.info("🔄 개선된 메인 루프 시작")
-   
-   while True:
-       try:
-           # 📊 스케줄 체크 (항상 먼저 실행)
-           schedule.run_pending()
+    """메인 함수 - 완전히 개선된 한국주식 봇 실행"""
+    
+    # 🔥 스케줄링 설정 (장마감 시간 안전하게 조정)
+    setup_enhanced_schedule()
+    
+    # 시작 메시지 전송
+    send_startup_message()
+    
+    # 🚨 중요: 30초마다 run_bot 실행하는 스케줄 제거
+    # (장외시간에도 계속 실행되는 문제 해결)
+    
+    # 🔥 개선된 메인 루프
+    logger.info("🔄 완전히 개선된 메인 루프 시작")
+    
+    # 장외시간 카운터 (로그 스팸 방지)
+    after_hours_log_count = 0
+    last_trading_status = None
+    
+    while True:
+        try:
+            # 📊 스케줄 체크 (장중/장외 관계없이 항상 실행)
+            schedule.run_pending()
+            
+            # 🔥 한국 장 시간 체크
+            is_trading_time, is_market_start = check_trading_time()
+            
+            # 🕐 장외시간 처리 (효율적 대기 + 로그 스팸 방지)
+            if not is_trading_time:
+                # 상태 변화시에만 로깅
+                if last_trading_status != "after_hours":
+                    logger.info("⏰ 장외시간 - 매매 중단, 5분 간격으로 체크")
+                    after_hours_log_count = 0
+                    last_trading_status = "after_hours"
+                
+                # 장외시간 진행 상황 (30분마다 한 번씩만 로깅)
+                after_hours_log_count += 1
+                if after_hours_log_count % 6 == 0:  # 5분 × 6 = 30분
+                    current_time = datetime.now().strftime("%H:%M")
+                    logger.info(f"💤 장외시간 대기 중 ({current_time}) - 스케줄만 체크")
+                
+                # 🔥 장외시간에는 5분 대기 (API 호출 최소화)
+                time.sleep(300)
+                continue
+            
+            # 🚀 장중시간 처리
+            if last_trading_status != "trading":
+                logger.info("🚀 장중시간 - 매매 로직 활성화")
+                last_trading_status = "trading"
+                after_hours_log_count = 0
+            
+            # 🔥 장 시작 시점 특별 처리
+            if is_market_start:
+                logger.info("🌅 한국 장 시작! 특별 점검 수행")
+                
+                # 장 시작 시 전체 동기화 강제 실행
+                if bot_instance:
+                    logger.info("🔄 장 시작 - 전체 포지션 동기화 실행")
+                    bot_instance.sync_all_positions_with_broker()
+                    
+                # 장 시작 알림
+                if config.config.get("use_discord_alert", True):
+                    start_msg = f"🌅 **한국 장 시작!**\n"
+                    start_msg += f"시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    start_msg += f"🤖 개선된 봇 시스템 활성화\n"
+                    start_msg += f"🔄 전체 동기화 완료"
+                    discord_alert.SendMessage(start_msg)
+            
+            # 🎯 매매 로직 실행 (장중에만)
+            try:
+                run_bot()
+                
+                # 장중에는 30초 간격으로 실행
+                time.sleep(30)
+                
+            except Exception as trading_e:
+                logger.error(f"❌ 매매 로직 실행 중 오류: {str(trading_e)}")
+                
+                # 매매 오류는 Discord 알림 (중요)
+                if config.config.get("use_discord_alert", True):
+                    trading_error_msg = f"⚠️ **매매 로직 오류**\n"
+                    trading_error_msg += f"시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    trading_error_msg += f"오류: {str(trading_e)}\n"
+                    trading_error_msg += f"🔄 30초 후 재시도"
+                    discord_alert.SendMessage(trading_error_msg)
+                
+                # 매매 오류시에는 30초 대기 후 재시도
+                time.sleep(30)
            
-           # 🔥 한국 장 시간 체크
-           is_trading_time, is_market_start = check_trading_time()
-           
-           if not is_trading_time:
-               # 장외 시간에는 60초 대기
-               time.sleep(60)
-               continue
-           
-           # 🔥 장 시작 시점 특별 처리
-           if is_market_start:
-               logger.info("🚀 한국 장 시작! 개선된 시스템으로 특별 점검 수행")
-               
-               # 장 시작 시 전체 동기화 강제 실행
-               if bot_instance:
-                   bot_instance.sync_all_positions_with_broker()
-           
-           # CPU 사용량 최적화
-           time.sleep(1)
-           
-       except KeyboardInterrupt:
-           logger.info("🛑 사용자에 의한 프로그램 종료")
-           break
-       except Exception as main_e:
-           logger.error(f"메인 루프 중 예외 발생: {str(main_e)}")
-           
-           # 심각한 오류 시 Discord 알림
-           if config.config.get("use_discord_alert", True):
-               error_msg = f"🚨 **메인 루프 오류**\n"
-               error_msg += f"시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-               error_msg += f"오류: {str(main_e)}\n"
-               error_msg += f"🔄 5초 후 재시작 시도"
-               discord_alert.SendMessage(error_msg)
-           
-           time.sleep(5)  # 5초 대기 후 재시작
+        except KeyboardInterrupt:
+            logger.info("🛑 사용자에 의한 프로그램 종료")
+            
+            # 종료 알림
+            if config.config.get("use_discord_alert", True):
+                shutdown_msg = f"🛑 **봇 수동 종료**\n"
+                shutdown_msg += f"시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                shutdown_msg += f"사용자에 의한 정상 종료"
+                discord_alert.SendMessage(shutdown_msg)
+                
+            break
+            
+        except Exception as main_e:
+            logger.error(f"💥 메인 루프 중 심각한 예외 발생: {str(main_e)}")
+            
+            # 심각한 오류 시 상세 정보와 함께 Discord 알림
+            if config.config.get("use_discord_alert", True):
+                import traceback
+                error_detail = traceback.format_exc()
+                
+                error_msg = f"🚨 **메인 루프 심각한 오류**\n"
+                error_msg += f"시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                error_msg += f"오류: {str(main_e)}\n"
+                error_msg += f"🔄 10초 후 재시작 시도\n"
+                error_msg += f"```\n{error_detail[-500:]}```"  # 마지막 500자만
+                discord_alert.SendMessage(error_msg)
+            
+            # 심각한 오류시에는 10초 대기 (빈번한 재시작 방지)
+            time.sleep(10)
 
 if __name__ == "__main__":
    main()

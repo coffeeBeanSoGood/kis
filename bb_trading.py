@@ -3959,7 +3959,7 @@ def execute_buy_order(stock_code, target_config, quantity, price):
         return None, None
 
 def process_buy_candidates(trading_state):
-    """매수 대기 후보들의 진입 타이밍 재확인 - 신호별 대기시간 + 강제매수 로직"""
+    """매수 대기 후보들의 진입 타이밍 재확인 - 중복 매수 방지 강화"""
     try:
         if 'buy_candidates' not in trading_state:
             return trading_state
@@ -3969,6 +3969,19 @@ def process_buy_candidates(trading_state):
         
         logger.info("🔄 매수 대기 후보 관리 시작")
         logger.info(f"📋 현재 대기 종목: {len(trading_state['buy_candidates'])}개")
+        
+        # 🔥 1단계: 실제 보유량 조회로 중복 매수 방지
+        actual_holdings = {}
+        try:
+            my_stocks = KisKR.GetMyStockList()
+            if my_stocks:
+                for stock in my_stocks:
+                    stock_code = stock['StockCode']
+                    if stock_code in trading_config.target_stocks:
+                        actual_holdings[stock_code] = int(stock.get('StockAmt', 0))
+                logger.info(f"📊 실제 보유량 조회 완료: {len(actual_holdings)}개 종목")
+        except Exception as e:
+            logger.warning(f"⚠️ 실제 보유량 조회 실패: {str(e)}")
         
         candidates_to_remove = []
         candidates_executed = []
@@ -3983,18 +3996,69 @@ def process_buy_candidates(trading_state):
                 signal_strength = candidate_info.get('signal_strength', 'NORMAL')
                 timing_reason = candidate_info.get('timing_reason', '알 수 없음')
                 
+                logger.info(f"\n🔍 대기 종목 검토: {stock_name}({stock_code})")
+                
+                # 🔥 2단계: 중복 매수 방지 - 다중 체크
+                # 2-1. 봇 기록 체크
+                if stock_code in trading_state['positions']:
+                    logger.info(f"   ❌ 봇 기록상 이미 보유 중 - 대기 해제")
+                    candidates_to_remove.append(stock_code)
+                    candidates_expired.append({
+                        'stock_code': stock_code,
+                        'stock_name': stock_name,
+                        'reason': '봇 기록상 이미 보유',
+                        'daily_score': daily_score,
+                        'wait_time': 0
+                    })
+                    continue
+                
+                # 2-2. 실제 보유량 체크
+                actual_amount = actual_holdings.get(stock_code, 0)
+                if actual_amount > 0:
+                    logger.warning(f"   ❌ 실제 보유 중: {actual_amount}주 - 대기 해제")
+                    
+                    # 보유량 불일치 알림
+                    mismatch_msg = f"⚠️ 대기 중 보유량 불일치 감지\n"
+                    mismatch_msg += f"종목: {stock_name}({stock_code})\n"
+                    mismatch_msg += f"봇 기록: 대기 중, 실제 보유: {actual_amount}주\n"
+                    mismatch_msg += f"→ 대기 해제"
+                    
+                    if hasattr(trading_config, 'use_discord_alert') and trading_config.config.get('use_discord_alert', True):
+                        discord_alert.SendMessage(mismatch_msg)
+                    
+                    candidates_to_remove.append(stock_code)
+                    candidates_expired.append({
+                        'stock_code': stock_code,
+                        'stock_name': stock_name,
+                        'reason': f'실제 보유 중 ({actual_amount}주)',
+                        'daily_score': daily_score,
+                        'wait_time': 0
+                    })
+                    continue
+                
+                # 2-3. 미체결 주문 중복 체크
+                if pending_manager.check_pending_orders(stock_code, trading_state):
+                    logger.info(f"   ❌ 미체결 주문 있음 - 대기 해제")
+                    candidates_to_remove.append(stock_code)
+                    candidates_expired.append({
+                        'stock_code': stock_code,
+                        'stock_name': stock_name,
+                        'reason': '미체결 주문 중',
+                        'daily_score': daily_score,
+                        'wait_time': 0
+                    })
+                    continue
+                
                 # 대기 시간 계산
                 wait_start = datetime.datetime.fromisoformat(candidate_info['wait_start_time'])
                 wait_hours = (datetime.datetime.now() - wait_start).total_seconds() / 3600
-                wait_minutes = wait_hours * 60
-                max_wait_hours = candidate_info.get('max_wait_hours', 3.0)  # 2.0 → 3.0시간
+                max_wait_hours = candidate_info.get('max_wait_hours', 3.0)
                 
-                logger.info(f"\n🔍 대기 종목 검토: {stock_name}({stock_code})")
-                logger.info(f"   대기시간: {wait_minutes:.0f}분 / {max_wait_hours*60:.0f}분")
-                logger.info(f"   일봉점수: {daily_score}점 ({signal_strength})")
-                logger.info(f"   대기전략: {timing_reason}")
+                logger.info(f"   ⏰ 대기시간: {wait_hours:.1f}/{max_wait_hours}시간")
+                logger.info(f"   📊 일봉점수: {daily_score}점 ({signal_strength})")
+                logger.info(f"   🎯 대기전략: {timing_reason}")
                 
-                # 🕐 대기 시간 초과 체크
+                # 🕐 3단계: 대기 시간 초과 체크
                 if wait_hours > max_wait_hours:
                     logger.info(f"   ⏰ 대기 시간 초과!")
                     
@@ -4015,7 +4079,6 @@ def process_buy_candidates(trading_state):
                     elif daily_score >= 50:
                         # 50점 이상은 조건부 강제 매수 (현재 RSI 체크)
                         try:
-                            current_price = KisKR.GetCurrentPrice(stock_code)
                             stock_data = get_stock_data(stock_code)
                             if stock_data and stock_data.get('rsi', 50) <= 40:
                                 should_force_buy = True
@@ -4030,28 +4093,31 @@ def process_buy_candidates(trading_state):
                         force_reason = f"보통점수({daily_score}점)로 매수 포기"
                         
                     else:
-                        # 40점 미만은 매수 포기 (실제로는 발생하지 않음)
+                        # 40점 미만은 매수 포기
                         force_reason = f"낮은점수({daily_score}점)로 매수 포기"
                     
                     logger.info(f"   🎯 강제매수 결정: {force_reason}")
                     
                     if should_force_buy:
-
-                        # 🆕 과열 상태 재검증 (5줄 추가)
-                        current_stock_data = get_stock_data(stock_code)
-                        current_buy_analysis = analyze_buy_signal(current_stock_data, target_config)
-                        if not current_buy_analysis['is_buy_signal']:
-                            logger.info(f"❌ 강제매수 차단: 과열 상태 감지")
-                            candidates_expired.append({
-                                'stock_code': stock_code,
-                                'stock_name': stock_name,
-                                'reason': '강제매수시 과열 상태 감지',  # ← 이 부분 추가
-                                'daily_score': daily_score,
-                                'wait_time': wait_hours
-                            })
-                            candidates_to_remove.append(stock_code)
-                            continue
-
+                        # 🆕 과열 상태 재검증 (강제매수 전 최종 체크)
+                        try:
+                            current_stock_data = get_stock_data(stock_code)
+                            if current_stock_data:
+                                current_buy_analysis = analyze_buy_signal(current_stock_data, trading_config.target_stocks[stock_code])
+                                if not current_buy_analysis['is_buy_signal']:
+                                    logger.info(f"   ❌ 강제매수 차단: 과열 상태 감지")
+                                    candidates_expired.append({
+                                        'stock_code': stock_code,
+                                        'stock_name': stock_name,
+                                        'reason': '강제매수시 과열 상태 감지',
+                                        'daily_score': daily_score,
+                                        'wait_time': wait_hours
+                                    })
+                                    candidates_to_remove.append(stock_code)
+                                    continue
+                        except Exception as e:
+                            logger.warning(f"   ⚠️ 과열 상태 체크 실패: {str(e)}")
+                        
                         # 💰 예산 재확인
                         remaining_budget = get_remaining_budget_for_stock(stock_code, trading_state)
                         total_available_budget = get_available_budget(trading_state)
@@ -4080,8 +4146,10 @@ def process_buy_candidates(trading_state):
                                 if current_price and current_price > 0:
                                     stock_price = current_price
                                     logger.info(f"      현재가 업데이트: {stock_price:,.0f}원")
-                            except:
-                                logger.warning(f"      현재가 조회 실패, 기존 가격 사용: {stock_price:,.0f}원")
+                                else:
+                                    logger.warning(f"      현재가 조회 실패, 기존 가격 사용: {stock_price:,.0f}원")
+                            except Exception as price_error:
+                                logger.warning(f"      현재가 조회 중 오류: {str(price_error)}")
                             
                             # 포지션 크기 계산
                             quantity = calculate_position_size(target_config, stock_code, stock_price, trading_state)
@@ -4134,6 +4202,16 @@ def process_buy_candidates(trading_state):
                                     
                                     trading_state['positions'][stock_code] = position_info
                                     
+                                    # 당일 투자 기록
+                                    today = datetime.datetime.now().strftime('%Y-%m-%d')
+                                    if 'daily_investments' not in trading_state:
+                                        trading_state['daily_investments'] = {}
+                                    if today not in trading_state['daily_investments']:
+                                        trading_state['daily_investments'][today] = {}
+                                    
+                                    previous_daily = trading_state['daily_investments'][today].get(stock_code, 0)
+                                    trading_state['daily_investments'][today][stock_code] = previous_daily + actual_investment
+                                    
                                     # 성공 기록
                                     candidates_executed.append({
                                         'stock_code': stock_code,
@@ -4183,7 +4261,7 @@ def process_buy_candidates(trading_state):
                     candidates_to_remove.append(stock_code)
                     continue
                 
-                # 🔍 아직 대기 시간 내: 분봉 진입 타이밍 재확인
+                # 🔍 4단계: 아직 대기 시간 내 - 분봉 진입 타이밍 재확인
                 logger.info(f"   🕐 대기 시간 내: 분봉 타이밍 재확인")
                 
                 target_config = opportunity['target_config']
@@ -4288,6 +4366,16 @@ def process_buy_candidates(trading_state):
                             
                             trading_state['positions'][stock_code] = position_info
                             
+                            # 당일 투자 기록
+                            today = datetime.datetime.now().strftime('%Y-%m-%d')
+                            if 'daily_investments' not in trading_state:
+                                trading_state['daily_investments'] = {}
+                            if today not in trading_state['daily_investments']:
+                                trading_state['daily_investments'][today] = {}
+                            
+                            previous_daily = trading_state['daily_investments'][today].get(stock_code, 0)
+                            trading_state['daily_investments'][today][stock_code] = previous_daily + actual_investment
+                            
                             # 성공 기록
                             candidates_executed.append({
                                 'stock_code': stock_code,
@@ -4342,6 +4430,7 @@ def process_buy_candidates(trading_state):
                 
             except Exception as e:
                 logger.error(f"매수 후보 처리 중 오류 ({stock_code}): {str(e)}")
+                logger.exception(f"매수 후보 상세 오류 ({stock_code}):")
                 candidates_to_remove.append(stock_code)
                 candidates_expired.append({
                     'stock_code': stock_code,
@@ -4385,22 +4474,24 @@ def process_buy_candidates(trading_state):
         if remaining_candidates > 0:
             logger.info(f"\n⏳ 계속 대기 중인 종목들:")
             for stock_code, info in trading_state['buy_candidates'].items():
-                wait_start = datetime.datetime.fromisoformat(info['wait_start_time'])
-                wait_hours = (datetime.datetime.now() - wait_start).total_seconds() / 3600
-                max_wait = info.get('max_wait_hours', 2.0)
-                stock_name = info['opportunity']['stock_name']
-                daily_score = info.get('daily_score', 0)
-                
-                remaining_time = max_wait - wait_hours
-                logger.info(f"   - {stock_name}({stock_code}): "
-                          f"{wait_hours:.1f}시간 대기 중 (남은시간: {remaining_time:.1f}시간, {daily_score}점)")
+                try:
+                    wait_start = datetime.datetime.fromisoformat(info['wait_start_time'])
+                    wait_hours = (datetime.datetime.now() - wait_start).total_seconds() / 3600
+                    max_wait = info.get('max_wait_hours', 2.0)
+                    stock_name = info['opportunity']['stock_name']
+                    daily_score = info.get('daily_score', 0)
+                    
+                    remaining_time = max_wait - wait_hours
+                    logger.info(f"   - {stock_name}({stock_code}): "
+                              f"{wait_hours:.1f}시간 대기 중 (남은시간: {remaining_time:.1f}시간, {daily_score}점)")
+                except Exception as e:
+                    logger.warning(f"   - {stock_code}: 대기 정보 오류 ({str(e)})")
         
         return trading_state
         
     except Exception as e:
         logger.error(f"매수 후보 관리 중 전체 오류: {str(e)}")
-        logger.exception("상세 에러 정보:")
-        return trading_state
+        logger.exception("매수 후보 관리 상세 에러 정보:")        
 
 def execute_partial_sell_order(stock_code, target_config, sell_quantity, remaining_amount, strategy_type, reason):
     """분할매도 주문 실행"""
@@ -5396,7 +5487,11 @@ def process_positions(trading_state):
                     logger.info(f"   매도 수량: {sell_quantity}주 / {current_amount}주")
                     
                     # 🎯 분할매도 vs 전량매도 처리
-                    if sell_method == 'partial_sell' and remaining_amount > 0:
+                    # if sell_method == 'partial_sell' and remaining_amount > 0:
+                    if (sell_method in ['partial_sell', 'surge_adaptive_partial_sell'] and 
+                        remaining_amount > 0 and 
+                        sell_quantity < current_amount):
+
                         # 🎯 분할매도 실행
                         logger.info(f"🎯 분할매도 실행: {stock_name}")
                         
@@ -5671,7 +5766,7 @@ def process_positions(trading_state):
         return trading_state
 
 def execute_buy_opportunities(buy_opportunities, trading_state):
-    """매수 기회 실행 - 신호 강도별 분봉 타이밍 + 40점 기준 적용"""
+    """매수 기회 실행 - 중복 매수 방지 강화 및 동기화 개선"""
     try:
         if not buy_opportunities:
             return trading_state
@@ -5705,21 +5800,35 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                 logger.info(f"📈 일일 수익 한도 도달: {daily_profit_rate*100:.1f}%")
                 return trading_state
         
+        # 🔥 실제 보유량 한 번에 조회 (중복 매수 방지 핵심)
+        actual_holdings = {}
+        try:
+            my_stocks = KisKR.GetMyStockList()
+            if my_stocks:
+                for stock in my_stocks:
+                    stock_code = stock['StockCode']
+                    if stock_code in trading_config.target_stocks:
+                        actual_holdings[stock_code] = int(stock.get('StockAmt', 0))
+                logger.info(f"📊 실제 보유량 조회 완료: {len(actual_holdings)}개 종목")
+        except Exception as e:
+            logger.warning(f"⚠️ 실제 보유량 조회 실패: {str(e)}")
+        
         # 예산 현황 출력
         total_invested = get_total_invested_amount(trading_state)
         per_stock_limit = get_per_stock_budget_limit()
         active_stock_count = get_active_target_stock_count()
         
-        logger.info(f"💰 매수 실행 준비 (신호 강도별 분봉 타이밍):")
+        logger.info(f"💰 매수 실행 준비 (중복 방지 강화):")
         logger.info(f"  - 전체 사용가능 예산: {total_available_budget:,.0f}원")
         logger.info(f"  - 이미 투자된 금액: {total_invested:,.0f}원")
         logger.info(f"  - 활성 타겟 종목 수: {active_stock_count}개")
         logger.info(f"  - 종목별 예산 한도: {per_stock_limit:,.0f}원")
         logger.info(f"  - 현재/최대 보유종목: {current_positions}/{max_allowed_positions}개")
-        logger.info(f"  - 매수 기준: 40점 (강화)")
         
         # 매수 실행
         executed_count = 0
+        executed_stocks = []  # 🔥 실행된 종목 추적
+        
         for i, opportunity in enumerate(buy_opportunities[:max_new_positions]):
             try:
                 stock_code = opportunity['stock_code']
@@ -5731,6 +5840,56 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                 
                 logger.info(f"\n🔍 매수 검토: {stock_name}({stock_code})")
                 logger.info(f"   일봉 점수: {daily_score}점 ({signal_strength})")
+                
+                # 🔥 1단계: 중복 매수 방지 - 다중 체크
+                # 1-1. 봇 기록 체크
+                if stock_code in trading_state['positions']:
+                    logger.info(f"   ❌ 봇 기록상 이미 보유 중: {stock_name}")
+                    continue
+                
+                # 1-2. 실제 보유량 체크
+                actual_amount = actual_holdings.get(stock_code, 0)
+                if actual_amount > 0:
+                    logger.warning(f"   ❌ 실제 계좌에서 보유 중: {stock_name} ({actual_amount}주)")
+                    logger.warning(f"      → 봇 기록과 실제 보유량 불일치 감지!")
+                    
+                    # Discord 알림
+                    mismatch_msg = f"⚠️ 보유량 불일치 감지\n"
+                    mismatch_msg += f"종목: {stock_name}({stock_code})\n"
+                    mismatch_msg += f"봇 기록: 없음, 실제 보유: {actual_amount}주\n"
+                    mismatch_msg += f"→ 매수 스킵"
+                    
+                    if hasattr(trading_config, 'use_discord_alert') and trading_config.config.get('use_discord_alert', True):
+                        discord_alert.SendMessage(mismatch_msg)
+                    
+                    continue
+                
+                # 1-3. 미체결 주문 체크
+                if pending_manager.check_pending_orders(stock_code, trading_state):
+                    logger.info(f"   ❌ 미체결 주문 있음: {stock_name}")
+                    continue
+                
+                # 1-4. 이번 루프에서 이미 실행된 종목 체크
+                if stock_code in executed_stocks:
+                    logger.info(f"   ❌ 이번 루프에서 이미 매수 실행됨: {stock_name}")
+                    continue
+                
+                # 🔥 2단계: 매수 대기 리스트에서 제거 (매수 실행 전에!)
+                was_in_candidates = False
+                if 'buy_candidates' in trading_state and stock_code in trading_state['buy_candidates']:
+                    candidate_info = trading_state['buy_candidates'][stock_code]
+                    wait_start = datetime.datetime.fromisoformat(candidate_info['wait_start_time'])
+                    wait_hours = (datetime.datetime.now() - wait_start).total_seconds() / 3600
+                    
+                    logger.info(f"   📋 대기 리스트에서 발견: {wait_hours:.1f}시간 대기 중")
+                    
+                    # 대기 리스트에서 제거
+                    del trading_state['buy_candidates'][stock_code]
+                    was_in_candidates = True
+                    logger.info(f"   🗑️ 매수 시도 전 대기 리스트에서 제거: {stock_name}")
+                    
+                    # 즉시 저장하여 동기화
+                    save_trading_state(trading_state)
                 
                 # 종목별 남은 예산 확인
                 remaining_budget = get_remaining_budget_for_stock(stock_code, trading_state)
@@ -5758,40 +5917,35 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                         logger.info(f"      사유: {timing_analysis['reason']}")
                         logger.info(f"      최대 대기시간: {max_wait_hours}시간")
                         
-                        # 매수 대기 리스트에 추가 (신호별 대기시간 적용)
+                        # 🔥 대기 리스트 재등록 (매수 실행 안하는 경우만)
                         if 'buy_candidates' not in trading_state:
                             trading_state['buy_candidates'] = {}
                         
                         trading_state['buy_candidates'][stock_code] = {
                             'opportunity': opportunity,
                             'wait_start_time': datetime.datetime.now().isoformat(),
-                            'max_wait_hours': max_wait_hours,  # 🔥 신호별 대기시간
+                            'max_wait_hours': max_wait_hours,
                             'daily_score': daily_score,
                             'signal_strength': signal_strength,
                             'last_intraday_score': intraday_score,
                             'min_intraday_score': min_intraday_score,
                             'last_check_time': datetime.datetime.now().isoformat(),
-                            'timing_reason': timing_reason,  # 🔥 타이밍 이유 저장
-                            'timing_analysis': timing_analysis
+                            'timing_reason': timing_reason,
+                            'timing_analysis': timing_analysis,
+                            'was_reregistered': True  # 재등록 표시
                         }
                         
-                        logger.info(f"      → 매수 대기 리스트 등록 완료")
-                        
-                        # 대기 종목 요약 정보
-                        total_candidates = len(trading_state.get('buy_candidates', {}))
-                        logger.info(f"📋 현재 매수 대기 종목: {total_candidates}개")
-                        
+                        logger.info(f"      → 매수 대기 리스트 재등록 완료")
+                        save_trading_state(trading_state)  # 즉시 저장
                         continue
                     else:
                         logger.info(f"   ✅ 분봉 진입 타이밍 양호")
                         logger.info(f"      사유: {timing_analysis['reason']}")
-                        logger.info(f"      분봉 신호: {timing_analysis.get('entry_signals', [])[:3]}")
                 else:
                     logger.info(f"   🚀 일봉 신호 강도로 즉시 매수 진행")
 
-                # 🆕 === 현재가 재조회 로직 추가 ===
-                old_price = opportunity['price']  # 스캔 시점 가격
-
+                # 🆕 현재가 재조회
+                old_price = opportunity['price']
                 try:
                     current_price = KisKR.GetCurrentPrice(stock_code)
                     if current_price and current_price > 0:
@@ -5816,10 +5970,9 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                 except Exception as price_error:
                     actual_price = old_price
                     logger.error(f"❌ 현재가 조회 중 오류: {str(price_error)}")
-                # 🆕 === 현재가 재조회 로직 끝 ===
 
                 # 포지션 크기 계산
-                quantity = calculate_position_size(target_config, stock_code, stock_price, trading_state)
+                quantity = calculate_position_size(target_config, stock_code, actual_price, trading_state)
                 
                 if quantity < 1:
                     logger.info(f"   ❌ 매수 수량 부족 (계산된 수량: {quantity})")
@@ -5828,22 +5981,25 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                 # 최종 투자금액 계산
                 estimated_investment = actual_price * quantity
                 estimated_fee = calculate_trading_fee(actual_price, quantity, True)
-
                 total_cost = estimated_investment + estimated_fee
                 
                 logger.info(f"   💰 매수 계획:")
                 logger.info(f"      수량: {quantity}주")
-                logger.info(f"      가격: {stock_price:,.0f}원")
+                logger.info(f"      가격: {actual_price:,.0f}원")
                 logger.info(f"      투자금액: {estimated_investment:,.0f}원")
                 logger.info(f"      예상 수수료: {estimated_fee:,.0f}원")
                 logger.info(f"      총 소요: {total_cost:,.0f}원")
                 
-                # 🔵 매수 주문 실행
+                # 🔥 3단계: 매수 주문 실행
                 logger.info(f"   🔵 매수 주문 실행: {stock_name}({stock_code})")
                 executed_price, executed_amount = execute_buy_order(
-                    stock_code, target_config, quantity, actual_price  # ← 재조회된 현재가 사용
+                    stock_code, target_config, quantity, actual_price
                 )
+                
                 if executed_price and executed_amount:
+                    # 🔥 4단계: 매수 성공 시 즉시 처리
+                    executed_stocks.append(stock_code)  # 실행된 종목 추가
+                    
                     # 매수 수수료 계산
                     buy_fee = calculate_trading_fee(executed_price, executed_amount, True)
                     actual_investment = executed_price * executed_amount
@@ -5854,7 +6010,7 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                     logger.info(f"      실제 투자금액: {actual_investment:,.0f}원")
                     logger.info(f"      실제 수수료: {buy_fee:,.0f}원")
                     
-                    # 포지션 정보 저장
+                    # 🔥 5단계: 포지션 정보 저장 및 상태 업데이트
                     position_info = {
                         'stock_code': stock_code,
                         'stock_name': stock_name,
@@ -5867,12 +6023,12 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                         'target_config': target_config,
                         'buy_analysis': opportunity['analysis'],
                         'signal_strength': signal_strength,
-                        'daily_score': daily_score,  # 🔥 일봉 점수 저장
+                        'daily_score': daily_score,
                         'entry_method': 'intraday_timing' if use_intraday else 'daily_signal_only',
-                        'scan_price': old_price,        # 🆕 스캔시 가격 기록
-                        'order_price': actual_price,    # 🆕 주문시 가격 기록
-                        'price_improvement': executed_price - actual_price  # 🆕 가격 개선 기록
-
+                        'scan_price': old_price,
+                        'order_price': actual_price,
+                        'price_improvement': executed_price - actual_price,
+                        'was_in_candidates': was_in_candidates  # 🔥 대기 리스트 출신 표시
                     }
                     
                     # 분봉 타이밍 사용시 분봉 정보도 저장
@@ -5883,41 +6039,43 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                     trading_state['positions'][stock_code] = position_info
                     executed_count += 1
 
-                    trading_state['positions'][stock_code] = position_info
-                    executed_count += 1
-
-                    # 🔥 당일 투자 금액 기록 (매도되어도 누적 추적)
+                    # 🔥 6단계: 당일 투자 금액 기록
                     today = datetime.datetime.now().strftime('%Y-%m-%d')
                     if 'daily_investments' not in trading_state:
                         trading_state['daily_investments'] = {}
                     if today not in trading_state['daily_investments']:
                         trading_state['daily_investments'][today] = {}
 
-                    # 당일 누적 투자 금액 업데이트
                     previous_daily = trading_state['daily_investments'][today].get(stock_code, 0)
                     trading_state['daily_investments'][today][stock_code] = previous_daily + actual_investment
 
                     logger.info(f"📊 {stock_name} 당일 누적 투자: {trading_state['daily_investments'][today][stock_code]:,}원")
 
-                    # 📊 예산 현황 업데이트 (기존 코드 계속...)
-                    updated_total_invested = get_total_invested_amount(trading_state) + actual_investment
+                    # 🔥 7단계: 최종 안전 확인 - 대기 리스트에서 완전 제거
+                    if 'buy_candidates' in trading_state and stock_code in trading_state['buy_candidates']:
+                        del trading_state['buy_candidates'][stock_code]
+                        logger.info(f"   🗑️ 매수 완료 후 대기 리스트에서 최종 제거: {stock_name}")
+                    
+                    # 🔥 8단계: 즉시 저장하여 동기화 보장
+                    save_trading_state(trading_state)
+                    logger.info(f"   💾 매수 완료 상태 즉시 저장: {stock_name}")
 
-                    # 📊 예산 현황 업데이트
-                    updated_total_invested = get_total_invested_amount(trading_state) + actual_investment
+                    # 예산 현황 업데이트
+                    updated_total_invested = get_total_invested_amount(trading_state)
                     total_target_budget = get_per_stock_budget_limit() * active_stock_count
                     remaining_total_budget = total_target_budget - updated_total_invested
                     
                     # 종목별 투자 현황
-                    current_stock_invested = get_invested_amount_for_stock(stock_code, trading_state)
+                    current_stock_invested = actual_investment  # 방금 투자한 금액
                     stock_usage_rate = (current_stock_invested / per_stock_limit * 100) if per_stock_limit > 0 else 0
                     
-                    # 🎉 매수 완료 알림 (상세 정보 포함)
+                    # 🎉 매수 완료 알림
                     msg = f"🎉 매수 완료: {stock_name}({stock_code})\n"
                     msg += f"매수가: {executed_price:,.0f}원 × {executed_amount}주\n"
                     msg += f"투자금액: {actual_investment:,.0f}원\n"
                     msg += f"수수료: {buy_fee:,.0f}원\n"
 
-                    # 🆕 가격 추적 정보 추가
+                    # 가격 추적 정보
                     if old_price != actual_price:
                         price_diff = actual_price - old_price
                         msg += f"\n💰 가격 추적:\n"
@@ -5939,18 +6097,16 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                     else:
                         msg += f"• 진입 방식: 강한 신호로 즉시 매수\n"
                     
+                    if was_in_candidates:
+                        msg += f"• 대기 이력: 있음 (대기 후 매수)\n"
+                    
                     # 예산 현황
                     msg += f"\n📊 예산 현황:\n"
                     msg += f"• 전체 투자: {updated_total_invested:,.0f}원\n"
                     msg += f"• 남은 예산: {remaining_total_budget:,.0f}원\n"
                     msg += f"• 활성 종목 수: {active_stock_count}개\n"
                     
-                    # 종목별 투자 현황
-                    msg += f"\n💰 {stock_name} 투자 현황:\n"
-                    msg += f"• 투자금액: {current_stock_invested:,.0f}원\n"
-                    msg += f"• 종목별 한도: {per_stock_limit:,.0f}원\n"
-                    msg += f"• 사용률: {stock_usage_rate:.1f}%\n"
-
+                    # 뉴스 분석 정보
                     if opportunity.get('news_impact'):
                         news_impact = opportunity['news_impact']
                         decision = news_impact.get('decision', 'NEUTRAL')
@@ -5961,7 +6117,7 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                         if decision == 'POSITIVE':
                             msg += f"• ✅ 긍정 뉴스 ({percentage}% 신뢰도)\n"
                             if reason:
-                                msg += f"• 내용: {reason[:80]}...\n"  # 80자까지만
+                                msg += f"• 내용: {reason[:80]}...\n"
                         elif decision == 'NEGATIVE': 
                             msg += f"• ❌ 부정 뉴스 ({percentage}% 신뢰도)\n"
                             if reason:
@@ -5969,7 +6125,7 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                         else:
                             msg += f"• ⚪ 중립 뉴스 (영향 없음)\n"
 
-                    # 주요 매수 사유 (상위 3개)
+                    # 주요 매수 사유
                     if opportunity.get('signals'):
                         msg += f"\n📈 주요 매수 사유:\n"
                         for signal in opportunity['signals'][:3]:
@@ -5992,14 +6148,33 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                 else:
                     logger.error(f"   ❌ 매수 주문 실패: {stock_name}({stock_code})")
                     logger.error(f"      주문 결과: {executed_price}, {executed_amount}")
+                    
+                    # 🔥 매수 실패시 대기 리스트 재등록 (필요한 경우)
+                    if was_in_candidates and use_intraday:
+                        logger.info(f"   🔄 매수 실패로 대기 리스트 재등록: {stock_name}")
+                        if 'buy_candidates' not in trading_state:
+                            trading_state['buy_candidates'] = {}
+                        
+                        trading_state['buy_candidates'][stock_code] = {
+                            'opportunity': opportunity,
+                            'wait_start_time': datetime.datetime.now().isoformat(),
+                            'max_wait_hours': max_wait_hours,
+                            'daily_score': daily_score,
+                            'signal_strength': signal_strength,
+                            'timing_reason': f"매수 실패 후 재등록: {timing_reason}",
+                            'retry_count': 1
+                        }
+                        save_trading_state(trading_state)
                 
             except Exception as e:
                 logger.error(f"매수 실행 중 에러 ({stock_code}): {str(e)}")
+                logger.exception(f"매수 실행 상세 에러 ({stock_code}):")
                 continue
         
         # 🎯 실행 결과 요약
         if executed_count > 0:
             logger.info(f"\n🎯 매수 실행 완료: {executed_count}개 종목")
+            logger.info(f"📊 실행된 종목: {', '.join([s for s in executed_stocks])}")
             
             # 현재 포지션 현황
             updated_positions = len(trading_state['positions'])
@@ -6014,7 +6189,7 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
             logger.info(f"   - 사용 가능: {final_available_budget:,.0f}원")
         else:
             logger.info(f"\n⏸️ 매수 실행 종목 없음")
-            logger.info(f"   사유: 예산 부족, 타이밍 대기, 또는 기준 미달")
+            logger.info(f"   사유: 예산 부족, 타이밍 대기, 중복 방지, 또는 기준 미달")
         
         # 매수 대기 종목 현황
         if 'buy_candidates' in trading_state and trading_state['buy_candidates']:
@@ -6022,22 +6197,45 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
             logger.info(f"\n📋 매수 대기 종목: {candidate_count}개")
             
             for code, info in trading_state['buy_candidates'].items():
-                wait_start = datetime.datetime.fromisoformat(info['wait_start_time'])
-                wait_minutes = (datetime.datetime.now() - wait_start).total_seconds() / 60
-                max_wait_hours = info.get('max_wait_hours', 2.0)
-                daily_score = info.get('daily_score', 0)
-                signal_strength = info.get('signal_strength', 'NORMAL')
-                
-                stock_name = info['opportunity']['stock_name']
-                logger.info(f"   - {stock_name}({code}): {wait_minutes:.0f}분 대기 "
-                          f"(최대 {max_wait_hours}시간, {daily_score}점 {signal_strength})")
+                try:
+                    wait_start = datetime.datetime.fromisoformat(info['wait_start_time'])
+                    wait_minutes = (datetime.datetime.now() - wait_start).total_seconds() / 60
+                    max_wait_hours = info.get('max_wait_hours', 2.0)
+                    daily_score = info.get('daily_score', 0)
+                    signal_strength = info.get('signal_strength', 'NORMAL')
+                    
+                    stock_name = info['opportunity']['stock_name']
+                    was_reregistered = info.get('was_reregistered', False)
+                    retry_count = info.get('retry_count', 0)
+                    
+                    status_info = ""
+                    if was_reregistered:
+                        status_info += " [재등록]"
+                    if retry_count > 0:
+                        status_info += f" [재시도{retry_count}]"
+                    
+                    logger.info(f"   - {stock_name}({code}): {wait_minutes:.0f}분 대기 "
+                              f"(최대 {max_wait_hours}시간, {daily_score}점 {signal_strength}){status_info}")
+                except Exception as e:
+                    logger.warning(f"   - {code}: 대기 정보 오류 ({str(e)})")
+        
+        # 🔥 최종 저장
+        save_trading_state(trading_state)
+        logger.info(f"💾 매수 실행 완료 후 최종 상태 저장")
         
         return trading_state
         
     except Exception as e:
         logger.error(f"매수 실행 중 전체 에러: {str(e)}")
-        logger.exception("상세 에러 정보:")
-        return trading_state
+        logger.exception("매수 실행 상세 에러 정보:")
+        
+        # 에러 발생시에도 상태 저장
+        try:
+            save_trading_state(trading_state)
+        except:
+            pass
+        
+        return trading_state        
 
 def create_config_file(config_path: str = "target_stock_config.json") -> None:
     """기본 설정 파일 생성 (분봉 타이밍 옵션 + 뉴스 분석 포함한 개선 버전)"""
