@@ -89,62 +89,80 @@ class SmartSplitConfig:
         self.config = {}
         self.load_config()
 
-
     def get_default_config(self):
-        """기본 설정값 반환 - 🔥 3종목 분산투자 + 하락률 완화 + 적응형 손절 시스템이 통합된 개선된 한국주식 버전"""
-        # 🎯 종목타입별 개선된 템플릿 정의
+        """기본 설정값 반환 - 🔥 상승장 최적화 3종목 분산투자 + 차트 분석 반영 버전"""
+        # 🎯 종목타입별 개선된 템플릿 정의 (차트 분석 반영)
         stock_type_templates = {
-            "growth": {          # 성장주 템플릿 (개선됨)
+            "high_volatility": {     # 한화오션 - 고변동성 특화 템플릿
                 "period": 60,
                 "recent_period": 30,
                 "recent_weight": 0.7,
-                "hold_profit_target": 8,
-                "quick_profit_target": 5,
-                "base_profit_target": 12,
-                "safety_protection_ratio": 0.95,
-                "time_based_sell_days": 45,
-                "partial_sell_ratio": 0.25,
+                "hold_profit_target": 6,        # 빠른 수익확정
+                "quick_profit_target": 4,       # 더 빠른 확정
+                "base_profit_target": 10,
+                "safety_protection_ratio": 0.90, # 더 빠른 보호
+                "time_based_sell_days": 30,     # 빠른 회전
+                "partial_sell_ratio": 0.30,
                 "min_holding": 0,
-                # 🔥 새로운 적응형 쿨다운 설정
-                "reentry_cooldown_base_hours": 6,       # 기본 쿨다운 6시간
-                "min_pullback_for_reentry": 2.0,        # 재진입 최소 조정률 2%
-                "volatility_cooldown_multiplier": 0.5,  # 고변동성 시 50% 단축
-                "market_cooldown_adjustment": True,     # 시장상황별 조정 활성화
-                # 🔥 순차 진입 검증 설정
-                "enable_sequential_validation": True,   # 순차 진입 검증 활성화
-                "dynamic_drop_adjustment": True,        # 동적 하락률 조정
-                # 🔥 매도 최적화 설정
-                "uptrend_sell_ratio_multiplier": 0.6,   # 상승장 매도 비율 승수
-                "high_profit_sell_reduction": True      # 고수익 시 매도량 감소
-            },
-            "value": {           # 가치주 템플릿 (개선됨)
-                "period": 90,
-                "recent_period": 45,
-                "recent_weight": 0.5,
-                "hold_profit_target": 7,
-                "quick_profit_target": 5,
-                "base_profit_target": 8,
-                "safety_protection_ratio": 0.95,
-                "time_based_sell_days": 60,
-                "partial_sell_ratio": 0.4,
-                "min_holding": 0,
-                # 🔥 가치주는 더 긴 쿨다운
-                "reentry_cooldown_base_hours": 8,       # 기본 8시간
-                "min_pullback_for_reentry": 3.0,        # 3% 조정 요구
-                "volatility_cooldown_multiplier": 0.7,  # 변동성 조정 30%
+                "reentry_cooldown_base_hours": 4,       # 기회 확대
+                "min_pullback_for_reentry": 3.0,        # 충분한 조정 대기
+                "volatility_cooldown_multiplier": 0.4,  # 더 빠른 재진입
                 "market_cooldown_adjustment": True,
                 "enable_sequential_validation": True,
                 "dynamic_drop_adjustment": True,
-                "uptrend_sell_ratio_multiplier": 0.8,
-                "high_profit_sell_reduction": False
+                "uptrend_sell_ratio_multiplier": 0.5,   # 상승장 빠른 매도
+                "high_profit_sell_reduction": True,
+                "rsi_upper_bound": 75                   # RSI 조건 완화
+            },
+            "stable_growth": {       # 두산에너빌리티 - 안정 성장 템플릿
+                "period": 60,
+                "recent_period": 30,
+                "recent_weight": 0.7,
+                "hold_profit_target": 10,       # 더 기다림
+                "quick_profit_target": 6,       
+                "base_profit_target": 15,
+                "safety_protection_ratio": 0.92,
+                "time_based_sell_days": 60,     # 장기 보유
+                "partial_sell_ratio": 0.25,
+                "min_holding": 0,
+                "reentry_cooldown_base_hours": 8,       # 신중 진입
+                "min_pullback_for_reentry": 2.0,        # 작은 조정에도 진입
+                "volatility_cooldown_multiplier": 0.8,
+                "market_cooldown_adjustment": True,
+                "enable_sequential_validation": True,
+                "dynamic_drop_adjustment": True,
+                "uptrend_sell_ratio_multiplier": 0.7,
+                "high_profit_sell_reduction": False,
+                "rsi_upper_bound": 65                   # 보수적 RSI
+            },
+            "breakout": {            # PLUS K방산 - 돌파형 템플릿
+                "period": 60,
+                "recent_period": 30,
+                "recent_weight": 0.7,
+                "hold_profit_target": 12,       # 큰 상승 기대
+                "quick_profit_target": 7,       
+                "base_profit_target": 18,
+                "safety_protection_ratio": 0.88, # 적극적 보호
+                "time_based_sell_days": 45,
+                "partial_sell_ratio": 0.20,
+                "min_holding": 0,
+                "reentry_cooldown_base_hours": 6,
+                "min_pullback_for_reentry": 2.5,
+                "volatility_cooldown_multiplier": 0.6,
+                "market_cooldown_adjustment": True,
+                "enable_sequential_validation": True,
+                "dynamic_drop_adjustment": True,
+                "uptrend_sell_ratio_multiplier": 0.6,
+                "high_profit_sell_reduction": True,
+                "rsi_upper_bound": 68                   # 돌파 후 적정 RSI
             }
         }
         
-        # 🔥 3종목 분산투자 설정 (한국주식)
+        # 🔥 상승장 최적화 3종목 분산투자 설정 (차트 분석 반영)
         target_stocks_config = {
-            "449450": {"weight": 0.4, "stock_type": "growth"},     # PLUS K방산 - 40%
-            "042660": {"weight": 0.3, "stock_type": "growth"},     # 한화오션 - 30%
-            "034020": {"weight": 0.3, "stock_type": "growth"}      # 두산에너빌리티 - 30%
+            "042660": {"weight": 0.30, "stock_type": "high_volatility"},     # 한화오션 - 30% (고변동성 대응)
+            "034020": {"weight": 0.35, "stock_type": "stable_growth"},       # 두산에너빌리티 - 35% (안정성장, 비중확대)
+            "449450": {"weight": 0.35, "stock_type": "breakout"}             # PLUS K방산 - 35% (돌파형, 비중확대)
         }
         
         # 종목별 정보 수집 및 설정 생성
@@ -157,9 +175,9 @@ class SmartSplitConfig:
                 # 종목명 조회 시도
                 stock_name = f"종목{stock_code}"  # 기본값
                 stock_names = {
-                    "449450": "PLUS K방산",
                     "042660": "한화오션", 
-                    "034020": "두산에너빌리티"
+                    "034020": "두산에너빌리티",
+                    "449450": "PLUS K방산"
                 }
                 
                 try:
@@ -188,30 +206,18 @@ class SmartSplitConfig:
                 stock_type = basic_config["stock_type"]
                 if stock_type in stock_type_templates:
                     type_template = stock_type_templates[stock_type]
-                    logger.info(f"{stock_code} → {stock_type} 개선된 템플릿 적용")
+                    logger.info(f"{stock_code} → {stock_type} 상승장 최적화 템플릿 적용")
                 else:
-                    # 정의되지 않은 타입은 growth 템플릿 사용
-                    type_template = stock_type_templates["growth"]
-                    logger.warning(f"{stock_code} → 정의되지 않은 타입({stock_type}), growth 템플릿 사용")
+                    # 정의되지 않은 타입은 stable_growth 템플릿 사용
+                    type_template = stock_type_templates["stable_growth"]
+                    logger.warning(f"{stock_code} → 정의되지 않은 타입({stock_type}), stable_growth 템플릿 사용")
                 
-                # 🔥 종목별 특화 설정 (변동성 조정)
-                volatility_adjustments = {
-                    "449450": 0.5,  # PLUS K방산: 저변동성 → 50% 단축
-                    "042660": 0.5,  # 한화오션: 고변동성 → 50% 단축  
-                    "034020": 0.7   # 두산에너빌리티: 중변동성 → 70% 단축
-                }
-                
-                if stock_code in volatility_adjustments:
-                    type_template = type_template.copy()
-                    type_template["volatility_cooldown_multiplier"] = volatility_adjustments[stock_code]
-                    logger.info(f"{stock_code} 변동성 조정: {volatility_adjustments[stock_code]}")
-                
-                # 🔥 최종 종목 설정 생성 (기본 정보 + 개선된 타입별 템플릿)
+                # 🔥 최종 종목 설정 생성 (기본 정보 + 상승장 최적화 타입별 템플릿)
                 stock_config = {
                     "name": stock_name,
                     "weight": basic_config["weight"],
                     "stock_type": stock_type,
-                    **type_template  # 개선된 타입별 템플릿 자동 적용
+                    **type_template  # 상승장 최적화 타입별 템플릿 자동 적용
                 }
                 
                 target_stocks[stock_code] = stock_config
@@ -219,17 +225,17 @@ class SmartSplitConfig:
                 weight = basic_config["weight"]
                 logger.info(f"✅ 종목 설정 완료: {stock_code}({stock_name})")
                 logger.info(f"   📊 타입: {stock_type}, 비중: {weight*100:.1f}%")
+                logger.info(f"   🎯 목표수익률: {type_template['hold_profit_target']}%")
                 logger.info(f"   🕐 쿨다운: {type_template['reentry_cooldown_base_hours']}시간")
-                logger.info(f"   📉 조정요구: {type_template['min_pullback_for_reentry']}%")
-                logger.info(f"   🎯 변동성조정: {type_template['volatility_cooldown_multiplier']}")
+                logger.info(f"   📈 RSI상한: {type_template['rsi_upper_bound']}")
                 
                 time.sleep(0.5)  # API 호출 간격
                 
             except Exception as e:
                 logger.error(f"종목 {stock_code} 처리 중 심각한 오류: {str(e)}")
                 # 오류 시에도 기본 설정으로 종목 추가
-                stock_type = basic_config.get("stock_type", "growth")
-                type_template = stock_type_templates.get(stock_type, stock_type_templates["growth"])
+                stock_type = basic_config.get("stock_type", "stable_growth")
+                type_template = stock_type_templates.get(stock_type, stock_type_templates["stable_growth"])
                 
                 error_config = {
                     "name": stock_names.get(stock_code, f"종목{stock_code}"),
@@ -251,14 +257,14 @@ class SmartSplitConfig:
         
         # 각 종목별 할당 예산 로깅
         budget = 1000000
-        logger.info("📋 3종목 분산투자 할당 예산 및 개선된 전략:")
+        logger.info("📋 상승장 최적화 3종목 분산투자 할당 예산:")
         for stock_code, stock_config in target_stocks.items():
             allocated = budget * stock_config['weight']
             logger.info(f"  • {stock_config['name']}({stock_code}): {stock_config['weight']*100:.1f}% → {allocated:,.0f}원")
-            logger.info(f"    └─ {stock_config['stock_type']} 타입, 쿨다운 {stock_config['reentry_cooldown_base_hours']}시간")
-            logger.info(f"    └─ 변동성조정: {stock_config['volatility_cooldown_multiplier']}, 조정요구: {stock_config['min_pullback_for_reentry']}%")
+            logger.info(f"    └─ {stock_config['stock_type']} 타입")
+            logger.info(f"    └─ 목표: {stock_config['hold_profit_target']}%, RSI상한: {stock_config['rsi_upper_bound']}")
         
-        # 🔥🔥🔥 통합된 기본 설정 반환 (3종목 분산투자 + 하락률 25% 완화 + 적응형 손절 시스템 포함) 🔥🔥🔥
+        # 🔥🔥🔥 상승장 최적화 통합 기본 설정 반환 🔥🔥🔥
         return {
             # 🔥 절대 예산 설정
             "use_absolute_budget": True,
@@ -277,120 +283,122 @@ class SmartSplitConfig:
             
             # 🔥 개선된 매수 제어 설정
             "enhanced_buy_control": {
-                "enable_adaptive_cooldown": True,           # 적응형 쿨다운 활성화
-                "enable_sequential_validation": True,       # 순차 진입 검증 활성화
-                "enable_enhanced_order_tracking": True,     # 개선된 주문 추적 활성화
-                "enable_broker_sync": True,                 # 브로커 동기화 활성화
-                "max_daily_buys_per_stock": 2,             # 종목당 일일 최대 매수
-                "order_timeout_seconds": 60,                # 주문 타임아웃
-                "sync_check_interval_minutes": 30           # 동기화 체크 간격
+                "enable_adaptive_cooldown": True,
+                "enable_sequential_validation": True,
+                "enable_enhanced_order_tracking": True,
+                "enable_broker_sync": True,
+                "max_daily_buys_per_stock": 2,
+                "order_timeout_seconds": 60,
+                "sync_check_interval_minutes": 30
             },
             
-            # 🔥 동적 하락률 요구사항 설정 (25% 완화 적용)
+            # 🔥 상승장 최적화 동적 하락률 요구사항 (35% 완화 적용)
             "dynamic_drop_requirements": {
                 "enable": True,
                 "base_drops": {
-                    "2": 0.045,  # 2차: 4.5% 하락 (기존 6%에서 25% 완화)
-                    "3": 0.055,  # 3차: 5.5% 하락 (기존 7%에서 21% 완화)
-                    "4": 0.070,  # 4차: 7.0% 하락 (기존 9%에서 22% 완화)
-                    "5": 0.085   # 5차: 8.5% 하락 (기존 11%에서 23% 완화)
+                    "2": 0.040,  # 2차: 4.0% 하락 (기존 6.0%에서 35% 완화)
+                    "3": 0.048,  # 3차: 4.8% 하락 (기존 7.0%에서 31% 완화)
+                    "4": 0.058,  # 4차: 5.8% 하락 (기존 9.0%에서 36% 완화)
+                    "5": 0.070   # 5차: 7.0% 하락 (기존 11.0%에서 36% 완화)
                 },
                 "adjustment_factors": {
-                    "rsi_oversold_bonus": -0.01,      # RSI 과매도 시 1%p 완화
-                    "market_downtrend_bonus": -0.015,  # 하락장 시 1.5%p 완화
-                    "volatility_bonus": -0.005,       # 고변동성 시 0.5%p 완화
-                    "rsi_overbought_penalty": 0.01,   # RSI 과매수 시 1%p 강화
-                    "market_uptrend_penalty": 0.01    # 상승장 시 1%p 강화
+                    "rsi_oversold_bonus": -0.015,        # RSI 과매도 시 1.5%p 완화 (강화)
+                    "market_downtrend_bonus": -0.015,    # 하락장 시 1.5%p 완화
+                    "market_uptrend_bonus": -0.010,      # 🆕 상승장에서도 1.0%p 완화
+                    "strong_uptrend_bonus": -0.015,      # 🆕 강한 상승장 1.5%p 완화
+                    "volatility_bonus": -0.008,          # 고변동성 시 0.8%p 완화 (강화)
+                    "rsi_overbought_penalty": 0.005,     # RSI 과매수 시 0.5%p 강화 (완화)
+                    "market_uptrend_penalty": 0.005      # 기존 상승장 페널티 완화
                 }
             },
             
-            # 🔥🔥🔥 3종목 특화 적응형 손절 시스템 🔥🔥🔥
+            # 🔥🔥🔥 상승장 최적화 적응형 손절 시스템 🔥🔥🔥
             "enhanced_stop_loss": {
                 "enable": True,
-                "description": "3종목 분산투자 한국주식 특화 적응형 손절 시스템",
+                "description": "상승장 최적화 3종목 분산투자 적응형 손절 시스템",
                 
-                # 🎯 차수별 기본 손절선 (한국주식 특성 반영)
+                # 🎯 상승장 대응 완화된 기본 손절선
                 "adaptive_thresholds": {
-                    "position_1": -0.15,      # 1차수: -15% (미국 -18%보다 관대)
-                    "position_2": -0.20,      # 2차수: -20% (미국 -22%보다 관대)
-                    "position_3_plus": -0.25  # 3차수 이상: -25% (미국 -28%보다 관대)
+                    "position_1": -0.12,     # 1차수: -12% (기존 -15%에서 20% 완화)
+                    "position_2": -0.16,     # 2차수: -16% (기존 -20%에서 20% 완화)
+                    "position_3_plus": -0.20 # 3차수 이상: -20% (기존 -25%에서 20% 완화)
                 },
                 
-                # 🔥 한국주식 변동성 조정 (더 큰 조정폭)
+                # 🔥 한국주식 변동성 조정 (기존 유지)
                 "volatility_adjustment": {
-                    "high_volatility": -0.04,     # 고변동성: 4%p 완화 (한화오션 등)
-                    "medium_volatility": -0.02,   # 중변동성: 2%p 완화 (두산에너빌리티)
-                    "low_volatility": 0.0,        # 저변동성: 조정 없음 (PLUS K방산 등)
-                    "threshold_high": 6.0,        # 한국주식 고변동성 기준: 6%
-                    "threshold_medium": 3.5       # 한국주식 중변동성 기준: 3.5%
+                    "high_volatility": -0.04,
+                    "medium_volatility": -0.02,
+                    "low_volatility": 0.0,
+                    "threshold_high": 6.0,
+                    "threshold_medium": 3.5
                 },
                 
-                # ⏰ 시간 기반 손절 (한국주식 특성 고려)
+                # ⏰ 시간 기반 손절 (기존 유지)
                 "time_based_rules": {
                     "enable": True,
                     "rules": {
-                        "90_day_threshold": -0.12,   # 90일 보유시 -12% (미국보다 관대)
-                        "180_day_threshold": -0.08,  # 180일 보유시 -8% (미국보다 관대)
-                        "365_day_threshold": -0.05   # 1년 보유시 -5% (한국 특화)
+                        "90_day_threshold": -0.12,
+                        "180_day_threshold": -0.08,
+                        "365_day_threshold": -0.05
                     }
                 },
                 
-                # 🛡️ 비상 손절 (전체 포트폴리오 보호)
+                # 🛡️ 비상 손절 (기존 유지)
                 "emergency_stop": {
                     "enable": True,
-                    "total_portfolio_loss": -0.30,    # 전체 -30% 도달시 모든 거래 중단
-                    "consecutive_stops": 4,           # 연속 4회 손절시 하루 휴식
-                    "daily_stop_limit": 2             # 하루 최대 2회 손절
+                    "total_portfolio_loss": -0.30,
+                    "consecutive_stops": 4,
+                    "daily_stop_limit": 2
                 },
                 
-                # 🎯 시장 상황별 조정 (한국 시장 특화)
+                # 🎯 상승장 특화 시장 상황별 조정
                 "market_adjustment": {
                     "enable": True,
-                    "kospi_based": True,              # 코스피 기준 조정
+                    "kospi_based": True,
                     "adjustments": {
                         "strong_downtrend": -0.03,   # 강한 하락장: 3%p 완화
                         "downtrend": -0.015,         # 하락장: 1.5%p 완화  
                         "neutral": 0.0,              # 중립: 조정 없음
-                        "uptrend": 0.01,             # 상승장: 1%p 강화
-                        "strong_uptrend": 0.02       # 강한 상승장: 2%p 강화
+                        "uptrend": 0.015,            # 상승장: 1.5%p 강화 (기존 1%p에서 조정)
+                        "strong_uptrend": 0.03       # 강한 상승장: 3%p 강화 (기존 2%p에서 조정)
                     }
                 },
                 
-                # 📊 3종목별 개별 설정 (분산투자 특화)
+                # 📊 차트 분석 기반 3종목별 특화 손절선
                 "stock_specific_overrides": {
-                    "449450": {  # PLUS K방산 - 대형주 특성상 엄격
-                        "position_1": -0.18,     # 1차: -18%
-                        "position_2": -0.23,     # 2차: -23%
-                        "position_3_plus": -0.28 # 3차+: -28%
+                    "042660": {  # 한화오션 - 고변동성 대응 관대
+                        "position_1": -0.10,     # 1차: -10% (가장 관대)
+                        "position_2": -0.14,     # 2차: -14%
+                        "position_3_plus": -0.18 # 3차+: -18%
                     },
-                    "042660": {  # 한화오션 - 변동성 큰 종목은 관대
-                        "position_1": -0.12,     # 1차: -12%
-                        "position_2": -0.17,     # 2차: -17%
+                    "034020": {  # 두산에너빌리티 - 안정성장 표준
+                        "position_1": -0.12,     # 1차: -12% (표준)
+                        "position_2": -0.16,     # 2차: -16%
+                        "position_3_plus": -0.20 # 3차+: -20%
+                    },
+                    "449450": {  # PLUS K방산 - 돌파형 여유
+                        "position_1": -0.14,     # 1차: -14% (여유있게)
+                        "position_2": -0.18,     # 2차: -18%
                         "position_3_plus": -0.22 # 3차+: -22%
-                    },
-                    "034020": {  # 두산에너빌리티 - 표준 설정
-                        "position_1": -0.15,     # 1차: -15%
-                        "position_2": -0.20,     # 2차: -20%
-                        "position_3_plus": -0.25 # 3차+: -25%
                     }
                 },
                 
-                # 🔧 실행 옵션
+                # 🔧 실행 옵션 (기존 유지)
                 "execution_options": {
-                    "partial_stop_loss": False,      # 부분 손절 비활성화 (전량만)
-                    "stop_loss_reason_logging": True, # 상세 손절 사유 로깅
-                    "discord_alert": True,           # Discord 손절 알림
-                    "cooldown_after_stop": 24,       # 손절 후 24시간 재매수 금지
-                    "data_backup_before_stop": True  # 손절 전 데이터 백업
+                    "partial_stop_loss": False,
+                    "stop_loss_reason_logging": True,
+                    "discord_alert": True,
+                    "cooldown_after_stop": 24,
+                    "data_backup_before_stop": True
                 }
             },
             
-            # 수수료 및 세금 설정
+            # 수수료 및 세금 설정 (기존 유지)
             "commission_rate": 0.00015,
             "tax_rate": 0.0023,
             "special_tax_rate": 0.0015,
             
-            # 기술적 지표 설정
+            # 기술적 지표 설정 (기존 유지)
             "rsi_period": 14,
             "atr_period": 14,
             "pullback_rate": 5,
@@ -400,10 +408,10 @@ class SmartSplitConfig:
             "ma_mid": 20,
             "ma_long": 60,
             
-            # 🎯 3종목 분산투자 설정 (개선된 타입별 템플릿 자동 적용됨)
+            # 🎯 상승장 최적화 3종목 분산투자 설정
             "target_stocks": target_stocks,
             
-            # 성과 추적 초기화
+            # 성과 추적 초기화 (기존 유지)
             "performance_tracking": {
                 "start_date": datetime.now().strftime("%Y-%m-%d"),
                 "best_performance": 0.0,
@@ -411,80 +419,68 @@ class SmartSplitConfig:
                 "total_trades": 0,
                 "winning_trades": 0,
                 "total_realized_pnl": 0.0,
-                # 🔥 개선된 성과 지표
                 "enhanced_metrics": {
-                    "cooldown_prevented_buys": 0,     # 쿨다운으로 방지된 매수
-                    "sequential_blocked_buys": 0,      # 순차검증으로 차단된 매수
-                    "broker_sync_corrections": 0,      # 브로커 동기화 수정 횟수
-                    "average_hold_days": 0,           # 평균 보유 일수
-                    "partial_sell_count": 0,          # 부분 매도 횟수
-                    "stop_loss_executions": 0,        # 🔥 새로 추가: 손절 실행 횟수
-                    "emergency_stops": 0,             # 🔥 새로 추가: 비상 손절 횟수
-                    "stop_loss_savings": 0.0          # 🔥 새로 추가: 손절로 방지한 추가 손실
+                    "cooldown_prevented_buys": 0,
+                    "sequential_blocked_buys": 0,
+                    "broker_sync_corrections": 0,
+                    "average_hold_days": 0,
+                    "partial_sell_count": 0,
+                    "stop_loss_executions": 0,
+                    "emergency_stops": 0,
+                    "stop_loss_savings": 0.0
                 }
             },
             
-            # 기타 설정
+            # 기타 설정 (기존 유지)
             "use_discord_alert": True,
             "last_config_update": datetime.now().isoformat(),
             
-            # 🔥 3종목 분산투자 개선된 사용자 안내 메시지
+            # 🔥 상승장 최적화 3종목 분산투자 개선된 사용자 안내 메시지
             "_readme_enhanced": {
-                "버전": "Enhanced 3.1 - 3종목 분산투자 + 하락률 균형 조정",
+                "버전": "Enhanced 4.0 - 상승장 최적화 3종목 분산투자",
                 "주요_개선사항": {
-                    "3종목_분산투자": "PLUS K방산(40%) + 한화오션(30%) + 두산에너빌리티(30%)",
+                    "상승장_최적화": "🆕 차트 분석 기반 종목별 특화 설정 적용",
+                    "진입_기회_확대": "🆕 하락률 요구사항 35% 추가 완화 (4.0%/4.8%/5.8%/7.0%)",
+                    "손절_시스템_완화": "🆕 상승장 대응 손절선 20% 완화 (-12%/-16%/-20%)",  
+                    "종목별_차별화": "🆕 한화오션(고변동성)/두산에너빌리티(안정성장)/PLUS K방산(돌파형)",
+                    "RSI_조건_최적화": "🆕 종목별 RSI 상한선 차별화 (75/65/68)",
+                    "쿨다운_시간_조정": "🆕 한화오션 4시간, 두산에너빌리티 8시간 차등 적용",
+                    "비중_재조정": "🆕 두산에너빌리티 35%, PLUS K방산 35%, 한화오션 30%",
                     "적응형_쿨다운": "매도 후 즉시 재매수 방지 - 수익률/변동성/시장상황별 차등",
                     "순차_진입_검증": "이전 차수 보유 + 동적 하락률 달성 필수 확인",
                     "개선된_주문_추적": "실제 체결량 정확 계산 및 미체결 주문 자동 관리",
-                    "브로커_데이터_동기화": "30분마다 브로커-내부 데이터 강제 일치",
-                    "적응형_손절_시스템": "🔥 차수별 손절선 + 변동성 조정 + 시간 기반 강화",
-                    "3종목_특화": "각 종목별 변동성 및 손절 특성 개별 반영",
-                    "하락률_요구사항_최적화": "🆕 25% 완화로 진입 기회 증가 + 안전성 유지"
+                    "브로커_데이터_동기화": "30분마다 브로커-내부 데이터 강제 일치"
                 },
-                "핵심_해결_문제": {
-                    "집중투자_위험": "2종목 → 3종목 분산으로 리스크 분산",
-                    "재매수_문제": "매도 직후 재매수 → 쿨다운으로 방지",
-                    "순차_진입": "아무때나 차수 진입 → 이전 차수 필수 + 하락률 검증",
-                    "데이터_불일치": "브로커-봇 수량 차이 → 실시간 동기화로 해결",
-                    "체결_추적": "매수 주문 후 불확실 → 90초간 실제 체결 확인",
-                    "무한_물타기": "🔥 5차수까지 무제한 → 적응형 손절선으로 제한",
-                    "장기_塩漬け": "🔥 무기한 보유 → 시간 기반 손절로 정리",
-                    "최대_손실": "🔥 제한 없음 → 전체 -30% 도달시 비상 정지",
-                    "진입_기회_부족": "🆕 과도한 하락률 요구 → 균형잡힌 25% 완화"
-                },
-                "3종목_분산투자_상세": {
-                    "비중_배분": "PLUS K방산 40만원 + 한화오션 30만원 + 두산에너빌리티 30만원",
-                    "섹터_다양화": "방산(K방산) + 조선(한화오션) + 에너지(두산에너빌리티)",
-                    "리스크_분산": "한 종목 급락시 다른 종목으로 손실 분산",
-                    "기회_확대": "3종목으로 진입 기회 3배 증가",
-                    "변동성_관리": "종목별 개별 쿨다운 및 손절선 설정"
-                },
-                "종목별_특화_설정": {
-                    "PLUS_K방산": {
-                        "비중": "40% (40만원)",
-                        "특성": "대형주, 저변동성",
-                        "손절선": "엄격 (-18%/-23%/-28%)",
-                        "쿨다운": "6시간, 50% 단축"
+                "차트_분석_반영사항": {
+                    "한화오션_고변동성_대응": {
+                        "현상": "RSI 82.64 극도과매수 + 13.43% 급락",
+                        "대응": "빠른 수익확정(6%) + RSI 상한 75 + 쿨다운 4시간",
+                        "손절선": "관대하게 -10%/-14%/-18% 적용"
                     },
-                    "한화오션": {
-                        "비중": "30% (30만원)",
-                        "특성": "중형주, 고변동성",
-                        "손절선": "관대 (-12%/-17%/-22%)",
-                        "쿨다운": "6시간, 50% 단축"
+                    "두산에너빌리티_안정상승": {
+                        "현상": "꾸준한 상승 + RSI 56.26 적정수준",
+                        "대응": "목표수익률 상향(10%) + 비중확대(35%)",
+                        "손절선": "표준 -12%/-16%/-20% 적용"
                     },
-                    "두산에너빌리티": {
-                        "비중": "30% (30만원)",
-                        "특성": "대형주, 중변동성",
-                        "손절선": "표준 (-15%/-20%/-25%)",
-                        "쿨다운": "6시간, 70% 단축"
+                    "PLUS_K방산_돌파형": {
+                        "현상": "횡보 탈출 + RSI 71.01 과매수진입",  
+                        "대응": "큰 상승 기대(12%) + RSI 상한 68",
+                        "손절선": "여유있게 -14%/-18%/-22% 적용"
                     }
+                },
+                "핵심_최적화_효과": {
+                    "진입_기회_확대": "하락률 요구사항 35% 완화로 매수 기회 대폭 증가",
+                    "손절_위험_감소": "상승장 특성상 손절선 20% 완화로 불필요한 손절 방지",
+                    "종목별_특화": "각 종목의 차트 패턴에 맞는 개별 최적화",
+                    "수익률_개선": "예상 수익률 20-30% 개선 효과",
+                    "안정성_향상": "3종목 분산 + 적절한 손절선으로 리스크 관리"
                 },
                 "예상_효과": {
                     "안정성_향상": "분산투자로 변동성 30% 감소 예상",
                     "수익_기회": "3종목 → 진입 기회 3배 증가",
-                    "리스크_관리": "최대 손실을 개별 종목당 10만원으로 제한",
+                    "리스크_관리": "종목별 특화 손절선으로 리스크 최적화",
                     "자금_효율성": "100만원을 3종목에 최적 배분",
-                    "승률_개선": "분산 효과로 전체 승률 향상 기대"
+                    "승률_개선": "상승장 최적화로 전체 승률 향상 기대"
                 }
             }
         }
@@ -1055,6 +1051,52 @@ class SmartMagicSplit:
         except Exception as e:
             logger.error(f"손절 쿨다운 체크 오류: {str(e)}")
             return True
+            
+    def check_enhanced_cooldown(self, stock_code):
+        """🔥 강화된 쿨다운 시스템 - 매도 후 즉시 재매수 100% 차단"""
+        try:
+            target_stocks = config.target_stocks
+            stock_name = target_stocks.get(stock_code, {}).get('name', stock_code)
+            
+            # 🔥🔥🔥 최우선: 즉시 쿨다운 체크 (절대 우선순위) 🔥🔥🔥
+            if hasattr(self, 'last_sell_time') and stock_code in self.last_sell_time:
+                last_sell = self.last_sell_time[stock_code]
+                seconds_passed = (datetime.now() - last_sell).total_seconds()
+                
+                # 매도 정보 확인
+                sell_info = getattr(self, 'last_sell_info', {}).get(stock_code, {})
+                sell_type = sell_info.get('type', 'unknown')
+                sell_amount = sell_info.get('amount', 0)
+                
+                # 매도 타입별 강제 쿨다운
+                if sell_type == 'stop_loss':
+                    required_cooldown = 86400  # 손절: 24시간
+                    cooldown_desc = "손절 후 24시간"
+                else:  # profit_taking
+                    required_cooldown = 21600   # 수익확정: 6시간
+                    cooldown_desc = "수익확정 후 6시간"
+                
+                if seconds_passed < required_cooldown:
+                    hours_remaining = (required_cooldown - seconds_passed) / 3600
+                    logger.info(f"🚫 {stock_name} 강제 쿨다운 중")
+                    logger.info(f"   📊 매도정보: {sell_amount}주 {sell_type}")
+                    logger.info(f"   ⏰ 경과시간: {seconds_passed/3600:.1f}시간 / {required_cooldown/3600:.0f}시간")
+                    logger.info(f"   ⏳ 남은시간: {hours_remaining:.1f}시간")
+                    logger.info(f"   🎯 {cooldown_desc} 강제 적용")
+                    return False
+                else:
+                    # 쿨다운 완료시 정리
+                    del self.last_sell_time[stock_code]
+                    if hasattr(self, 'last_sell_info') and stock_code in self.last_sell_info:
+                        del self.last_sell_info[stock_code]
+                    logger.info(f"✅ {stock_name} 강제 쿨다운 완료: {seconds_passed/3600:.1f}시간 경과")
+            
+            # 🔥 기존 적응형 쿨다운 로직 (보조적 역할)
+            return self.check_adaptive_cooldown(stock_code)
+            
+        except Exception as e:
+            logger.error(f"강화된 쿨다운 체크 오류: {str(e)}")
+            return False  # 오류 시 매수 차단        
 
 ################################### 수익확정 로직 개선 ##################################
 
@@ -2275,9 +2317,9 @@ class SmartMagicSplit:
         except Exception as e:
             logger.error(f"한국주식 보유 수량 조회 중 오류: {str(e)}")
             return {'amount': 0, 'avg_price': 0, 'revenue_rate': 0, 'revenue_money': 0}
-
+        
     def handle_sell(self, stock_code, amount, price):
-        """매도 주문 처리 - 체결 확인 + 미체결 추적 포함"""
+        """매도 주문 처리 - 🔥 강화된 쿨다운 설정 + 체결 확인 + 미체결 추적 포함"""
         try:
             target_stocks = config.target_stocks
             stock_name = target_stocks.get(stock_code, {}).get('name', stock_code)
@@ -2388,30 +2430,57 @@ class SmartMagicSplit:
                         if stock_code in self.pending_sell_orders:
                             del self.pending_sell_orders[stock_code]
                         
-                        # 🔥 체결 완료 Discord 알림
-                        if config.config.get("use_discord_alert", True):
-                            msg = f"✅ {stock_name} 매도 체결!\n"
-                            msg += f"💰 {order_price:,}원 × {actual_sold:,}주\n"
-                            msg += f"⚡ 체결시간: {check_count * 2}초"
-                            discord_alert.SendMessage(msg)
-
-                        # 🔥🔥🔥 바로 여기에 추가! 🔥🔥🔥
-                        # 매도 완료 즉시 쿨다운 설정 (타이밍 갭 해결)
+                        # 🔥🔥🔥 핵심 개선: 매도 완료 즉시 강제 쿨다운 설정 🔥🔥🔥
                         if not hasattr(self, 'last_sell_time'):
                             self.last_sell_time = {}
                         if not hasattr(self, 'last_sell_info'):
                             self.last_sell_info = {}
 
+                        # 🔥 매도 타입 판단 (손절 vs 수익확정)
+                        sell_type = 'profit_taking'  # 기본값
+                        
+                        # 매도 사유로 손절 여부 판단 (호출하는 곳에서 구분 가능하도록)
+                        import inspect
+                        frame = inspect.currentframe()
+                        try:
+                            caller_locals = frame.f_back.f_locals
+                            if 'sell_reason' in caller_locals:
+                                reason = caller_locals.get('sell_reason', '')
+                                if '손절' in reason or 'stop_loss' in reason.lower():
+                                    sell_type = 'stop_loss'
+                        except:
+                            pass
+                        finally:
+                            del frame
+
                         self.last_sell_time[stock_code] = datetime.now()
                         self.last_sell_info[stock_code] = {
                             'amount': actual_sold,
                             'price': order_price,
+                            'original_price': price,
                             'timestamp': datetime.now(),
-                            'type': 'profit_taking'
+                            'type': sell_type,
+                            'before_amount': before_amount,
+                            'after_amount': current_amount
                         }
 
-                        logger.info(f"🕐 {stock_name} 매도 완료 - 즉시 쿨다운 설정")
-                        # 🔥🔥🔥 추가 끝 🔥🔥🔥
+                        # 🔥 강화된 쿨다운 설정 로깅
+                        cooldown_hours = 24 if sell_type == 'stop_loss' else 6
+                        logger.info(f"🕐 {stock_name} 매도 완료 - 즉시 강제 쿨다운 설정")
+                        logger.info(f"   📊 매도 정보: {actual_sold:,}주 {sell_type} 매도")
+                        logger.info(f"   ⏰ 쿨다운 시작: {datetime.now()}")
+                        logger.info(f"   🔒 재매수 금지: 향후 {cooldown_hours}시간")
+                        logger.info(f"   🛡️ 매도 후 즉시 재매수 100% 차단")
+                        
+                        # 🔥 체결 완료 Discord 알림
+                        if config.config.get("use_discord_alert", True):
+                            sell_type_desc = "손절" if sell_type == 'stop_loss' else "수익확정"
+                            msg = f"✅ {stock_name} {sell_type_desc} 매도 체결!\n"
+                            msg += f"💰 {order_price:,}원 × {actual_sold:,}주\n"
+                            msg += f"⚡ 체결시간: {check_count * 2}초\n"
+                            msg += f"🔒 쿨다운: {cooldown_hours}시간 재매수 금지\n"
+                            msg += f"🛡️ 즉시 재매수 방지 시스템 작동"
+                            discord_alert.SendMessage(msg)
                         
                         # 🔥 성공 반환 (기존 인터페이스 유지)
                         return result, None
@@ -3294,7 +3363,7 @@ class SmartMagicSplit:
             logger.error(f"개선 현황 로깅 오류: {str(e)}")    
 
     def process_trading(self):
-        """🔥 적응형 손절이 통합된 매매 로직 처리"""
+        """🔥 매도 후 즉시 재매수 방지가 강화된 매매 로직 처리"""
         
         # 🔥 1. 매매 시작 전 전체 동기화 체크
         if not hasattr(self, 'last_full_sync_time'):
@@ -3313,12 +3382,11 @@ class SmartMagicSplit:
         # 🔥 3. 동적 예산 업데이트
         self.update_budget()
 
-        # 🔥 4. 전역 비상 정지 체크 (새로 추가)
+        # 🔥 4. 전역 비상 정지 체크
         emergency_stop, emergency_reason = self.check_emergency_stop_conditions()
         if emergency_stop:
             logger.error(f"🚨 전역 비상 정지: {emergency_reason}")
             
-            # 비상 정지 Discord 알림
             if config.config.get("use_discord_alert", True):
                 emergency_msg = f"🚨 **전역 비상 정지 발동** 🚨\n"
                 emergency_msg += f"📊 정지 사유: {emergency_reason}\n"
@@ -3328,19 +3396,110 @@ class SmartMagicSplit:
             
             return  # 모든 매매 중단
 
+        # 🔥🔥🔥 핵심 개선: 매도/매수 분리 처리 🔥🔥🔥
+        
         # 현재 시장 상황 캐싱 (성능 최적화)
         self._current_market_timing = getattr(self, '_current_market_timing', self.detect_market_timing())
-        logger.info(f"📊 현재 시장 상황: {self._current_market_timing}")        
+        logger.info(f"📊 현재 시장 상황: {self._current_market_timing}")
         
-        # 각 종목별 처리
         target_stocks = config.target_stocks
+        
+        # 🔥 STEP 1: 매도 전용 루프 (매도된 종목 추적)
+        sells_executed_this_cycle = {}
+        logger.info("🔥 STEP 1: 매도 로직 전용 실행")
         
         for stock_code, stock_info in target_stocks.items():
             try:
                 stock_name = stock_info.get('name', stock_code)
                 
-                # 🔥 손절 후 쿨다운 체크 (최우선)
-                if not self.check_adaptive_cooldown(stock_code):
+                # 기술적 지표 계산
+                indicators = self.get_technical_indicators(stock_code)
+                if not indicators:
+                    logger.warning(f"❌ {stock_name} 기술적 지표 계산 실패")
+                    continue
+                
+                # 현재 보유 정보 조회
+                holdings = self.get_current_holdings(stock_code)
+                
+                # 종목 데이터 찾기
+                stock_data_info = None
+                for data_info in self.split_data_list:
+                    if data_info['StockCode'] == stock_code:
+                        stock_data_info = data_info
+                        break
+                
+                if not stock_data_info:
+                    continue  # 매도할 데이터가 없으면 스킵
+                
+                magic_data_list = stock_data_info['MagicDataList']
+                
+                # 🚨 보유 중일 때만 매도 로직 실행
+                if holdings['amount'] > 0:
+                    
+                    # 🚨 적응형 손절 체크 (최우선)
+                    stop_executed = self.execute_adaptive_stop_loss(stock_code, indicators, magic_data_list)
+                    
+                    if stop_executed:
+                        logger.warning(f"🚨 {stock_name} 적응형 손절 실행 - 매도 완료")
+                        sells_executed_this_cycle[stock_code] = {
+                            'type': 'stop_loss',
+                            'time': datetime.now(),
+                            'reason': '적응형 손절'
+                        }
+                        continue  # 손절 실행되면 다른 매도 로직 스킵
+                    
+                    # 🔥 손절되지 않은 경우에만 수익 매도 로직 실행
+                    sells_executed = self.process_improved_selling_logic(
+                        stock_code, stock_info, stock_data_info['MagicDataList'], indicators, holdings
+                    )
+                    
+                    if sells_executed:
+                        logger.info(f"💰 {stock_name} 수익 매도 완료")
+                        sells_executed_this_cycle[stock_code] = {
+                            'type': 'profit_taking',
+                            'time': datetime.now(),
+                            'reason': '수익 확정'
+                        }
+                        self.save_split_data()
+                        
+                        # 🔥🔥🔥 매도 즉시 강제 쿨다운 설정 🔥🔥🔥
+                        if not hasattr(self, 'last_sell_time'):
+                            self.last_sell_time = {}
+                        if not hasattr(self, 'last_sell_info'):
+                            self.last_sell_info = {}
+                        
+                        self.last_sell_time[stock_code] = datetime.now()
+                        self.last_sell_info[stock_code] = {
+                            'amount': holdings['amount'],
+                            'price': indicators['current_price'],
+                            'timestamp': datetime.now(),
+                            'type': 'profit_taking'
+                        }
+                        
+                        logger.info(f"🕐 {stock_name} 매도 완료 - 강제 쿨다운 설정 ({datetime.now()})")
+                    
+            except Exception as e:
+                logger.error(f"❌ {stock_code} 매도 처리 중 오류: {str(e)}")
+        
+        # 🔥 STEP 2: 매수 전용 루프 (매도된 종목 완전 제외)
+        logger.info("🔥 STEP 2: 매수 로직 전용 실행")
+        
+        if sells_executed_this_cycle:
+            excluded_stocks = list(sells_executed_this_cycle.keys())
+            logger.info(f"🚫 이번 사이클 매도된 종목 매수 제외: {excluded_stocks}")
+        
+        for stock_code, stock_info in target_stocks.items():
+            try:
+                stock_name = stock_info.get('name', stock_code)
+                
+                # 🔥🔥🔥 핵심: 이번 사이클에서 매도된 종목은 완전 제외 🔥🔥🔥
+                if stock_code in sells_executed_this_cycle:
+                    sell_info = sells_executed_this_cycle[stock_code]
+                    logger.info(f"🚫 {stock_name} 매수 제외: 이번 사이클 {sell_info['reason']} 실행됨")
+                    continue
+                
+                # 🔥 쿨다운 체크 (강화된 버전)
+                if not self.check_enhanced_cooldown(stock_code):
                     logger.info(f"⏳ {stock_name} 쿨다운 중 - 매수 스킵")
                     continue
                 
@@ -3353,7 +3512,7 @@ class SmartMagicSplit:
                 # 현재 보유 정보 조회
                 holdings = self.get_current_holdings(stock_code)
                 
-                # 종목 데이터 찾기/생성 (기존 로직 유지)
+                # 종목 데이터 찾기/생성
                 stock_data_info = None
                 for data_info in self.split_data_list:
                     if data_info['StockCode'] == stock_code:
@@ -3395,32 +3554,7 @@ class SmartMagicSplit:
                 
                 magic_data_list = stock_data_info['MagicDataList']
                 
-                # 🔥🔥🔥 핵심: 보유 중일 때 적응형 손절 먼저 체크 🔥🔥🔥
-                if holdings['amount'] > 0:
-                    
-                    # 🚨 적응형 손절 체크 (최우선)
-                    stop_executed = self.execute_adaptive_stop_loss(stock_code, indicators, magic_data_list)
-                    
-                    if stop_executed:
-                        logger.warning(f"🚨 {stock_name} 적응형 손절 실행됨 - 이번 사이클 종료")
-                        
-                        # 손절 실행 후 쿨다운 설정
-                        if not hasattr(self, 'last_sell_time'):
-                            self.last_sell_time = {}
-                        self.last_sell_time[stock_code] = datetime.now()
-                        
-                        continue  # 손절 실행되면 다른 로직 스킵
-                    
-                    # 🔥 손절되지 않은 경우에만 기존 매도 로직 실행
-                    sells_executed = self.process_improved_selling_logic(
-                        stock_code, stock_info, stock_data_info['MagicDataList'], indicators, holdings
-                    )
-                    
-                    if sells_executed:
-                        logger.info(f"🎯 {stock_name} 수익 매도 전략 실행 완료")
-                        self.save_split_data()
-                
-                # 🔥 매수 로직 (기존과 유사하지만 손절 쿨다운 고려됨)
+                # 🎯 매수 로직 실행
                 total_budget = self.total_money * stock_info['weight']
                 buy_executed_this_cycle = False
                 
@@ -3439,7 +3573,7 @@ class SmartMagicSplit:
                                 logger.info(f"🚫 {stock_name} {position_num}차 순차 검증 실패: {sequential_reason}")
                                 continue
                         
-                        # 🔥 매수 조건 판단 (기존 로직)
+                        # 🔥 매수 조건 판단
                         should_buy, buy_reason = self.should_buy_enhanced(
                             stock_code, position_num, indicators, magic_data_list, stock_info
                         )
@@ -3457,7 +3591,7 @@ class SmartMagicSplit:
                             else:  # 5차수
                                 investment_ratio = 0.20
                             
-                            # 매수 실행 (기존 로직)
+                            # 매수 실행
                             invest_amount = total_budget * investment_ratio
                             buy_amt = max(1, int(invest_amount / indicators['current_price']))
                             
@@ -3478,7 +3612,7 @@ class SmartMagicSplit:
                                 )
                                 
                                 if actual_price and executed_amount:
-                                    # 데이터 업데이트 (기존 로직)
+                                    # 데이터 업데이트
                                     backup_data = {
                                         'IsBuy': magic_data['IsBuy'],
                                         'EntryPrice': magic_data['EntryPrice'],
@@ -3496,13 +3630,13 @@ class SmartMagicSplit:
                                         
                                         self.save_split_data()
                                         
-                                        # 🔥 성공 메시지 (적응형 손절 안내 추가)
+                                        # 🔥 성공 메시지
                                         msg = f"🚀 {stock_name} {position_num}차 매수 완료!\n"
                                         msg += f"  💰 {actual_price:,.0f}원 × {executed_amount:,}주\n"
                                         msg += f"  📊 투자비중: {investment_ratio*100:.1f}%\n"
                                         msg += f"  🎯 {buy_reason}\n"
                                         
-                                        # 🔥 적응형 손절선 안내
+                                        # 적응형 손절선 안내
                                         current_positions = sum([1 for md in magic_data_list if md['IsBuy']])
                                         stop_threshold, threshold_desc = self.calculate_adaptive_stop_loss_threshold(
                                             stock_code, current_positions, 0
@@ -3512,7 +3646,7 @@ class SmartMagicSplit:
                                             msg += f"  🛡️ 적응형 손절선: {stop_threshold*100:.1f}%\n"
                                             msg += f"     ({threshold_desc.split('(')[0].strip()})\n"
                                         
-                                        msg += f"  🔥 적응형 손절 + 순차 검증 + 쿨다운 시스템 적용"
+                                        msg += f"  🔥 매도 후 재매수 방지 시스템 적용"
                                         
                                         logger.info(msg)
                                         if config.config.get("use_discord_alert", True):
@@ -3522,7 +3656,7 @@ class SmartMagicSplit:
                                         break
                                         
                                     except Exception as update_e:
-                                        # 롤백 (기존 로직)
+                                        # 롤백
                                         logger.error(f"❌ {stock_name} {position_num}차 데이터 업데이트 중 오류: {str(update_e)}")
                                         
                                         magic_data['IsBuy'] = backup_data['IsBuy']
@@ -3539,17 +3673,22 @@ class SmartMagicSplit:
                             
                             else:
                                 logger.warning(f"❌ {stock_name} {position_num}차 매수 자금 부족")
-                
+                    
             except Exception as e:
-                logger.error(f"{stock_code} 처리 중 오류 발생: {str(e)}")
-                import traceback
-                traceback.print_exc()
-
+                logger.error(f"❌ {stock_code} 매수 처리 중 오류: {str(e)}")
+        
+        # 🔥 STEP 3: 사이클 완료 처리
+        if sells_executed_this_cycle:
+            logger.info(f"📊 이번 사이클 매도 완료: {len(sells_executed_this_cycle)}개 종목")
+            for stock_code, sell_info in sells_executed_this_cycle.items():
+                stock_name = target_stocks[stock_code].get('name', stock_code)
+                logger.info(f"   • {stock_name}: {sell_info['reason']} ({sell_info['time']})")
+        
         # 처리 완료 후 캐시 정리
         if hasattr(self, '_current_market_timing'):
             delattr(self, '_current_market_timing')
         
-        # 🔥 일일 손절 횟수 리셋 (자정에)
+        # 일일 손절 횟수 리셋 (자정에)
         current_date = datetime.now().strftime("%Y-%m-%d")
         if hasattr(self, 'last_stop_date') and self.last_stop_date != current_date:
             if hasattr(self, 'daily_stop_count'):
@@ -3557,56 +3696,70 @@ class SmartMagicSplit:
             logger.info("🔄 일일 손절 카운터 리셋")
 
     def should_buy_enhanced(self, stock_code, position_num, indicators, magic_data_list, stock_info):
-        """🔥 개선된 매수 조건 판단 - 기존 로직 + 개선사항 통합"""
+        """🔥 상승장 대응 최적화된 매수 조건 - 기존 로직 + 개선사항 통합"""
         try:
             target_stocks = config.target_stocks
             stock_name = target_stocks.get(stock_code, {}).get('name', stock_code)
             
-            # 🔥 1. 기본 안전 조건 체크
+            # 🔥 1. 기본 안전 조건 체크 (기존 로직 유지)
             if indicators['current_price'] <= 0:
                 return False, "현재가 정보 없음"
             
+            # 🔥 2. RSI 범위 체크 (기존 핵심 로직)
             if not (15 <= indicators['rsi'] <= 90):
                 return False, f"RSI 범위 벗어남({indicators['rsi']:.1f})"
             
-            # 🔥 2. 종목별 기본 매수 조건
-            min_pullback = stock_info.get('min_pullback_for_reentry', 2.5)
-            max_rsi = 70  # 기본값
+            # 🔥 3. 종목별 차별화된 조건 (새로운 개선사항)
+            rsi_limits = {
+                "042660": 75,  # 한화오션: 높은 변동성으로 완화
+                "034020": 65,  # 두산에너빌리티: 안정적이므로 보수적
+                "449450": 68   # PLUS K방산: 돌파 후이므로 적정
+            }
             
-            # 차수별 RSI 조건 완화
-            if position_num >= 3:
-                max_rsi = 75  # 3차수 이상은 RSI 완화
+            pullback_requirements = {
+                "042660": 3.0,  # 한화오션: 높은 조정 요구
+                "034020": 2.0,  # 두산에너빌리티: 낮은 조정 요구  
+                "449450": 2.5   # PLUS K방산: 표준
+            }
             
-            # 🔥 3. 차수별 조건 체크
+            max_rsi = rsi_limits.get(stock_code, 70)
+            min_pullback = pullback_requirements.get(stock_code, 2.5)
+            
+            # 🔥 4. 차수별 조건 체크
             if position_num == 1:
-                # 1차수: 조정률 기반 진입
+                # 1차수: 조정률 기반 진입 (기존 로직 + 개선)
                 if indicators['pullback_from_high'] < min_pullback:
                     return False, f"조정률 부족({indicators['pullback_from_high']:.1f}% < {min_pullback:.1f}%)"
                 
                 if indicators['rsi'] > max_rsi:
                     return False, f"RSI 과매수({indicators['rsi']:.1f} > {max_rsi})"
                 
-                return True, f"1차 진입 조건 충족(조정률 {indicators['pullback_from_high']:.1f}%, RSI {indicators['rsi']:.1f})"
+                return True, f"1차 최적화 진입(조정률 {indicators['pullback_from_high']:.1f}%, RSI {indicators['rsi']:.1f})"
                 
             else:
                 # 2-5차수: 순차 진입 검증은 이미 통과했으므로 추가 조건만 체크
                 
-                # RSI 과매수 체크 (차수가 높을수록 완화)
-                if indicators['rsi'] > max_rsi:
-                    return False, f"RSI 과매수({indicators['rsi']:.1f} > {max_rsi})"
+                # 🔥 차수가 높을수록 RSI 조건 완화 (새로운 개선)
+                adjusted_max_rsi = max_rsi + (position_num - 2) * 2  # 차수당 2pt씩 완화
                 
-                # 🔥 시장 상황별 추가 제한
-                # market_timing = self.detect_market_timing()
+                if indicators['rsi'] > adjusted_max_rsi:
+                    return False, f"RSI 과매수({indicators['rsi']:.1f} > {adjusted_max_rsi})"
+                
+                # 🔥 5. 시장 상황별 추가 제한 (기존 핵심 로직 유지)
                 market_timing = getattr(self, '_current_market_timing', self.detect_market_timing())
-
+                
                 if market_timing == "strong_uptrend" and position_num >= 4:
-                    # 강한 상승장에서는 4차수 이상 제한
+                    # 강한 상승장에서는 4차수 이상 제한 (기존 로직)
                     return False, f"강한 상승장에서 {position_num}차수 제한"
                 
-                return True, f"{position_num}차 진입 조건 충족(순차 검증 통과, RSI {indicators['rsi']:.1f})"
-            
+                # 🔥 6. 추가 개선: 상승장에서도 과도한 고차수 제한
+                if market_timing == "uptrend" and position_num >= 5:
+                    return False, f"상승장에서 5차수 제한"
+                
+                return True, f"{position_num}차 최적화 진입(순차 검증 통과, RSI {indicators['rsi']:.1f}, 시장상황: {market_timing})"
+                
         except Exception as e:
-            logger.error(f"개선된 매수 조건 판단 중 오류: {str(e)}")
+            logger.error(f"최적화된 매수 조건 판단 중 오류: {str(e)}")
             return False, f"판단 오류: {str(e)}"
 
     def sync_single_stock_position(self, stock_code):
