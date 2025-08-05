@@ -61,7 +61,7 @@ class PendingOrderManager:
                         self.logger.info(f"🕐 {stock_name}({stock_code}): 내부 상태에 미체결 주문 있음 - 매수 건너뜀")
                         return True
             
-            # 2. API 확인
+            # 2. API 확인   
             try:
                 open_orders = self.kis_api.GetOrderList()
                 
@@ -148,7 +148,7 @@ class PendingOrderManager:
                 
         except Exception as e:
             self.logger.error(f"미체결 주문 제거 중 오류: {str(e)}")
-    
+
     def cancel_order(self, order_id: str) -> bool:
         """
         주문 취소
@@ -174,19 +174,41 @@ class PendingOrderManager:
             # 주문번호로 주문 찾기
             target_order = None
             for order in order_details:
-                order_num = order.get('OrderNum', order.get('OrderNo', ''))
-                if order_num == order_id:
+                order_num1 = order.get('OrderNum', '')
+                order_num2 = order.get('OrderNum2', '')
+                
+                # 주문번호 매칭 (OrderNum 또는 OrderNum2로 확인)
+                if order_num1 == order_id or order_num2 == order_id:
                     target_order = order
                     break
                     
             if not target_order:
                 self.logger.error(f"취소할 주문을 찾을 수 없음: {order_id}")
                 return False
-                
-            # KIS API로 주문 취소
-            result = self.kis_api.CancelOrder(order_id)
             
-            if result and not isinstance(result, str):
+            # 주문 정보 추출
+            stock_code = target_order.get('OrderStock', '')
+            order_num1 = target_order.get('OrderNum', '')
+            order_num2 = target_order.get('OrderNum2', '')
+            order_amt = target_order.get('OrderAmt', 0)
+            order_price = target_order.get('OrderAvgPrice', 0)
+            
+            if not all([stock_code, order_num1, order_num2]):
+                self.logger.error(f"주문 정보 부족: {target_order}")
+                return False
+            
+            # ✅ CancelModifyOrder 함수 사용 (수정된 부분)
+            result = self.kis_api.CancelModifyOrder(
+                stockcode=stock_code,
+                order_num1=order_num1,
+                order_num2=order_num2,
+                order_amt=order_amt,
+                order_price=order_price,
+                mode="CANCEL",
+                order_type="LIMIT"
+            )
+            
+            if result and isinstance(result, dict):
                 self.logger.info(f"✅ 주문 취소 성공: {order_id}")
                 return True
             else:
@@ -196,8 +218,8 @@ class PendingOrderManager:
         except Exception as e:
             self.logger.error(f"주문 취소 중 에러: {str(e)}")
             return False
-    
-    def auto_cancel_pending_orders(self, trading_state: Dict, max_pending_minutes: int = 15) -> Dict:
+
+    def auto_cancel_pending_orders(self, trading_state: Dict, max_pending_minutes: int = 60) -> Dict:
         """
         일정 시간 이상 경과된 미체결 주문 자동 취소
         
@@ -209,81 +231,86 @@ class PendingOrderManager:
             Dict: 업데이트된 트레이딩 상태
         """
         try:
-            pending_orders = trading_state.get('pending_orders', {})
-            
-            if not pending_orders:
+            if 'pending_orders' not in trading_state or not trading_state['pending_orders']:
                 return trading_state
-                
-            current_time = datetime.datetime.now()
-            canceled_orders = []
-            processed_orders = []
             
-            # 현재 보유 종목 확인
-            my_stocks = self.kis_api.GetMyStockList()
-            holding_codes = {}
+            cancelled_orders = []
+            orders_to_clean = []
             
-            if my_stocks:
-                for stock in my_stocks:
-                    holding_codes[stock['StockCode']] = int(stock.get('StockAmt', 0))
+            self.logger.info(f"🔍 미체결 주문 점검 시작: {len(trading_state['pending_orders'])}개 주문")
             
-            self.logger.info(f"🔍 미체결 주문 점검 시작: {len(pending_orders)}개 주문")
-            
-            # 미체결 주문 순회
-            for stock_code, order_info in list(pending_orders.items()):
+            for stock_code, order_info in trading_state['pending_orders'].items():
                 try:
-                    stock_name = order_info.get('stock_name', stock_code)
-                    order_status = order_info.get('status', 'unknown')
-                    
-                    # 이미 처리된 주문은 정리
-                    if order_status in ['filled', 'canceled', 'expired']:
-                        processed_orders.append(stock_code)
-                        continue
-                    
-                    # 실제 보유 중인지 확인 (체결되었지만 상태가 업데이트되지 않은 경우)
-                    actual_amount = holding_codes.get(stock_code, 0)
-                    
-                    if order_status in ['pending', 'submitted'] and actual_amount > 0:
-                        # 포지션 복구 로직
-                        trading_state = self._recover_position_from_pending(
-                            trading_state, stock_code, order_info, actual_amount, my_stocks
-                        )
-                        processed_orders.append(stock_code)
-                        continue
-                    
-                    # 주문 시간 확인 및 자동 취소
                     order_time_str = order_info.get('order_time', '')
-                    if order_time_str:
+                    stock_name = order_info.get('stock_name', stock_code)
+                    
+                    if not order_time_str:
+                        orders_to_clean.append(stock_code)
+                        continue
+                    
+                    # 주문 경과 시간 계산
+                    order_time = datetime.datetime.strptime(order_time_str, '%Y-%m-%d %H:%M:%S')
+                    elapsed_minutes = (datetime.datetime.now() - order_time).total_seconds() / 60
+                    
+                    if elapsed_minutes > max_pending_minutes:
+                        self.logger.info(f"⏰ 장시간 미체결 주문 취소 시도: {stock_name} ({elapsed_minutes:.0f}분)")
+                        
                         try:
-                            order_time = datetime.datetime.strptime(order_time_str, '%Y-%m-%d %H:%M:%S')
-                            elapsed_minutes = (current_time - order_time).total_seconds() / 60
+                            # ✅ 수정된 부분: CancelModifyOrder 직접 사용
+                            order_id = order_info.get('order_id', '')
+                            order_num2 = order_info.get('order_num2', '')
+                            quantity = order_info.get('quantity', 0)
+                            price = order_info.get('price', 0)
                             
-                            if elapsed_minutes > max_pending_minutes:
-                                if self._try_cancel_order(stock_code, stock_name, elapsed_minutes):
-                                    canceled_orders.append(stock_code)
+                            if order_id and quantity > 0:
+                                # CancelModifyOrder 함수 직접 호출
+                                cancel_result = self.kis_api.CancelModifyOrder(
+                                    stockcode=stock_code,
+                                    order_num1=order_id,
+                                    order_num2=order_num2 or order_id,  # order_num2가 없으면 order_id 사용
+                                    order_amt=quantity,
+                                    order_price=price,
+                                    mode="CANCEL",
+                                    order_type="LIMIT"
+                                )
+                                
+                                if cancel_result and isinstance(cancel_result, dict):
+                                    self.logger.info(f"✅ 주문 취소 성공: {stock_name}")
+                                    cancelled_orders.append(stock_code)
+                                    
+                                    # 취소 알림
+                                    self.send_order_alert('cancel', stock_code, {
+                                        'elapsed_minutes': elapsed_minutes
+                                    })
                                 else:
-                                    processed_orders.append(stock_code)
-                        except:
-                            processed_orders.append(stock_code)
-                
-                except Exception as inner_e:
-                    self.logger.error(f"미체결 주문 처리 중 오류 ({stock_code}): {str(inner_e)}")
-                    continue
+                                    self.logger.warning(f"⚠️ 주문 취소 실패: {stock_name} - {cancel_result}")
+                                    # 취소 실패해도 정리 대상에 추가 (너무 오래된 주문)
+                                    orders_to_clean.append(stock_code)
+                            else:
+                                self.logger.warning(f"⚠️ 주문정보 부족으로 취소 불가: {stock_name}")
+                                orders_to_clean.append(stock_code)
+                                
+                        except Exception as cancel_error:
+                            self.logger.error(f"주문 취소 중 에러: {str(cancel_error)}")
+                            # 취소 실패한 경우에도 너무 오래된 주문은 정리
+                            orders_to_clean.append(stock_code)
+                    
+                except Exception as e:
+                    self.logger.error(f"미체결 주문 점검 중 에러 ({stock_code}): {str(e)}")
+                    orders_to_clean.append(stock_code)
             
-            # 처리된 주문 정리
-            for stock_code in processed_orders:
-                if stock_code in pending_orders:
-                    del pending_orders[stock_code]
+            # 취소/정리된 주문들 제거
+            all_removed = cancelled_orders + orders_to_clean
+            for stock_code in all_removed:
+                if stock_code in trading_state['pending_orders']:
+                    del trading_state['pending_orders'][stock_code]
             
-            # 상태 업데이트
-            trading_state['pending_orders'] = pending_orders
+            self.logger.info(f"📊 미체결 주문 처리 완료: 취소 {len(cancelled_orders)}개, 정리 {len(orders_to_clean)}개")
             
-            if canceled_orders or processed_orders:
-                self.logger.info(f"📊 미체결 주문 처리 완료: 취소 {len(canceled_orders)}개, 정리 {len(processed_orders)}개")
-                
             return trading_state
-                
+            
         except Exception as e:
-            self.logger.error(f"미체결 주문 자동 관리 중 오류: {str(e)}")
+            self.logger.error(f"❌ 미체결 주문 자동 관리 중 전체 오류: {str(e)}")
             return trading_state
     
     def get_committed_budget_for_stock(self, stock_code: str, trading_state: Dict, 
@@ -481,23 +508,40 @@ class PendingOrderManager:
         except Exception as e:
             self.logger.error(f"포지션 복구 중 오류 ({stock_code}): {str(e)}")
             return trading_state
-    
+
     def _try_cancel_order(self, stock_code: str, stock_name: str, elapsed_minutes: float) -> bool:
         """주문 취소 시도"""
         try:
             # API에서 실제 미체결 주문 확인
-            open_orders = self.kis_api.GetOrderList()
+            open_orders = self.kis_api.GetOrderList(stock_code, "BUY", "OPEN")
             
             if open_orders and not isinstance(open_orders, str):
                 for order in open_orders:
                     order_stock = order.get('StockCode', order.get('OrderStock', ''))
                     if order_stock == stock_code:
-                        order_id = order.get('OrderNum', order.get('OrderNo', ''))
-                        if self.cancel_order(order_id):
-                            self.send_order_alert('cancel', stock_code, {
-                                'elapsed_minutes': elapsed_minutes
-                            })
-                            return True
+                        # 주문 정보 추출
+                        order_num1 = order.get('OrderNum', '')
+                        order_num2 = order.get('OrderNum2', '')
+                        order_amt = order.get('OrderAmt', 0)
+                        order_price = order.get('OrderAvgPrice', 0)
+                        
+                        if order_num1 and order_amt > 0:
+                            # ✅ CancelModifyOrder 함수 사용
+                            cancel_result = self.kis_api.CancelModifyOrder(
+                                stockcode=stock_code,
+                                order_num1=order_num1,
+                                order_num2=order_num2 or order_num1,
+                                order_amt=order_amt,
+                                order_price=order_price,
+                                mode="CANCEL",
+                                order_type="LIMIT"
+                            )
+                            
+                            if cancel_result and isinstance(cancel_result, dict):
+                                self.send_order_alert('cancel', stock_code, {
+                                    'elapsed_minutes': elapsed_minutes
+                                })
+                                return True
                         break
             
             return False
@@ -505,7 +549,6 @@ class PendingOrderManager:
         except Exception as e:
             self.logger.error(f"주문 취소 시도 중 오류 ({stock_code}): {str(e)}")
             return False
-
 
 # 편의 함수들 (기존 코드와의 호환성을 위해)
 def create_pending_order_manager(kis_api, trading_config, discord_alert=None, logger=None):
