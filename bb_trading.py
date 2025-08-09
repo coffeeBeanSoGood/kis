@@ -37,6 +37,67 @@ from bs4 import BeautifulSoup
 
 from pending_order_manager import PendingOrderManager, enhance_trading_state
 
+# ================================== 섹터별 대표 종목 데이터베이스 ==================================
+
+SECTOR_REPRESENTATIVE_STOCKS = {
+    # 우주항공과국방 (타겟: 272210 한화시스템)
+    '우주항공과국방': {
+        'core_stocks': ['272210', '012450', '079550', '000880', '047810', '011210', '103140'],
+        'names': ['한화시스템', '한화에어로스페이스', 'LIG넥스원', '한화', 'KAI한국항공우주산업', '현대위아', '풍산'],
+        'keywords': ['우주항공과국방', '방산', '항공우주', '국방', '무기', '항공방산', '레이더', '엔진', '화약']
+    },
+    
+    # 조선 (타겟: 010140 삼성중공업)
+    '조선': {
+        'core_stocks': ['010140', '009540', '067250', '329180', '042660'],
+        'names': ['삼성중공업', 'HD한국조선해양', '현대미포조선', '현대중공업홀딩스', '한화오션'],
+        'keywords': ['조선', '선박', '해양', '조선업', '해양플랜트']
+    },
+    
+    # LNG밸류체인 (타겟: 017960 한국카본, 033500 동성화인텍)
+    'LNG밸류체인': {
+        'core_stocks': ['017960', '033500', '100090', '014620', '075580', '010140', '009540'],
+        'names': ['한국카본', '동성화인텍', 'SK오션플랜트', '성광벤드', '세진중공업', '삼성중공업', 'HD한국조선해양'],
+        'keywords': ['LNG', '보냉재', '복합소재', '탱크', '모듈', '배관', '피팅', '저온배관', 'LNG선']
+    },
+    
+    # 반도체소재 (타겟: 007660 이수페타시스)
+    '반도체소재': {
+        'core_stocks': ['007660', '357780', '005290', '093370', '213420', '319660'],
+        'names': ['이수페타시스', '솔브레인', '동진세미켐', '후성', '덕산네오룩스', '피에스케이'],
+        'keywords': ['반도체', '소재', '특수가스', '세정액', 'OLED', '전자재료', '웨이퍼', '반도체장비']
+    },
+    
+    # 화학 (이수페타시스 제거)
+    '화학': {
+        'core_stocks': ['011170', '009830', '010950', '051910', '001570', '004090'],
+        'names': ['롯데케미칼', '한화솔루션', 'S-Oil', 'LG화학', '금양', '한국석유'],
+        'keywords': ['화학', '석유화학', '정유', '화학제품', '범용화학']
+    },
+    
+    # 건설 (타겟: 051600 한전KPS, 000720 현대건설)
+    '건설': {
+        'core_stocks': ['000720', '051600', '028260', '047040', '006360', '375500'],
+        'names': ['현대건설', '한전KPS', '삼성물산', '대우건설', 'GS건설', 'DL이앤씨'],
+        'keywords': ['건설', '건축', '토목', '인프라', '플랜트', '전력설비']
+    },
+    
+    # 원전발전밸류체인 (타겟: 034020 두산에너빌리티)
+    '원전발전밸류체인': {
+        'core_stocks': ['034020', '051600', '010120', '064350', '005490', '000720', '028260'],
+        'names': ['두산에너빌리티', '한전KPS', 'LS일렉트릭', '현대로템', 'POSCO홀딩스', '현대건설', '삼성물산'],
+        'keywords': ['원전', '발전', '원자력', '터빈', '발전소', '전력', '원자로', '증기발생기', '보일러', '발전설비', '전력설비']
+    },
+    
+    # 기계 (원전발전 제외한 일반 기계)
+    '기계': {
+        'core_stocks': ['267250', '010060', '008560', '003380', '042670'],
+        'names': ['HD현대중공업', '두산밥캣', '삼양사', '현대중공업', '유니슨'],
+        'keywords': ['기계', '산업기계', '중장비', '건설기계', '공작기계']
+    }
+}
+
+
 ################################### 설정 클래스 ##################################
 
 class TradingConfig:
@@ -566,6 +627,161 @@ def get_sector_info(stock_code):
         return {
             'sector': 'Unknown',
             'industry': 'Unknown'
+        }
+
+def analyze_sector_risk(stock_code, target_config):
+    """개선된 섹터별 위험도 분석 - 사전 정의된 섹터 대표 종목 활용"""
+    try:
+        stock_sector = target_config.get('sector', 'Unknown')
+        stock_name = target_config.get('name', stock_code)
+        
+        logger.debug(f"섹터 위험도 분석 시작: {stock_name}({stock_code}) - {stock_sector}")
+        
+        # 1단계: 정확한 섹터 매칭
+        matched_sector = None
+        sector_data = None
+        
+        # 직접 매칭 시도
+        if stock_sector in SECTOR_REPRESENTATIVE_STOCKS:
+            matched_sector = stock_sector
+            sector_data = SECTOR_REPRESENTATIVE_STOCKS[stock_sector]
+            logger.debug(f"직접 섹터 매칭 성공: {matched_sector}")
+        else:
+            # 키워드 기반 매칭
+            for sector_name, data in SECTOR_REPRESENTATIVE_STOCKS.items():
+                keywords = data.get('keywords', [])
+                if any(keyword in stock_sector for keyword in keywords):
+                    matched_sector = sector_name
+                    sector_data = data
+                    logger.debug(f"키워드 매칭 성공: {stock_sector} → {matched_sector}")
+                    break
+                
+                # 종목 코드 직접 포함 체크
+                if stock_code in data.get('core_stocks', []):
+                    matched_sector = sector_name
+                    sector_data = data
+                    logger.debug(f"종목코드 매칭 성공: {stock_code} → {matched_sector}")
+                    break
+        
+        if not matched_sector or not sector_data:
+            logger.debug(f"섹터 매칭 실패: {stock_sector}")
+            return {
+                'sector_risk': 'UNKNOWN_SECTOR', 
+                'sector_decline_rate': 0, 
+                'affected_stocks': [],
+                'matched_sector': None
+            }
+        
+        # 2단계: 대표 종목들의 변화율 분석
+        core_stocks = sector_data.get('core_stocks', [])
+        stock_names = sector_data.get('names', [])
+        
+        # 자기 자신 제외
+        analysis_stocks = [(code, name) for code, name in zip(core_stocks, stock_names) if code != stock_code]
+        
+        if len(analysis_stocks) < 2:
+            logger.debug(f"분석 대상 종목 부족: {len(analysis_stocks)}개")
+            return {
+                'sector_risk': 'INSUFFICIENT_STOCKS', 
+                'sector_decline_rate': 0, 
+                'affected_stocks': [],
+                'matched_sector': matched_sector
+            }
+        
+        # 3단계: 각 종목의 당일 변화율 조회
+        declining_stocks = []
+        total_decline = 0
+        valid_count = 0
+        analysis_results = []
+        
+        for stock_code_analysis, stock_name_analysis in analysis_stocks[:6]:  # 최대 6개 종목 분석
+            try:
+                current_price = KisKR.GetCurrentPrice(stock_code_analysis)
+                if not current_price:
+                    continue
+                
+                # 전일 대비 변화율 계산
+                stock_data = get_stock_data(stock_code_analysis)
+                if stock_data and stock_data.get('ohlcv_data') is not None:
+                    df = stock_data['ohlcv_data']
+                    if len(df) >= 2:
+                        yesterday_close = df['close'].iloc[-2]
+                        today_change = (current_price - yesterday_close) / yesterday_close * 100
+                        
+                        total_decline += today_change
+                        valid_count += 1
+                        
+                        analysis_results.append({
+                            'code': stock_code_analysis,
+                            'name': stock_name_analysis,
+                            'change_rate': today_change
+                        })
+                        
+                        if today_change < -1.5:  # 1.5% 이상 하락
+                            declining_stocks.append({
+                                'code': stock_code_analysis,
+                                'name': stock_name_analysis,
+                                'decline_rate': today_change
+                            })
+                
+                time.sleep(0.1)  # API 호출 간격
+                
+            except Exception as e:
+                logger.debug(f"섹터 종목 분석 오류 ({stock_code_analysis}): {str(e)}")
+                continue
+        
+        if valid_count == 0:
+            return {
+                'sector_risk': 'DATA_ERROR', 
+                'sector_decline_rate': 0, 
+                'affected_stocks': [],
+                'matched_sector': matched_sector
+            }
+        
+        # 4단계: 섹터 위험도 판정
+        avg_decline_rate = total_decline / valid_count
+        decline_ratio = len(declining_stocks) / valid_count
+        
+        # 위험도 등급 결정
+        if avg_decline_rate < -3.0 and decline_ratio >= 0.7:  # 평균 -3% + 70% 종목 하락
+            risk_level = 'CRITICAL'
+        elif avg_decline_rate < -2.0 and decline_ratio >= 0.6:  # 평균 -2% + 60% 종목 하락
+            risk_level = 'HIGH'
+        elif avg_decline_rate < -1.0 and decline_ratio >= 0.5:  # 평균 -1% + 50% 종목 하락
+            risk_level = 'MEDIUM'
+        else:
+            risk_level = 'LOW'
+        
+        # 5단계: 결과 로깅
+        logger.info(f"📊 섹터 위험도 분석 완료: {matched_sector}")
+        logger.info(f"   대상 종목: {stock_name}({stock_code})")
+        logger.info(f"   위험도: {risk_level}")
+        logger.info(f"   평균 변화율: {avg_decline_rate:.2f}%")
+        logger.info(f"   하락 종목: {len(declining_stocks)}/{valid_count}개 ({decline_ratio*100:.1f}%)")
+        
+        # 주요 하락 종목 로깅
+        if declining_stocks:
+            logger.info(f"   주요 하락 종목:")
+            for stock in declining_stocks[:3]:
+                logger.info(f"     - {stock['name']}: {stock['decline_rate']:.2f}%")
+        
+        return {
+            'sector_risk': risk_level,
+            'sector_decline_rate': avg_decline_rate,
+            'affected_stocks': declining_stocks,
+            'matched_sector': matched_sector,
+            'total_checked': valid_count,
+            'analysis_results': analysis_results,
+            'decline_ratio': decline_ratio
+        }
+        
+    except Exception as e:
+        logger.error(f"개선된 섹터 위험도 분석 중 오류: {str(e)}")
+        return {
+            'sector_risk': 'ERROR', 
+            'sector_decline_rate': 0, 
+            'affected_stocks': [],
+            'matched_sector': None
         }
 
 def _update_stock_info(target_stocks):
@@ -1298,8 +1514,77 @@ def get_stock_data(stock_code):
 
 ################################### 매매 신호 분석 ##################################
 
-def analyze_buy_signal(stock_data, target_config):
-    """매수 신호 분석 - 조건부 차단 방식 (균형잡힌 버전) - 디버깅 추가"""
+def check_market_trend():
+    """코스피/코스닥 지수 추세 확인"""
+    try:
+        logger.debug("📊 시장 지수 추세 분석 시작...")
+        
+        # 코스피 지수 (최근 20일)
+        kospi_data = KisKR.GetOhlcvNew("KS11", 'D', 20, adj_ok=1)
+        kosdaq_data = KisKR.GetOhlcvNew("KQ11", 'D', 20, adj_ok=1)
+        
+        market_trend = {
+            'kospi_trend': analyze_index_trend(kospi_data) if kospi_data is not None else 'UNKNOWN',
+            'kosdaq_trend': analyze_index_trend(kosdaq_data) if kosdaq_data is not None else 'UNKNOWN',
+            'market_condition': 'UNKNOWN'
+        }
+        
+        # 전체 시장 상황 판단
+        kospi_trend = market_trend['kospi_trend']
+        kosdaq_trend = market_trend['kosdaq_trend']
+        
+        if kospi_trend == 'DOWN' and kosdaq_trend == 'DOWN':
+            market_trend['market_condition'] = 'BEARISH'
+        elif kospi_trend == 'UP' and kosdaq_trend == 'UP':
+            market_trend['market_condition'] = 'BULLISH'
+        elif kospi_trend == 'UNKNOWN' or kosdaq_trend == 'UNKNOWN':
+            market_trend['market_condition'] = 'UNKNOWN'
+        else:
+            market_trend['market_condition'] = 'MIXED'
+            
+        logger.debug(f"📊 시장 추세 결과: {market_trend}")
+        return market_trend
+        
+    except Exception as e:
+        logger.error(f"시장 추세 확인 중 오류: {str(e)}")
+        return {
+            'kospi_trend': 'UNKNOWN',
+            'kosdaq_trend': 'UNKNOWN', 
+            'market_condition': 'UNKNOWN'
+        }
+
+def analyze_index_trend(index_data):
+    """지수 추세 분석"""
+    try:
+        if index_data is None or len(index_data) < 10:
+            return 'UNKNOWN'
+        
+        # 5일, 20일 이동평균 계산
+        ma5 = index_data['close'].rolling(5).mean().iloc[-1]
+        ma20 = index_data['close'].rolling(20).mean().iloc[-1]
+        current_price = index_data['close'].iloc[-1]
+        
+        # 추세 방향 판단
+        ma_trend = 'UP' if ma5 > ma20 else 'DOWN' if ma5 < ma20 else 'SIDEWAYS'
+        price_position = 'UP' if current_price > ma5 else 'DOWN' if current_price < ma5 else 'SIDEWAYS'
+        
+        # 최근 5일 변화율
+        price_change_5d = (current_price / index_data['close'].iloc[-6] - 1) * 100 if len(index_data) >= 6 else 0
+        
+        # 종합 판단
+        if ma_trend == 'UP' and price_position == 'UP' and price_change_5d > 1:
+            return 'UP'
+        elif ma_trend == 'DOWN' and price_position == 'DOWN' and price_change_5d < -1:
+            return 'DOWN'
+        else:
+            return 'SIDEWAYS'
+            
+    except Exception as e:
+        logger.error(f"지수 추세 분석 중 오류: {str(e)}")
+        return 'UNKNOWN'
+    
+def analyze_buy_signal(stock_data, target_config, market_trend=None):
+    """매수 신호 분석 - 조건부 차단 방식 (균형잡힌 버전) - 시장 추세 필터 추가"""
     try:
         signals = []
         score = 0
@@ -1594,6 +1879,49 @@ def analyze_buy_signal(stock_data, target_config):
         score += reversal_score
         logger.info(f"🔄 [{stock_code}] 반등신호 점수: {reversal_score}점 (누적: {score}점)")
         
+        # 🔥 NEW: 시장 추세 필터 적용 (기존 점수 계산 후)
+        trend_analysis = {'market_condition': 'UNKNOWN'}
+        
+        if market_trend and trading_config.config.get('use_market_trend_filter', True):
+            stock_env = detect_stock_environment(stock_code)
+            market_condition = market_trend['market_condition']
+            
+            logger.info(f"📊 [{stock_code}] 추세 분석: 시장 {market_condition}, 개별 {stock_env}")
+            
+            # 추세 기반 점수 조정
+            trend_penalty = 0
+            
+            if market_condition == 'BEARISH':
+                if stock_env == 'downtrend':
+                    trend_penalty = -50
+                    signals.append("❌ 시장하락+개별하락 페널티 -50점")
+                elif stock_env == 'sideways':
+                    trend_penalty = -25
+                    signals.append("⚠️ 시장하락+개별횡보 페널티 -25점")
+                else:  # uptrend
+                    trend_penalty = -10
+                    signals.append("🟡 시장하락 중 역행상승 -10점")
+                    
+            elif market_condition == 'MIXED':
+                if stock_env == 'downtrend':
+                    trend_penalty = -15
+                    signals.append("⚠️ 혼조장+개별하락 페널티 -15점")
+                    
+            elif market_condition == 'BULLISH':
+                if stock_env == 'uptrend':
+                    trend_penalty = +10
+                    signals.append("🚀 상승장+개별상승 보너스 +10점")
+            
+            score += trend_penalty
+            
+            trend_analysis = {
+                'market_condition': market_condition,
+                'stock_environment': stock_env,
+                'trend_penalty': trend_penalty
+            }
+            
+            logger.info(f"📊 [{stock_code}] 추세 조정: {trend_penalty}점 (누적: {score}점)")
+        
         # 🎯 최종 매수 판단
         signal_strength = 'NORMAL'
         
@@ -1613,6 +1941,33 @@ def analyze_buy_signal(stock_data, target_config):
         is_buy_signal = score >= min_score
         
         logger.info(f"🎯 [{stock_code}] 최종 판정: 점수 {score}/{min_score}점, 신호강도 {signal_strength}")
+
+        # 🔥 하락장 예외 조건 체크
+        if (market_trend and market_trend['market_condition'] == 'BEARISH' and 
+            not is_buy_signal and trend_analysis.get('trend_penalty', 0) < 0):
+            
+            # 예외 조건들 체크
+            allow_conditions = []
+            
+            # 1. 극도 과매도 + 거래량 급증
+            if rsi <= 15 and volume_ratio >= 2.0:
+                allow_conditions.append("극도과매도+거래량급증")
+            
+            # 2. 볼린저밴드 하단 크게 이탈
+            if bb_position == "breakthrough" and price_position <= 0.2:
+                allow_conditions.append("볼밴하단돌파+저점권")
+            
+            # 3. 연속 하락 후 반등 신호
+            if any("연속하락 후 반등" in s for s in signals):
+                allow_conditions.append("연속하락후반등")
+            
+            if allow_conditions:
+                # 예외 허용하되 높은 기준 적용
+                exception_min_score = min_score + 15  # 기준 15점 상향
+                if score >= exception_min_score:
+                    is_buy_signal = True
+                    signals.append(f"🔥 하락장예외허용: {', '.join(allow_conditions)} (기준+15점)")
+                    logger.info(f"🔥 [{stock_code}] 하락장 예외 허용: {', '.join(allow_conditions)}")
 
         # 🎯 특별조건 할인 (조건 완화)
         if rsi <= 18 and bb_position == "breakthrough" and price_position <= 0.3:  # 정말 극한 상황에만
@@ -1635,33 +1990,19 @@ def analyze_buy_signal(stock_data, target_config):
             'min_score': min_score,
             'signals': signals if signals else ["매수 신호 부족"],
             'bb_position': bb_position,
-            'analysis': {
-                'rsi': rsi,
-                'price_position': price_position,
-                'volume_surge': volume_ratio,
-                'trend_strength': 'strong' if ma5 > ma20 > ma60 else 'weak',
-                'extreme_count': extreme_count,
-                'safety_checks': {
-                    'rsi_extreme': rsi >= 90,
-                    'position_extreme': price_position >= 0.90,
-                    'bb_extreme': bb_position_ratio >= 1.01,
-                    'volume_extreme': volume_ratio >= 4.0,
-                    'consecutive_surge': consecutive_up_days >= 4
-                }
-            },
+            'analysis': trend_analysis,  # 🔥 시장 추세 분석 정보
             'used_parameters': {
                 'rsi_threshold': rsi_threshold,
                 'min_score': min_score,
                 'market_env': detect_stock_environment(stock_code) if trading_config.use_adaptive_strategy else 'unknown'
             }
         }
-        # ========== 디버깅 로그 끝 ==========
         
     except Exception as e:
         logger.error(f"❌ [{stock_data.get('stock_code', 'UNKNOWN')}] 매수 신호 분석 중 에러: {str(e)}")
         logger.exception(f"❌ [{stock_data.get('stock_code', 'UNKNOWN')}] 상세 에러 정보:")
         return {'is_buy_signal': False, 'score': 0, 'min_score': 0, 'signals': [f"분석 오류: {str(e)}"]}
-    
+
 # 🎯 분봉 타이밍도 조건부 차단으로 수정
 def analyze_intraday_entry_timing(stock_code, target_config):
     """분봉 기준 최적 진입 타이밍 분석 - 장 초반 안정화 적용"""
@@ -2532,6 +2873,98 @@ def analyze_sell_signal(stock_data, position, target_config):
             'sell_method': 'error'
         }        
 
+def detect_crash_signals(stock_data, position, target_config):
+    """폭락조짐 감지 - RSI 급락 + 거래량 급증 + 개선된 섹터 하락률 조합"""
+    try:
+        stock_code = stock_data['stock_code']
+        current_price = stock_data['current_price']
+        entry_price = position.get('entry_price', 0)
+        stock_name = position.get('stock_name', stock_code)
+        
+        # 수익 상태 체크 (1% 이상)
+        if entry_price <= 0:
+            return {'has_crash_signal': False, 'reason': 'entry_price 정보 없음'}
+        
+        profit_rate = (current_price - entry_price) / entry_price
+        if profit_rate < 0.01:  # 1% 미만 수익시에는 체크 안함
+            return {'has_crash_signal': False, 'reason': f'수익 부족 ({profit_rate*100:.2f}%)'}
+        
+        crash_signals = []
+        signal_count = 0
+        
+        # 1) RSI 급락 체크
+        rsi = stock_data.get('rsi', 50)
+        if rsi < 40:
+            signal_count += 1
+            crash_signals.append(f"RSI 급락 {rsi:.1f}")
+            logger.debug(f"폭락조짐 1: RSI 급락 {rsi:.1f}")
+        
+        # 2) 거래량 급증 체크
+        df = stock_data.get('ohlcv_data')
+        volume_surge = False
+        if df is not None and len(df) >= 20:
+            recent_volume = df['volume'].iloc[-1]
+            avg_volume = df['volume'].rolling(20).mean().iloc[-1]
+            volume_ratio = recent_volume / avg_volume if avg_volume > 0 else 1.0
+            
+            if volume_ratio >= 1.5:
+                signal_count += 1
+                volume_surge = True
+                crash_signals.append(f"거래량 급증 {volume_ratio:.1f}배")
+                logger.debug(f"폭락조짐 2: 거래량 급증 {volume_ratio:.1f}배")
+        
+        # 3) 개선된 섹터 위험도 체크
+        sector_analysis = analyze_sector_risk(stock_code, target_config)
+        sector_risk = sector_analysis.get('sector_risk', 'UNKNOWN')
+        sector_decline = sector_analysis.get('sector_decline_rate', 0)
+        matched_sector = sector_analysis.get('matched_sector', 'Unknown')
+        
+        # 섹터 위험 신호 판정 (기준 완화)
+        sector_signal = False
+        if sector_risk == 'CRITICAL':
+            signal_count += 1
+            sector_signal = True
+            crash_signals.append(f"섹터 치명적 위험 ({matched_sector}: {sector_decline:.1f}%)")
+        elif sector_risk == 'HIGH' and sector_decline < -2.0:
+            signal_count += 1
+            sector_signal = True
+            crash_signals.append(f"섹터 고위험 ({matched_sector}: {sector_decline:.1f}%)")
+        elif sector_risk == 'MEDIUM' and sector_decline < -2.5:
+            signal_count += 1
+            sector_signal = True
+            crash_signals.append(f"섹터 중위험 강화 ({matched_sector}: {sector_decline:.1f}%)")
+        
+        if sector_signal:
+            logger.debug(f"폭락조짐 3: 섹터 위험 {sector_risk} - {matched_sector} ({sector_decline:.1f}%)")
+        
+        # 폭락조짐 판정 (3개 중 2개 이상)
+        has_crash_signal = signal_count >= 2
+        
+        if has_crash_signal:
+            logger.info(f"🚨 {stock_name} 폭락조짐 감지!")
+            logger.info(f"   신호 수: {signal_count}/3개")
+            logger.info(f"   감지 신호: {', '.join(crash_signals)}")
+            logger.info(f"   현재 수익률: {profit_rate*100:.2f}%")
+            logger.info(f"   매칭 섹터: {matched_sector}")
+        else:
+            logger.debug(f"폭락조짐 미감지: {stock_name} ({signal_count}/3개, 섹터: {matched_sector})")
+        
+        return {
+            'has_crash_signal': has_crash_signal,
+            'signal_count': signal_count,
+            'crash_signals': crash_signals,
+            'profit_rate': profit_rate,
+            'rsi': rsi,
+            'volume_surge': volume_surge,
+            'sector_analysis': sector_analysis,
+            'matched_sector': matched_sector,
+            'reason': f"폭락조짐 {signal_count}/3개 감지 (섹터: {matched_sector})" if has_crash_signal else f"폭락조짐 {signal_count}/3개로 미감지 (섹터: {matched_sector})"
+        }
+        
+    except Exception as e:
+        logger.error(f"폭락조짐 감지 중 오류: {str(e)}")
+        return {'has_crash_signal': False, 'reason': f'분석 오류: {str(e)}'}        
+
 def analyze_sell_signal_legacy(stock_data, position, target_config):
     """개선된 매도 신호 분석 - 자본 보호 우선 손절 + 트레일링 스탑 보완"""
     try:
@@ -3312,8 +3745,31 @@ def analyze_sell_signal_with_surge_adaptive(stock_data, position, target_config)
                 legacy_result['remaining_amount'] = 0
                 legacy_result['sell_method'] = 'urgent_full_sell'
                 return legacy_result
-        
-        # 🎯 2단계: 상승 강도 기반 분할매도 검토 (수익 상태에서)
+
+
+        # 🆕 2단계: 수익보존 전량매도 검토 (NEW!)
+        if profit_rate > 0.01:  # 1% 이상 수익 상태에서만
+            crash_analysis = detect_crash_signals(stock_data, position, target_config)
+            
+            if crash_analysis['has_crash_signal']:
+                logger.info(f"🛡️ {stock_name} 수익보존 전량매도 신호!")
+                logger.info(f"   수익률: {profit_rate*100:.2f}%")
+                logger.info(f"   폭락조짐: {', '.join(crash_analysis['crash_signals'])}")
+                
+                return {
+                    'is_sell_signal': True,
+                    'sell_type': 'profit_protection_full_sell',  # 새로운 매도 타입
+                    'sell_quantity': position['amount'],
+                    'remaining_amount': 0,
+                    'strategy_type': 'profit_protection',
+                    'reason': f"수익보존 전량매도 {profit_rate*100:.2f}% - {crash_analysis['reason']}",
+                    'crash_analysis': crash_analysis,
+                    'sell_method': 'profit_protection_full_sell',
+                    'urgent': False,
+                    'protection_mode': True  # 수익보존 모드 표시
+                }
+
+        # 🎯 3단계: 상승 강도 기반 분할매도 검토 (수익 상태에서)
         if profit_rate > 0:  # 수익 상태에서만 분할매도 고려
             # 🔥 기존 함수 대신 개선된 함수 호출
             partial_strategy = calculate_surge_adaptive_partial_sell(stock_data, position, target_config)
@@ -3334,7 +3790,7 @@ def analyze_sell_signal_with_surge_adaptive(stock_data, position, target_config)
                     'urgent': False
                 }
         
-        # 🎯 3단계: 일반 전량매도 (기존 로직 재활용)
+        # 🎯 4단계: 일반 전량매도 (기존 로직 재활용)
         if legacy_result['is_sell_signal']:
             sell_type = legacy_result.get('sell_type', '')
             
@@ -4721,6 +5177,13 @@ def scan_target_stocks(trading_state):
         buy_opportunities = []
         current_positions = len(trading_state['positions'])
 
+        # 🔥 NEW: 시장 추세 한 번 확인 (모든 종목에 공통 적용)
+        market_trend = None
+        if trading_config.config.get('use_market_trend_filter', True):
+            market_trend = check_market_trend()
+            logger.info(f"📊 오늘 시장 추세: {market_trend['market_condition']} "
+                       f"(코스피: {market_trend['kospi_trend']}, 코스닥: {market_trend['kosdaq_trend']})")
+
         # 🔥 수정 1: 후보종목 풀 또는 기존 타겟 종목 가져오기
         if trading_config.use_candidate_pool:
             scan_stocks = trading_config.get_candidate_stocks()
@@ -4840,7 +5303,7 @@ def scan_target_stocks(trading_state):
                 logger.info(f"✅ [{stock_code}] 매수 신호 분석 시작")
                 
                 # 매수 신호 분석
-                buy_analysis = analyze_buy_signal(stock_data, target_config)
+                buy_analysis = analyze_buy_signal(stock_data, target_config, market_trend)
                 
                 # 기술적 분석 결과 저장
                 technical_results[stock_code] = {
@@ -5625,13 +6088,51 @@ def process_positions(trading_state):
                             }
                             
                             # 전량매도 완료 알림
-                            msg = f"💰 전량매도 완료: {stock_name}({stock_code})\n"
-                            msg += f"매도가: {executed_price:,.0f}원 × {executed_amount}주\n"
-                            msg += f"총손익: {gross_profit:,.0f}원\n"
-                            msg += f"순손익: {net_profit:,.0f}원 ({profit_rate:.2f}%)\n"
-                            msg += f"매도방식: {sell_method}\n"
-                            msg += f"매도사유: {sell_analysis['reason']}\n"
-                            msg += f"재매수 방지: {cooldown_hours}시간"
+
+                            # 전량매도 완료 알림 (수익보존 매도 구분)
+                            if sell_method == 'profit_protection_full_sell':
+
+                                # 수익보존 전량매도 알림 (섹터 정보 강화)
+                                crash_analysis = sell_analysis.get('crash_analysis', {})
+                                crash_signals = crash_analysis.get('crash_signals', [])
+                                sector_analysis = crash_analysis.get('sector_analysis', {})
+                                matched_sector = crash_analysis.get('matched_sector', 'Unknown')
+                                
+                                msg = f"🛡️ 수익보존 전량매도: {stock_name}({stock_code})\n"
+                                msg += f"매도가: {executed_price:,.0f}원 × {executed_amount}주\n"
+                                msg += f"보존수익: {gross_profit:,.0f}원\n"
+                                msg += f"순수익: {net_profit:,.0f}원 ({profit_rate:.2f}%)\n"
+                                msg += f"\n🚨 폭락조짐 감지:\n"
+                                
+                                for signal in crash_signals:
+                                    msg += f"• {signal}\n"
+                                
+                                # 섹터 상세 정보 추가
+                                if matched_sector != 'Unknown':
+                                    msg += f"\n📊 섹터 분석: {matched_sector}\n"
+                                    msg += f"• 위험도: {sector_analysis.get('sector_risk', 'Unknown')}\n"
+                                    msg += f"• 평균 변화율: {sector_analysis.get('sector_decline_rate', 0):.2f}%\n"
+                                    
+                                    # 주요 하락 종목 표시
+                                    affected_stocks = sector_analysis.get('affected_stocks', [])
+                                    if affected_stocks:
+                                        msg += f"• 하락 종목: "
+                                        stock_names = [s['name'] for s in affected_stocks[:3]]
+                                        msg += f"{', '.join(stock_names)}\n"
+                                
+                                msg += f"\n⏰ 재매수 방지: {cooldown_hours}시간"
+                                msg += f"\n💡 큰 손실 방지 성공!"
+                                
+                                logger.info(f"🛡️ 수익보존 매도로 {matched_sector} 섹터 위험 회피!")
+
+                            else:                            
+                                msg = f"💰 전량매도 완료: {stock_name}({stock_code})\n"
+                                msg += f"매도가: {executed_price:,.0f}원 × {executed_amount}주\n"
+                                msg += f"총손익: {gross_profit:,.0f}원\n"
+                                msg += f"순손익: {net_profit:,.0f}원 ({profit_rate:.2f}%)\n"
+                                msg += f"매도방식: {sell_method}\n"
+                                msg += f"매도사유: {sell_analysis['reason']}\n"
+                                msg += f"재매수 방지: {cooldown_hours}시간"
                             
                             # 분할매도 이력이 있었다면 추가 정보
                             partial_count = position.get('partial_sell_count', 0)
@@ -5691,6 +6192,7 @@ def process_positions(trading_state):
                 
                 # 타겟 종목이고, 실제 보유량이 있고, 봇 기록에 없는 경우
                 if (stock_code in trading_config.target_stocks and 
+                    trading_config.target_stocks[stock_code].get('enabled', True) and  # ← 이 줄 추가
                     actual_amount > 0 and 
                     stock_code not in bot_tracked_stocks):
                     
@@ -5913,31 +6415,38 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                     logger.info(f"   🕐 분봉 점수: {intraday_score}/{min_intraday_score}점")
                     
                     if not timing_analysis['enter_now']:
-                        logger.info(f"   ⏳ 분봉 진입 타이밍 대기 결정")
-                        logger.info(f"      사유: {timing_analysis['reason']}")
-                        logger.info(f"      최대 대기시간: {max_wait_hours}시간")
-                        
+                        logger.info(f"   ❌ 분봉 진입 타이밍 부족으로 매수 포기")
+                        logger.info(f"      분봉 점수: {timing_analysis.get('entry_score', 0)}점")
+                        logger.info(f"      필요 점수: {target_config.get('min_entry_score', 20)}점")
+                        logger.info(f"      포기 사유: {timing_analysis['reason']}")
+                        # logger.info(f"   ⏳ 분봉 진입 타이밍 대기 결정")
+                        # logger.info(f"      사유: {timing_analysis['reason']}")
+                        # logger.info(f"      최대 대기시간: {max_wait_hours}시간")
+
                         # 🔥 대기 리스트 재등록 (매수 실행 안하는 경우만)
-                        if 'buy_candidates' not in trading_state:
-                            trading_state['buy_candidates'] = {}
+                        # if 'buy_candidates' not in trading_state:
+                        #     trading_state['buy_candidates'] = {}
                         
-                        trading_state['buy_candidates'][stock_code] = {
-                            'opportunity': opportunity,
-                            'wait_start_time': datetime.datetime.now().isoformat(),
-                            'max_wait_hours': max_wait_hours,
-                            'daily_score': daily_score,
-                            'signal_strength': signal_strength,
-                            'last_intraday_score': intraday_score,
-                            'min_intraday_score': min_intraday_score,
-                            'last_check_time': datetime.datetime.now().isoformat(),
-                            'timing_reason': timing_reason,
-                            'timing_analysis': timing_analysis,
-                            'was_reregistered': True  # 재등록 표시
-                        }
+                        # trading_state['buy_candidates'][stock_code] = {
+                        #     'opportunity': opportunity,
+                        #     'wait_start_time': datetime.datetime.now().isoformat(),
+                        #     'max_wait_hours': max_wait_hours,
+                        #     'daily_score': daily_score,
+                        #     'signal_strength': signal_strength,
+                        #     'last_intraday_score': intraday_score,
+                        #     'min_intraday_score': min_intraday_score,
+                        #     'last_check_time': datetime.datetime.now().isoformat(),
+                        #     'timing_reason': timing_reason,
+                        #     'timing_analysis': timing_analysis,
+                        #     'was_reregistered': True  # 재등록 표시
+                        # }
                         
-                        logger.info(f"      → 매수 대기 리스트 재등록 완료")
-                        save_trading_state(trading_state)  # 즉시 저장
+                        # logger.info(f"      → 매수 대기 리스트 재등록 완료")
+                        # save_trading_state(trading_state)  # 즉시 저장
+                        # continue
+                        logger.info(f"      → 분봉 점수 부족으로 매수 포기 (재등록 안함)")
                         continue
+
                     else:
                         logger.info(f"   ✅ 분봉 진입 타이밍 양호")
                         logger.info(f"      사유: {timing_analysis['reason']}")
@@ -6238,33 +6747,32 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
         return trading_state        
 
 def create_config_file(config_path: str = "target_stock_config.json") -> None:
-    """기본 설정 파일 생성 (분봉 타이밍 옵션 + 뉴스 분석 포함한 개선 버전)"""
+    """기본 설정 파일 생성 (시장 추세 필터 + 분봉 타이밍 + 뉴스 분석 포함한 완전 개선 버전)"""
     try:
         logger.info("후보종목 풀 방식 설정 파일 생성 시작...")
         # 🔥 후보종목 풀 확장 (기존 4개 + 추가 4개)
         sample_codes = [
             "272210", "034020", "010140", "007660",  # 기존: 한화시스템, 두산에너빌리티, 삼성중공업, 이수페타시스
-            "017960", "033500", "051600", "000725"   # 추가: 한국카본, 동성화인텍, 한전KPS, 현대건설우
+            "017960", "033500", "051600", "000720"   # 추가: 한국카본, 동성화인텍, 한전KPS, 현대건설
         ]
 
-
-        # 🎯 특성별 파라미터 수정 (모든 타입의 min_score 상향)
+        # 🎯 특성별 파라미터 수정 (시장 추세 필터 반영)
         characteristic_params = {
             "growth": {
-                "allocation_ratio": 0.6,
-                "profit_target": 0.12,
-                "stop_loss": -0.08,           # -0.12 → -0.08
+                "allocation_ratio": 0.7,
+                "profit_target": 0.05,
+                "stop_loss": -0.035,           # 손절 기준 강화
                 "rsi_oversold": 55,
                 "rsi_overbought": 75,
-                "min_score": 40,                 # 🔥 30 → 40 (강화)
-                "trailing_stop": 0.03,        # 0.025 → 0.03  
-                "min_holding_hours": 24,      # 48 → 24
+                "min_score": 40,               # 매수 기준 상향
+                "trailing_stop": 0.025,        
+                "min_holding_hours": 24,       
                 "use_adaptive_stop": True,
                 "volatility_stop_multiplier": 1.5,
                 "stop_loss_delay_hours": 2,
                 
-                # 🎯 분봉 진입 타이밍 설정 (완화)
-                "min_entry_score": 20,              # 🔥 30 → 20 (완화)
+                # 🎯 분봉 진입 타이밍 설정
+                "min_entry_score": 20,              
                 "intraday_rsi_oversold": 35,
                 "intraday_rsi_overbought": 70,
                 "intraday_volume_threshold": 1.2,
@@ -6272,145 +6780,163 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
                 "bb_lower_margin": 0.02,
                 "ma_support_margin": 0.01,
 
-                # 🆕 분할매도 설정 추가
-                "use_partial_sell": True,                    # 분할매도 사용 여부
-                "min_holding_amount": 1,                     # 최소 보유 수량
-                "partial_sell_cooldown_hours": 1,            # 분할매도 쿨다운 (시간)
-                "partial_sell_min_profit": 0.015,            # 분할매도 최소 수익률 (1.5%)
-                
-                # 🆕 시장상황별 설정
-                "defensive_mode_threshold": 0.015,           # 방어모드 최소 수익률
-                "normal_mode_threshold": 0.02,               # 일반모드 최소 수익률
-                
-                # 🆕 전량매도 기준 상향 조정
-                "full_sell_profit_threshold": 0.18,         # 전량매도 최소 수익률 (18%)
-                "emergency_full_sell_loss": -0.08          # 긴급 전량매도 손실 기준 (-8%)
-
-            },
-            "balanced": {
-                "allocation_ratio": 0.5,
-                "profit_target": 0.10,
-                "stop_loss": -0.07,           # -0.12 → -0.07
-                "rsi_oversold": 55,
-                "rsi_overbought": 75,
-                "min_score": 40,                 # 🔥 30 → 40 (강화)
-                "trailing_stop": 0.035,       # 0.03 → 0.035
-                "min_holding_hours": 24,      # 48 → 24
-                "use_adaptive_stop": True,
-                "volatility_stop_multiplier": 1.4,
-                "stop_loss_delay_hours": 2,
-                "min_entry_score": 25,              # 🔥 35 → 25 (완화)
-                "intraday_rsi_oversold": 40,
-                "intraday_rsi_overbought": 65,
-                "intraday_volume_threshold": 1.15,
-                "use_bb_entry_timing": True,
-                "bb_lower_margin": 0.025,
-                "ma_support_margin": 0.015,
-                # 🆕 동일한 분할매도 설정 추가
+                # 🆕 분할매도 설정
                 "use_partial_sell": True,
                 "min_holding_amount": 1,
                 "partial_sell_cooldown_hours": 1,
                 "partial_sell_min_profit": 0.015,
                 "defensive_mode_threshold": 0.015,
                 "normal_mode_threshold": 0.02,
-                "full_sell_profit_threshold": 0.15,         # balanced는 15%
-                "emergency_full_sell_loss": -0.07
-
+                "full_sell_profit_threshold": 0.18,
+                "emergency_full_sell_loss": -0.08,
+                "min_order_amount": 10000
+            },
+            "balanced": {
+                "allocation_ratio": 0.6,
+                "profit_target": 0.05,
+                "stop_loss": -0.035,           
+                "rsi_oversold": 55,
+                "rsi_overbought": 75,
+                "min_score": 40,               
+                "trailing_stop": 0.025,       
+                "min_holding_hours": 24,      
+                "use_adaptive_stop": True,
+                "volatility_stop_multiplier": 1.4,
+                "stop_loss_delay_hours": 2,
+                "min_entry_score": 25,              
+                "intraday_rsi_oversold": 40,
+                "intraday_rsi_overbought": 65,
+                "intraday_volume_threshold": 1.15,
+                "use_bb_entry_timing": True,
+                "bb_lower_margin": 0.025,
+                "ma_support_margin": 0.015,
+                "use_partial_sell": True,
+                "min_holding_amount": 1,
+                "partial_sell_cooldown_hours": 1,
+                "partial_sell_min_profit": 0.015,
+                "defensive_mode_threshold": 0.015,
+                "normal_mode_threshold": 0.02,
+                "full_sell_profit_threshold": 0.15,
+                "emergency_full_sell_loss": -0.07,
+                "min_order_amount": 10000
             },
             "value": {
                 "allocation_ratio": 0.5,
-                "profit_target": 0.08,
-                "stop_loss": -0.06,           # -0.10 → -0.06
+                "profit_target": 0.05,
+                "stop_loss": -0.035,           
                 "rsi_oversold": 60,
                 "rsi_overbought": 70,
-                "min_score": 45,                 # 🔥 35 → 45 (가장 보수적)
-                "trailing_stop": 0.04,        # 0.035 → 0.04
-                "min_holding_hours": 24,      # 48 → 24
+                "min_score": 45,               # value는 더 보수적
+                "trailing_stop": 0.025,        
+                "min_holding_hours": 24,      
                 "use_adaptive_stop": True,
                 "volatility_stop_multiplier": 1.3,
                 "stop_loss_delay_hours": 1,
-                
-                "min_entry_score": 30,              # 🔥 40 → 30 (완화)
+                "min_entry_score": 30,              
                 "intraday_rsi_oversold": 45,
                 "intraday_rsi_overbought": 60,
                 "intraday_volume_threshold": 1.1,
                 "use_bb_entry_timing": True,
                 "bb_lower_margin": 0.03,
                 "ma_support_margin": 0.02,
-                # 🆕 동일한 분할매도 설정 추가 (더 보수적)
                 "use_partial_sell": True,
                 "min_holding_amount": 1,
-                "partial_sell_cooldown_hours": 2,            # value는 더 보수적
-                "partial_sell_min_profit": 0.02,             # 2%
+                "partial_sell_cooldown_hours": 2,            
+                "partial_sell_min_profit": 0.02,             
                 "defensive_mode_threshold": 0.02,
                 "normal_mode_threshold": 0.025,
-                "full_sell_profit_threshold": 0.12,         # value는 12%
-                "emergency_full_sell_loss": -0.06
+                "full_sell_profit_threshold": 0.12,         
+                "emergency_full_sell_loss": -0.06,
+                "min_order_amount": 10000
             }
         }
 
-        # 🔥 후보종목 정보 수집 (모든 종목을 candidate로 설정)
+        # 🔥 후보종목 정보 수집 (실제 종목명 및 섹터 조회)
         candidate_stocks = {}
-        for i, stock_code in enumerate(sample_codes):
-            try:
-                # 종목명 조회
-                stock_status = KisKR.GetCurrentStatus(stock_code)
-                if stock_status and isinstance(stock_status, dict):
-                    stock_name = stock_status.get("StockName", f"종목{stock_code}")
-                else:
-                    stock_name = f"종목{stock_code}"
-                
-                # 섹터 정보 조회
-                sector_info = get_sector_info(stock_code)
-                
-                # 특성 타입 결정 (기존: 모든 종목을 성장주로 설정)
-                char_type = "growth"
-                
-                # 🔥 후보종목으로 설정 (enabled는 candidate 여부를 의미)
-                params = characteristic_params[char_type].copy()
-                params.update({
-                    "name": stock_name,
-                    "sector": sector_info.get('sector', 'Unknown'),
-                    "enabled": True,  # 🔥 후보종목 풀에 포함
-                    "characteristic_type": char_type,
-                    "is_candidate": True  # 🔥 후보종목 표시
-                })
-                
-                candidate_stocks[stock_code] = params
-                logger.info(f"후보종목 설정: {stock_code}({stock_name}) - {char_type}")
-                
-                time.sleep(0.5)  # API 호출 간격
-                
-            except Exception as e:
-                logger.warning(f"종목 {stock_code} 정보 수집 중 오류: {str(e)}")
-                # 기본값으로 설정
-                candidate_stocks[stock_code] = characteristic_params["growth"].copy()
-                candidate_stocks[stock_code].update({
-                    "name": f"종목{stock_code}",
-                    "sector": "Unknown",
-                    "enabled": True,
-                    "characteristic_type": "growth",
-                    "is_candidate": True
-                })
+        stock_configs = [
+            {"code": "272210", "name": "한화시스템", "sector": "우주항공과국방", "enabled": True, "type": "growth"},
+            {"code": "034020", "name": "두산에너빌리티", "sector": "기계", "enabled": False, "type": "growth"},  # 비활성
+            {"code": "010140", "name": "삼성중공업", "sector": "조선", "enabled": True, "type": "growth"},
+            {"code": "007660", "name": "이수페타시스", "sector": "화학", "enabled": True, "type": "growth"},
+            {"code": "017960", "name": "한국카본", "sector": "화학", "enabled": True, "type": "balanced"},
+            {"code": "033500", "name": "동성화인텍", "sector": "화학", "enabled": False, "type": "growth"},  # 비활성
+            {"code": "051600", "name": "한전KPS", "sector": "건설", "enabled": True, "type": "balanced"},
+            {"code": "000720", "name": "현대건설", "sector": "건설", "enabled": True, "type": "balanced"}
+        ]
 
+        for stock_config in stock_configs:
+            stock_code = stock_config["code"]
+            char_type = stock_config["type"]
+            
+            # 특성별 파라미터 적용
+            params = characteristic_params[char_type].copy()
+            params.update({
+                "name": stock_config["name"],
+                "sector": stock_config["sector"],
+                "enabled": stock_config["enabled"],
+                "characteristic_type": char_type,
+                "is_candidate": stock_config["enabled"]  # enabled와 동일하게 설정
+            })
+            
+            candidate_stocks[stock_code] = params
+            logger.info(f"후보종목 설정: {stock_code}({stock_config['name']}) - {char_type} ({'활성' if stock_config['enabled'] else '비활성'})")
         
-        # 전체 설정 구성 (분봉 타이밍 + 뉴스 분석 옵션 포함)
+        # 전체 설정 구성 (시장 추세 필터 포함)
         config = {
             # 🔥 후보종목을 target_stocks로 설정 (기존 구조 유지)
             "target_stocks": candidate_stocks,
             
-            # 🔥 새로운 설정: 동적 선택 관련
-            "use_candidate_pool": True,              # 후보종목 풀 방식 사용 여부
-            "target_holding_count": 3,               # 🎯 목표 보유 종목 수 (기존 보유 2개 + 1개 여유)
-            "candidate_selection_method": "score",   # 선택 방식: "score" (점수순), "signal_strength" (신호강도순)
-            "min_selection_score": 45,              # 🔥 후보 선택 최소 점수 (40→45, 더 엄격)
-            "rebalance_interval_hours": 24,          # 재선택 주기 (시간)
-            "max_candidate_positions": 4,            # 🔥 최대 후보종목 동시 보유 수 (여유분)
+            # 🔥 후보종목 풀 방식 설정
+            "use_candidate_pool": True,              
+            "target_holding_count": 2,               
+            "candidate_selection_method": "score",   
+            "min_selection_score": 45,              
+            "rebalance_interval_hours": 24,          
+            "max_candidate_positions": 4,            
+            "max_positions": 3,
             
-            # 🔥 기존 max_positions 대체 (하위 호환성 유지)
-            "max_positions": 3,  # target_holding_count와 동일하게 설정
+            # 기본 거래 설정
+            "trade_budget_ratio": 0.9,
+            "min_stock_price": 3000,
+            "max_stock_price": 200000,
+            "market_open_wait_minutes": 30,
             
-            # 분봉 타이밍 전역 설정 (기존 유지)
+            # 🎯 손익 관리 설정 (개선된 버전)
+            "stop_loss_ratio": -0.04,
+            "take_profit_ratio": 0.05,
+            "trailing_stop_ratio": 0.025,
+            "max_daily_loss": -0.06,
+            "max_daily_profit": 0.08,
+            "stop_loss_delay_hours": 2,
+            "volatility_stop_multiplier": 1.5,
+            "use_adaptive_stop": True,
+            "min_holding_hours": 4,
+            
+            # 트레일링 스탑 고도화 설정
+            "min_protection_ratio": 0.03,
+            "trailing_activation_profit": 0.02,
+            "profit_protection_threshold": 0.04,
+            "conservative_threshold": 0.02,
+            "breakeven_range": 0.02,
+            "max_trailing_loss": 0.1,
+            "trailing_safety_margin": 0.005,
+            
+            # 🎯 기술적 분석 설정
+            "rsi_period": 14,
+            "rsi_oversold": 35,
+            "rsi_overbought": 75,
+            "macd_fast": 12,
+            "macd_slow": 26,
+            "macd_signal": 9,
+            "bb_period": 20,
+            "bb_std": 2.0,
+            "default_min_score": 40,
+            
+            # 적응형 전략 사용 설정
+            "use_adaptive_strategy": True,
+            "use_trend_filter": True,
+            
+            # 🔥 분봉 타이밍 전역 설정
             "use_intraday_timing": True,
             "intraday_check_interval": 10,
             "default_check_interval": 30,
@@ -6419,7 +6945,7 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
             "intraday_data_count": 24,
             "force_buy_after_wait": True,
             
-            # 뉴스 분석 설정 (기존 유지)
+            # 🔥 뉴스 분석 설정
             "use_news_analysis": True,
             "news_check_threshold": 20,
             "always_check_news": False,
@@ -6429,81 +6955,75 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
                 "negative_multiplier": 0.25
             },
             
-            # 예산 설정 - 기존 구조 유지하되 일부 값만 최적화
+            # 🔥 예산 설정
             "use_absolute_budget": True,
             "absolute_budget_strategy": "proportional",
-            "absolute_budget": 600000,              # 🎯 60만원으로 설정
+            "absolute_budget": 600000,
             "initial_total_asset": 0,
             "budget_loss_tolerance": 0.2,
-
-            "min_protection_ratio": 0.03,          # 매수가 기준 최소 보호율 (3%)
-            "trailing_activation_profit": 0.02,     # 트레일링 활성화 최소 수익률 (2%)
-            "profit_protection_threshold": 0.04,    # 수익보호 모드 진입 기준 (4%)
-            "conservative_threshold": 0.02,         # 보수적 보호 모드 기준 (2%)
-            "breakeven_range": 0.02,               # 손익분기 범위 (±2%)
-            "max_trailing_loss": 0.10,             # 최대 허용 손실 (10%)
-            "trailing_safety_margin": 0.005,       # 트레일링 안전 여유 (0.5%)
-
-            "trade_budget_ratio": 0.9,             
-            # 포지션 관리 - 일부만 최적화
-            # "max_positions": 3,                     # 🎯 3종목으로 설정
-            "min_stock_price": 3000,                # 기존 유지
-            "max_stock_price": 200000,              # 기존 유지
-            "market_open_wait_minutes": 30,            
             
-            # 🎯 손익 관리 설정 - 백테스트 결과 반영
-            "stop_loss_ratio": -0.04,               # -0.025 → -0.04 (완화)
-            "take_profit_ratio": 0.08,              # 0.055 → 0.08 (상향)
-            "trailing_stop_ratio": 0.025,           # 0.018 → 0.025 (보호 강화)
-            "max_daily_loss": -0.06,                # -0.04 → -0.06 (완화)
-            "max_daily_profit": 0.08,               # 0.06 → 0.08 (기회 확대)
+            # 🔥 NEW: 시장 추세 필터 설정
+            "use_market_trend_filter": True,
+            "trend_filter_strict_mode": False,
+            "trend_filter_settings": {
+                "bearish_market_penalty": -25,          # 하락장 페널티 (중간 강도)
+                "bullish_market_bonus": 10,             # 상승장 보너스
+                "mixed_market_penalty": -15,            # 혼조장 페널티
+                "individual_trend_weight": 0.7,         # 개별 종목 추세 가중치
+                "market_trend_weight": 0.3,             # 시장 추세 가중치
+                "trend_confirmation_days": 5,           # 추세 확인 일수
+                "min_trend_strength": 0.02,             # 최소 추세 강도 (2%)
+                "trend_cache_minutes": 30,              # 시장 추세 캐시 시간
+                "bearish_strict_block": False,          # 하락장 완전 차단 여부
+                "emergency_exceptions": {
+                    "extreme_oversold_rsi": 15,         # 극도 과매도 예외 기준
+                    "strong_news_threshold": 80,        # 강한 호재 뉴스 예외 기준
+                    "bb_breakthrough_margin": -0.05,    # 볼밴 하단 돌파 예외 기준
+                    "volume_surge_threshold": 2.0       # 거래량 급증 예외 기준
+                }
+            },
             
-            # 🎯 기술적 분석 설정 - 매수 기회 확대 → 제한
-            "rsi_period": 14,
-            "rsi_oversold": 35,
-            "rsi_overbought": 75,
-            "macd_fast": 12,
-            "macd_slow": 26,
-            "macd_signal": 9,
-            "bb_period": 20,
-            "bb_std": 2.0,
-
-            # 🔥 전역 기본 매수 기준 상향
-            "default_min_score": 40,  # 새로 추가
-
-            # 적응형 전략 사용 설정 - 기존 유지
-            "use_adaptive_strategy": True,
-            "use_trend_filter": True,
+            # 🔥 NEW: 성과 추적 설정
+            "trend_performance_tracking": {
+                "track_by_market_condition": True,      # 시장 상황별 성과 추적
+                "save_trend_decisions": True,           # 추세 결정 기록 저장
+                "performance_review_days": 30           # 성과 리뷰 기간
+            },
             
             # 🎯 분봉 타이밍 관련 알림 설정
-            "alert_intraday_wait": True,            # 분봉 대기 알림 사용 여부
-            "alert_intraday_entry": True,           # 분봉 진입 알림 사용 여부
-            "alert_candidate_summary": True,        # 대기 종목 요약 알림 사용 여부
+            "alert_intraday_wait": True,
+            "alert_intraday_entry": True,
+            "alert_candidate_summary": True,
             
-            # 기타 설정 - 기존 유지
+            # 기타 설정
             "last_sector_update": datetime.datetime.now().strftime('%Y%m%d'),
-            "bot_name": "TargetStockBot",           # 기존 이름 유지
+            "bot_name": "TargetStockBot",
             "use_discord_alert": True,
-            "check_interval_minutes": 30            # 기본 체크 주기 (분) - 호환성 유지
+            "check_interval_minutes": 30
         }
 
         # 파일 저장
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, ensure_ascii=False, indent=4)
 
-        logger.info(f"🎯 후보종목 풀 방식 설정 파일 생성 완료: {config_path}")
+        logger.info(f"🎯 완전한 후보종목 풀 설정 파일 생성 완료: {config_path}")
         logger.info(f"주요 설정:")
-        logger.info(f"  - 후보종목 풀: {len(candidate_stocks)}개 (기존 4개 + 추가 4개)")
+        logger.info(f"  - 후보종목 풀: {len(candidate_stocks)}개")
+        active_count = sum(1 for stock in candidate_stocks.values() if stock.get('enabled', True))
+        logger.info(f"  - 활성 후보종목: {active_count}개")
         logger.info(f"  - 목표 보유 종목: {config['target_holding_count']}개")
         logger.info(f"  - 선택 방식: {config['candidate_selection_method']}")
         logger.info(f"  - 선택 최소 점수: {config['min_selection_score']}점")
         logger.info(f"  - 예산: {config['absolute_budget']:,}원")
+        logger.info(f"  - 시장 추세 필터: {'ON' if config['use_market_trend_filter'] else 'OFF'}")
         logger.info(f"  - 분봉 타이밍: {'ON' if config['use_intraday_timing'] else 'OFF'}")
         logger.info(f"  - 뉴스 분석: {'ON' if config['use_news_analysis'] else 'OFF'}")
-        logger.info(f"  - 모든 종목: 성장주 전략 적용")
+        logger.info(f"  - 하락장 페널티: {config['trend_filter_settings']['bearish_market_penalty']}점")
+        logger.info(f"  - 상승장 보너스: {config['trend_filter_settings']['bullish_market_bonus']}점")
         
         # 적응형 전략 파일 초기화
         try:
+            from technical_analysis import AdaptiveMarketStrategy
             adaptive_strategy = AdaptiveMarketStrategy("bb_adaptive_strategy.json")
             adaptive_strategy.save_strategy()
             logger.info("적응형 전략 파일 초기화 완료")
