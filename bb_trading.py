@@ -2894,7 +2894,7 @@ def detect_crash_signals(stock_data, position, target_config):
         
         # 1) RSI 급락 체크
         rsi = stock_data.get('rsi', 50)
-        if rsi < 40:
+        if rsi < 45:
             signal_count += 1
             crash_signals.append(f"RSI 급락 {rsi:.1f}")
             logger.debug(f"폭락조짐 1: RSI 급락 {rsi:.1f}")
