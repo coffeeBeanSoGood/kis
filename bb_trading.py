@@ -4246,19 +4246,89 @@ def calculate_position_size(target_config, stock_code, stock_price, trading_stat
         return 0
 
 def execute_buy_order(stock_code, target_config, quantity, price):
-    """매수 주문 실행 - 미체결 주문 추적 추가"""
+    """매수 주문 실행 - 최종 중복 방지 체크 강화"""
     try:
         stock_name = target_config.get('name', stock_code)
-        trading_state = load_trading_state()
-        # 🆕 여기에 추가 - 매수 전 보유량 기록
-        initial_holdings = 0        
         
-        # 🆕 1. 중복 주문 방지 (라이브러리 사용)
-        if pending_manager.check_pending_orders(stock_code, trading_state):
-            logger.warning(f"❌ 중복 주문 방지: {stock_name}({stock_code}) - 이미 미체결 주문 있음")
+        logger.info(f"🔥 execute_buy_order 시작: {stock_name}({stock_code})")
+        logger.info(f"   주문 수량: {quantity}주")
+        logger.info(f"   주문 가격: {price:,}원")
+        
+        # ===== 🔥 1단계: 최종 안전장치 - 주문 실행 직전 마지막 체크 =====
+        logger.info("🛡️ 주문 실행 직전 최종 안전 체크...")
+        
+        # 1-1. 최신 상태 강제 로드
+        final_check_state = load_trading_state()
+        
+        # 1-2. pending_orders 최종 체크
+        if 'pending_orders' in final_check_state and stock_code in final_check_state['pending_orders']:
+            existing_order = final_check_state['pending_orders'][stock_code]
+            
+            logger.error(f"🚨 최종 안전장치 작동: {stock_name}")
+            logger.error(f"   주문 실행 직전 미체결 주문 재발견!")
+            logger.error(f"   기존 주문: {existing_order.get('quantity', 0)}주 @ {existing_order.get('price', 0):,}원")
+            logger.error(f"   주문시간: {existing_order.get('order_time', 'Unknown')}")
+            logger.error(f"   상태: {existing_order.get('status', 'Unknown')}")
+            logger.error(f"   → 매수 주문 긴급 중단!")
+            
+            # 긴급 Discord 알림
+            emergency_msg = f"🚨 긴급! 최종 안전장치 작동\n"
+            emergency_msg += f"종목: {stock_name}({stock_code})\n"
+            emergency_msg += f"주문 실행 직전 미체결 주문 발견!\n"
+            emergency_msg += f"기존: {existing_order.get('quantity', 0)}주 @ {existing_order.get('price', 0):,}원\n"
+            emergency_msg += f"→ 중복 주문 긴급 차단됨"
+            
+            if hasattr(trading_config, 'use_discord_alert') and trading_config.config.get('use_discord_alert', True):
+                discord_alert.SendMessage(emergency_msg)
+            
             return None, None
         
-        # 🆕 2. 주문 추적 시작 (라이브러리 사용)
+        # 1-3. positions 최종 체크
+        if 'positions' in final_check_state and stock_code in final_check_state['positions']:
+            logger.error(f"🚨 최종 안전장치 작동: {stock_name}")
+            logger.error(f"   주문 실행 직전 포지션 재발견!")
+            logger.error(f"   → 매수 주문 긴급 중단!")
+            return None, None
+        
+        logger.info(f"✅ 최종 안전 체크 통과: {stock_name}")
+        logger.info(f"   매수 주문 실행 진행...")
+        
+        # 최신 상태 사용
+        trading_state = final_check_state
+        
+        # ===== 🔥 2단계: 기존 중복 주문 방지 로직도 유지 =====
+        logger.info("🔍 pending_manager 라이브러리 최종 체크...")
+        if pending_manager.check_pending_orders(stock_code, trading_state):
+            logger.error(f"❌ pending_manager 최종 체크 실패: {stock_name}")
+            logger.error(f"   라이브러리에서 미체결 주문 감지")
+            return None, None
+        
+        logger.info(f"✅ pending_manager 체크 통과: {stock_name}")
+        
+        # ===== 🔥 3단계: 매수 전 보유량 기록 =====
+        initial_holdings = 0
+        logger.info("📊 매수 전 보유량 확인 중...")
+        try:
+            my_stocks = KisKR.GetMyStockList()
+            if my_stocks:
+                for stock in my_stocks:
+                    if stock['StockCode'] == stock_code:
+                        initial_holdings = int(stock.get('StockAmt', 0))
+                        break
+            logger.info(f"📊 매수 전 보유량: {initial_holdings}주")
+            
+            # 보유량이 있다면 중단
+            if initial_holdings > 0:
+                logger.error(f"🚨 매수 전 보유량 발견: {stock_name}")
+                logger.error(f"   보유량: {initial_holdings}주")
+                logger.error(f"   → 매수 주문 중단")
+                return None, None
+                
+        except Exception as e:
+            logger.warning(f"⚠️ 초기 보유량 확인 실패: {str(e)}")
+        
+        # ===== 🔥 4단계: 미체결 주문 추적 시작 (라이브러리 사용) =====
+        logger.info("📝 미체결 주문 추적 등록 중...")
         order_info = {
             'quantity': quantity,
             'price': price,
@@ -4269,9 +4339,11 @@ def execute_buy_order(stock_code, target_config, quantity, price):
         }
         
         pending_manager.track_pending_order(trading_state, stock_code, order_info)
-        save_trading_state(trading_state)
+        # save_trading_state(trading_state)
+        trading_state = save_and_verify_trading_state(trading_state, "미체결 주문 등록")
         
-        # 🆕 3. 현재가 재조회 (중요!)
+        # ===== 🔥 5단계: 현재가 재조회 (최종 확인) =====
+        logger.info("💰 주문 실행 전 현재가 최종 재조회...")
         old_price = price
         try:
             current_price = KisKR.GetCurrentPrice(stock_code)
@@ -4296,7 +4368,7 @@ def execute_buy_order(stock_code, target_config, quantity, price):
             actual_price = old_price
             logger.error(f"❌ 현재가 조회 중 오류: {str(price_error)}")
         
-        # 🆕 4. 주문 접수 알림 (실제 주문가격으로)
+        # ===== 🔥 6단계: 주문 접수 알림 (실제 주문가격으로) =====
         order_amount = quantity * actual_price
         estimated_fee = calculate_trading_fee(actual_price, quantity, True)
         
@@ -4305,36 +4377,41 @@ def execute_buy_order(stock_code, target_config, quantity, price):
         order_info['estimated_fee'] = estimated_fee
         pending_manager.send_order_alert('submit', stock_code, order_info)
         
-        # 🔥 5. 매수 전 보유량 기록 (주문 실행 직전에 한 번만!)
-        try:
-            my_stocks = KisKR.GetMyStockList()
-            if my_stocks:
-                for stock in my_stocks:
-                    if stock['StockCode'] == stock_code:
-                        initial_holdings = int(stock.get('StockAmt', 0))
-                        break
-            logger.info(f"📊 매수 전 보유량: {initial_holdings}주")
-        except Exception as e:
-            logger.warning(f"⚠️ 초기 보유량 확인 실패: {str(e)}")
+        # ===== 🔥 7단계: 실제 주문 실행 =====
+        logger.info(f"📋 매수 주문 접수: {stock_name}({stock_code})")
+        logger.info(f"주문량: {quantity}주 @ {actual_price:,}원")
+        logger.info(f"주문금액: {order_amount:,}원")
+        logger.info(f"체결 대기 중...")
+        logger.info("")  # 빈 줄 추가
         
-        # 6. 실제 주문 실행 (실제 현재가로)
-        logger.info(f"🔵 {stock_name}({stock_code}) 매수 주문: {quantity}주 @ {actual_price:,.0f}원")
+        logger.info(f"🔵 {stock_name}({stock_code}) 매수 주문: {quantity}주 @ {actual_price:,}원")
         
         order_result = KisKR.MakeBuyLimitOrder(stock_code, quantity, int(actual_price))
         
         if not order_result or isinstance(order_result, str):
-            # 🆕 주문 실패시 pending 제거 (라이브러리 사용)
+            # ===== 🔥 8단계: 주문 실패시 처리 =====
+            logger.error(f"❌ 매수 주문 실패: {stock_name}({stock_code}) - {order_result}")
+            
+            # pending 제거 (라이브러리 사용)
             trading_state = load_trading_state()
             pending_manager.remove_pending_order(trading_state, stock_code, "주문 실패")
             save_trading_state(trading_state)
             
-            error_msg = f"❌ 매수 주문 실패: {stock_name}({stock_code}) - {order_result}"
-            logger.error(error_msg)
+            # Discord 알림
+            error_msg = f"❌ 매수 주문 실패\n"
+            error_msg += f"종목: {stock_name}({stock_code})\n"
+            error_msg += f"수량: {quantity}주 @ {actual_price:,}원\n"
+            error_msg += f"사유: {order_result}\n"
+            error_msg += f"→ 미체결 주문 추적 해제됨"
+            
             if hasattr(trading_config, 'use_discord_alert') and trading_config.config.get('use_discord_alert', True):
                 discord_alert.SendMessage(error_msg)
+            
             return None, None
         
-        # 7. 주문 성공시 order_id 업데이트
+        # ===== 🔥 9단계: 주문 성공시 order_id 업데이트 =====
+        logger.info(f"✅ 매수 주문 접수 성공: {stock_name}")
+        
         if isinstance(order_result, dict):
             order_id = order_result.get('OrderNum', order_result.get('OrderNo', ''))
             if order_id:
@@ -4345,73 +4422,117 @@ def execute_buy_order(stock_code, target_config, quantity, price):
                     save_trading_state(trading_state)
                     logger.info(f"📋 주문번호 등록: {stock_name}({stock_code}) - {order_id}")
         
-        # 🔥 8. 체결 확인 (수정된 로직 - 시간 연장 + 보유량 증가 기반)
+        # ===== 🔥 10단계: 체결 확인 대기 =====
+        logger.info(f"⏱️ 체결 확인 대기 시작: {stock_name}")
         start_time = time.time()
-        while time.time() - start_time < 600:  # 300 → 600초 (10분)
+        max_wait_seconds = 600  # 10분
+        check_interval = 30     # 30초마다 체크
+        
+        while time.time() - start_time < max_wait_seconds:
             try:
+                # 30초마다 체결 확인
+                elapsed_time = time.time() - start_time
+                elapsed_minutes = elapsed_time / 60
+                remaining_minutes = (max_wait_seconds - elapsed_time) / 60
+                
+                logger.info(f"⏱️ 체결 대기 중: {elapsed_minutes:.0f}분/{max_wait_seconds/60:.0f}분 (남은시간: {remaining_minutes:.0f}분)")
+                
+                # 보유량 변화 확인
                 my_stocks = KisKR.GetMyStockList()
+                current_amount = 0
+                
                 if my_stocks:
                     for stock in my_stocks:
                         if stock['StockCode'] == stock_code:
-                            current_holdings = int(stock.get('StockAmt', 0))
-                            holdings_increase = current_holdings - initial_holdings  # 🔥 증가분 계산
-                            
-                            if holdings_increase > 0:  # 🔥 증가분으로 체결 확인
-                                executed_amount = holdings_increase  # 🔥 실제 체결량
-                                avg_price = float(stock.get('AvrPrice', actual_price))
-                                
-                                # 체결가격 로그
-                                execution_diff = avg_price - actual_price
-                                logger.info(f"✅ 매수 체결 확인: {executed_amount}주")
-                                logger.info(f"   주문가격: {actual_price:,}원")
-                                logger.info(f"   체결가격: {avg_price:,}원")
-                                logger.info(f"   체결차이: {execution_diff:+,}원")
-                                logger.info(f"   보유량 변화: {initial_holdings}주 → {current_holdings}주")
-                                
-                                # 🆕 체결 완료시 pending 제거
-                                trading_state = load_trading_state()
-                                pending_manager.remove_pending_order(trading_state, stock_code, "체결 완료")
-                                save_trading_state(trading_state)
-                                
-                                # 🆕 체결 완료 알림
-                                pending_manager.send_order_alert('fill', stock_code, {
-                                    'executed_price': avg_price,
-                                    'executed_amount': executed_amount,
-                                    'order_price': actual_price,
-                                    'price_improvement': execution_diff,
-                                    'initial_holdings': initial_holdings,
-                                    'final_holdings': current_holdings
-                                })                        
-                                return avg_price, executed_amount
+                            current_amount = int(stock.get('StockAmt', 0))
                             break
                 
-                # 🆕 진행 상황 로그 추가 (2분마다)
-                elapsed_time = time.time() - start_time
-                if int(elapsed_time) % 120 == 0 and elapsed_time > 0:
-                    remaining_minutes = (600 - elapsed_time) / 60
-                    logger.info(f"⏱️ 체결 대기 중: {elapsed_time/60:.0f}분/10분 "
-                              f"(남은시간: {remaining_minutes:.0f}분)")
+                # 보유량이 증가했으면 체결됨
+                if current_amount > initial_holdings:
+                    executed_amount = current_amount - initial_holdings
+                    
+                    logger.info(f"✅ 체결 확인: {stock_name}")
+                    logger.info(f"   보유량 변화: {initial_holdings}주 → {current_amount}주")
+                    logger.info(f"   체결 수량: {executed_amount}주")
+                    logger.info(f"   체결 시간: {elapsed_minutes:.1f}분")
+                    
+                    # ===== 🔥 11단계: 체결 성공 처리 =====
+                    # pending 제거
+                    trading_state = load_trading_state()
+                    pending_manager.remove_pending_order(trading_state, stock_code, "체결 완료")
+                    # save_trading_state(trading_state)
+                    trading_state = save_and_verify_trading_state(trading_state, "체결 완료 후")
+                    
+                    # 체결가 조회
+                    try:
+                        executed_price = KisKR.GetCurrentPrice(stock_code)
+                        if not executed_price or executed_price <= 0:
+                            executed_price = actual_price
+                    except:
+                        executed_price = actual_price
+                    
+                    logger.info(f"📈 최종 체결 결과:")
+                    logger.info(f"   체결가: {executed_price:,}원")
+                    logger.info(f"   체결량: {executed_amount}주")
+                    logger.info(f"   체결금액: {executed_price * executed_amount:,}원")
+                    
+                    # Discord 체결 알림
+                    execution_msg = f"✅ 매수 체결 완료\n"
+                    execution_msg += f"종목: {stock_name}({stock_code})\n"
+                    execution_msg += f"체결: {executed_amount}주 @ {executed_price:,}원\n"
+                    execution_msg += f"투자금액: {executed_price * executed_amount:,}원\n"
+                    execution_msg += f"체결시간: {elapsed_minutes:.1f}분"
+                    
+                    if hasattr(trading_config, 'use_discord_alert') and trading_config.config.get('use_discord_alert', True):
+                        discord_alert.SendMessage(execution_msg)
+                    
+                    return executed_price, executed_amount
+                
+                # 체결되지 않았으면 30초 대기
+                time.sleep(check_interval)
+                
             except Exception as e:
                 logger.warning(f"⚠️ 체결 확인 중 오류: {str(e)}")
-            
-            time.sleep(5)  # 🔥 5초 간격으로 체크
+                time.sleep(check_interval)
         
-        # 🆕 미체결시 알림 (라이브러리 사용)
-        logger.warning(f"⏱️ 체결 확인 시간 초과: {stock_code} (5분)")
-        pending_manager.send_order_alert('pending', stock_code, order_info)
+        # ===== 🔥 12단계: 체결 확인 시간 초과 처리 =====
+        elapsed_minutes = (time.time() - start_time) / 60
+        logger.warning(f"⏱️ 체결 확인 시간 초과: {stock_code} ({elapsed_minutes:.0f}분)")
+        logger.warning(f"⏱️ 매수 미체결: {stock_name}({stock_code})")
+        logger.warning(f"주문량: {quantity}주 @ {actual_price:,}원")
+        logger.warning(f"자동 관리 대상으로 등록됨")
         
-        return None, None
+        # Discord 미체결 알림
+        pending_msg = f"⏰ 매수 미체결\n"
+        pending_msg += f"종목: {stock_name}({stock_code})\n"
+        pending_msg += f"주문: {quantity}주 @ {actual_price:,}원\n"
+        pending_msg += f"대기시간: {elapsed_minutes:.0f}분\n"
+        pending_msg += f"→ 자동 관리 대상으로 등록"
+        
+        if hasattr(trading_config, 'use_discord_alert') and trading_config.config.get('use_discord_alert', True):
+            discord_alert.SendMessage(pending_msg)
+        
+        # ===== 🔥 13단계: 지연 체결 반환 =====
+        # 미체결 상태로 두고 지연 체결 플래그 반환
+        logger.info(f"📋 미체결 주문으로 관리 계속: {stock_name}")
+        logger.info(f"   다음 루프에서 자동 체결 확인 예정")
+        
+        return "DELAYED_EXECUTION", quantity
         
     except Exception as e:
-        # 🆕 예외 발생시 pending 정리 (라이브러리 사용)
+        logger.error(f"❌ execute_buy_order 전체 오류 ({stock_code}): {str(e)}")
+        logger.exception("❌ 상세 에러 정보:")
+        
+        # 에러 발생시 pending 제거
         try:
             trading_state = load_trading_state()
-            pending_manager.remove_pending_order(trading_state, stock_code, f"오류 발생: {str(e)}")
-            save_trading_state(trading_state)
+            if stock_code in trading_state.get('pending_orders', {}):
+                pending_manager.remove_pending_order(trading_state, stock_code, "실행 에러")
+                save_trading_state(trading_state)
+                logger.info(f"🗑️ 에러로 인한 pending 제거: {stock_code}")
         except:
             pass
         
-        logger.error(f"매수 주문 실행 중 에러: {str(e)}")
         return None, None
 
 def process_buy_candidates(trading_state):
@@ -6268,11 +6389,49 @@ def process_positions(trading_state):
         return trading_state
 
 def execute_buy_opportunities(buy_opportunities, trading_state):
-    """매수 기회 실행 - 중복 매수 방지 강화 및 동기화 개선"""
+    """매수 기회 실행 - 중복 매수 방지 강화 및 디버깅 로그 개선"""
     try:
+        logger.info("🚀 execute_buy_opportunities 함수 시작")
+        
+        # ===== 🔥 1단계: 강제 상태 재로드 (동기화 보장) =====
+        logger.info("💾 최신 상태 파일 강제 재로드 시작...")
+        fresh_trading_state = load_trading_state()
+        
+        # 기존 trading_state와 비교 로그
+        old_pending_count = len(trading_state.get('pending_orders', {}))
+        new_pending_count = len(fresh_trading_state.get('pending_orders', {}))
+        
+        logger.info(f"📊 상태 동기화 결과:")
+        logger.info(f"   기존 메모리: pending_orders {old_pending_count}개")
+        logger.info(f"   파일에서 로드: pending_orders {new_pending_count}개")
+        
+        if old_pending_count != new_pending_count:
+            logger.warning(f"⚠️ 메모리와 파일 상태 불일치 감지!")
+            logger.warning(f"   메모리: {list(trading_state.get('pending_orders', {}).keys())}")
+            logger.warning(f"   파일: {list(fresh_trading_state.get('pending_orders', {}).keys())}")
+        
+        # 최신 상태 사용
+        trading_state = fresh_trading_state
+        
+        # ===== 🔥 2단계: pending_orders 상태 상세 출력 =====
+        pending_orders = trading_state.get('pending_orders', {})
+        logger.info(f"📋 현재 미체결 주문 현황: {len(pending_orders)}개")
+        
+        for stock_code, order_info in pending_orders.items():
+            stock_name = order_info.get('stock_name', stock_code)
+            quantity = order_info.get('quantity', 0)
+            price = order_info.get('price', 0)
+            status = order_info.get('status', 'unknown')
+            order_time = order_info.get('order_time', 'unknown')
+            
+            logger.info(f"   📝 {stock_name}({stock_code}): {quantity}주 @ {price:,}원")
+            logger.info(f"       상태: {status}, 주문시간: {order_time}")
+        
         if not buy_opportunities:
+            logger.info("🔍 매수 기회 없음 - 함수 종료")
             return trading_state
         
+        # ===== 3단계: 예산 및 제한 확인 =====
         # 전체 사용 가능 예산 확인
         total_available_budget = get_available_budget(trading_state)
         
@@ -6280,29 +6439,29 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
             logger.info("💰 전체 사용 가능 예산이 없습니다.")
             return trading_state
         
-        # 현재 포지션 수 확인 - 활성 종목 수 기반
+        # 현재 포지션 수 확인
         current_positions = len(trading_state['positions'])
         max_allowed_positions = get_active_target_stock_count()
-        max_new_positions = max_allowed_positions - current_positions
         
-        if max_new_positions <= 0:
-            logger.info(f"📊 최대 보유 종목 수 도달: {current_positions}/{max_allowed_positions}")
+        if current_positions >= max_allowed_positions:
+            logger.info(f"📊 최대 보유 종목 수 도달: {current_positions}/{max_allowed_positions}개")
             return trading_state
         
-        # 일일 손익 한도 확인
-        daily_stats = trading_state['daily_stats']
-        if daily_stats['start_balance'] > 0:
-            daily_profit_rate = daily_stats['total_profit'] / daily_stats['start_balance']
-            
-            if daily_profit_rate <= trading_config.max_daily_loss:
-                logger.info(f"📉 일일 손실 한도 도달: {daily_profit_rate*100:.1f}%")
-                return trading_state
-            
-            if daily_profit_rate >= trading_config.max_daily_profit:
-                logger.info(f"📈 일일 수익 한도 도달: {daily_profit_rate*100:.1f}%")
-                return trading_state
+        # 새로 매수 가능한 종목 수
+        max_new_positions = max_allowed_positions - current_positions
+        logger.info(f"💰 매수 실행 준비 (중복 방지 강화):")
+        logger.info(f"  - 전체 사용가능 예산: {total_available_budget:,.0f}원")
+        logger.info(f"  - 이미 투자된 금액: {get_total_invested_amount(trading_state):,.0f}원")
         
-        # 🔥 실제 보유량 한 번에 조회 (중복 매수 방지 핵심)
+        # 활성 타겟 종목 수 및 종목별 한도
+        active_stock_count = get_active_target_stock_count()
+        per_stock_limit = get_per_stock_budget_limit()
+        
+        logger.info(f"  - 활성 타겟 종목 수: {active_stock_count}개")
+        logger.info(f"  - 종목별 예산 한도: {per_stock_limit:,.0f}원")
+        logger.info(f"  - 현재/최대 보유종목: {current_positions}/{max_allowed_positions}개")
+        
+        # ===== 4단계: 실제 보유량 조회 (중복 매수 방지) =====
         actual_holdings = {}
         try:
             my_stocks = KisKR.GetMyStockList()
@@ -6315,19 +6474,7 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
         except Exception as e:
             logger.warning(f"⚠️ 실제 보유량 조회 실패: {str(e)}")
         
-        # 예산 현황 출력
-        total_invested = get_total_invested_amount(trading_state)
-        per_stock_limit = get_per_stock_budget_limit()
-        active_stock_count = get_active_target_stock_count()
-        
-        logger.info(f"💰 매수 실행 준비 (중복 방지 강화):")
-        logger.info(f"  - 전체 사용가능 예산: {total_available_budget:,.0f}원")
-        logger.info(f"  - 이미 투자된 금액: {total_invested:,.0f}원")
-        logger.info(f"  - 활성 타겟 종목 수: {active_stock_count}개")
-        logger.info(f"  - 종목별 예산 한도: {per_stock_limit:,.0f}원")
-        logger.info(f"  - 현재/최대 보유종목: {current_positions}/{max_allowed_positions}개")
-        
-        # 매수 실행
+        # ===== 5단계: 매수 실행 루프 시작 =====
         executed_count = 0
         executed_stocks = []  # 🔥 실행된 종목 추적
         
@@ -6340,20 +6487,68 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                 daily_score = opportunity['score']
                 signal_strength = opportunity.get('signal_strength', 'NORMAL')
                 
-                logger.info(f"\n🔍 매수 검토: {stock_name}({stock_code})")
+                logger.info(f"\n" + "="*60)
+                logger.info(f"🔍 매수 검토 시작: {stock_name}({stock_code}) [{i+1}/{len(buy_opportunities)}]")
                 logger.info(f"   일봉 점수: {daily_score}점 ({signal_strength})")
+                logger.info(f"="*60)
                 
-                # 🔥 1단계: 중복 매수 방지 - 다중 체크
-                # 1-1. 봇 기록 체크
-                if stock_code in trading_state['positions']:
-                    logger.info(f"   ❌ 봇 기록상 이미 보유 중: {stock_name}")
+                # ===== 🔥 6단계: 강화된 중복 매수 방지 - 6단계 검증 =====
+                logger.info(f"🛡️ 중복 매수 방지 검증 시작: {stock_name}")
+                
+                # ✅ 검증 1: 최신 상태 다시 로드 (실시간 동기화)
+                logger.info("   1️⃣ 최신 상태 재로드 중...")
+                real_time_state = load_trading_state()
+                
+                # ✅ 검증 2: pending_orders 직접 체크 (가장 중요!)
+                logger.info("   2️⃣ pending_orders 직접 체크 중...")
+                pending_orders_check = real_time_state.get('pending_orders', {})
+                
+                if stock_code in pending_orders_check:
+                    pending_info = pending_orders_check[stock_code]
+                    order_time = pending_info.get('order_time', '')
+                    quantity = pending_info.get('quantity', 0)
+                    price = pending_info.get('price', 0)
+                    status = pending_info.get('status', '')
+                    
+                    logger.error(f"❌ 중복 매수 차단 (pending_orders): {stock_name}")
+                    logger.error(f"   기존 미체결 주문 발견:")
+                    logger.error(f"     주문시간: {order_time}")
+                    logger.error(f"     수량: {quantity}주")
+                    logger.error(f"     가격: {price:,}원")
+                    logger.error(f"     상태: {status}")
+                    logger.error(f"   → 새로운 매수 주문 완전 차단")
+                    
+                    # Discord 긴급 알림
+                    duplicate_msg = f"🚨 중복 매수 주문 차단!\n"
+                    duplicate_msg += f"종목: {stock_name}({stock_code})\n"
+                    duplicate_msg += f"기존 미체결: {quantity}주 @ {price:,}원\n"
+                    duplicate_msg += f"주문시간: {order_time}\n"
+                    duplicate_msg += f"상태: {status}\n"
+                    duplicate_msg += f"→ 중복 주문 방지 시스템 작동"
+                    
+                    if hasattr(trading_config, 'use_discord_alert') and trading_config.config.get('use_discord_alert', True):
+                        discord_alert.SendMessage(duplicate_msg)
+                    
+                    continue  # 매수 건너뛰기
+                
+                logger.info(f"   ✅ pending_orders 체크 통과: {stock_name}")
+                
+                # ✅ 검증 3: positions 체크
+                logger.info("   3️⃣ positions 체크 중...")
+                if stock_code in real_time_state.get('positions', {}):
+                    logger.error(f"❌ 중복 매수 차단 (positions): {stock_name}")
+                    logger.error(f"   이미 포지션 보유 중")
                     continue
                 
-                # 1-2. 실제 보유량 체크
+                logger.info(f"   ✅ positions 체크 통과: {stock_name}")
+                
+                # ✅ 검증 4: 실제 보유량 체크
+                logger.info("   4️⃣ 실제 보유량 체크 중...")
                 actual_amount = actual_holdings.get(stock_code, 0)
                 if actual_amount > 0:
-                    logger.warning(f"   ❌ 실제 계좌에서 보유 중: {stock_name} ({actual_amount}주)")
-                    logger.warning(f"      → 봇 기록과 실제 보유량 불일치 감지!")
+                    logger.error(f"❌ 중복 매수 차단 (실제 보유): {stock_name}")
+                    logger.error(f"   실제 계좌 보유량: {actual_amount}주")
+                    logger.error(f"   → 봇 기록과 실제 보유량 불일치 감지!")
                     
                     # Discord 알림
                     mismatch_msg = f"⚠️ 보유량 불일치 감지\n"
@@ -6366,161 +6561,140 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                     
                     continue
                 
-                # 1-3. 미체결 주문 체크
-                if pending_manager.check_pending_orders(stock_code, trading_state):
-                    logger.info(f"   ❌ 미체결 주문 있음: {stock_name}")
+                logger.info(f"   ✅ 실제 보유량 체크 통과: {stock_name}")
+                
+                # ✅ 검증 5: 라이브러리 체크
+                logger.info("   5️⃣ pending_manager 라이브러리 체크 중...")
+                if pending_manager.check_pending_orders(stock_code, real_time_state):
+                    logger.error(f"❌ 중복 매수 차단 (라이브러리): {stock_name}")
+                    logger.error(f"   pending_manager에서 미체결 주문 감지")
                     continue
                 
-                # 1-4. 이번 루프에서 이미 실행된 종목 체크
+                logger.info(f"   ✅ pending_manager 체크 통과: {stock_name}")
+                
+                # ✅ 검증 6: 이번 루프 실행 이력 체크
+                logger.info("   6️⃣ 이번 루프 실행 이력 체크 중...")
                 if stock_code in executed_stocks:
-                    logger.info(f"   ❌ 이번 루프에서 이미 매수 실행됨: {stock_name}")
+                    logger.error(f"❌ 중복 매수 차단 (루프 중복): {stock_name}")
+                    logger.error(f"   이번 루프에서 이미 매수 실행됨")
                     continue
                 
-                # 🔥 2단계: 매수 대기 리스트에서 제거 (매수 실행 전에!)
-                was_in_candidates = False
+                logger.info(f"   ✅ 루프 중복 체크 통과: {stock_name}")
+                
+                # ===== 🔥 7단계: 모든 검증 통과 =====
+                logger.info(f"🎉 모든 중복 방지 검증 통과: {stock_name}")
+                logger.info(f"   6단계 검증 모두 클리어 ✅")
+                logger.info(f"   매수 주문 진행 가능 상태")
+                
+                # 최신 상태로 업데이트
+                trading_state = real_time_state
+                
+                # ===== 8단계: 매수 대기 리스트에서 제거 (중복 방지) =====
                 if 'buy_candidates' in trading_state and stock_code in trading_state['buy_candidates']:
-                    candidate_info = trading_state['buy_candidates'][stock_code]
-                    wait_start = datetime.datetime.fromisoformat(candidate_info['wait_start_time'])
-                    wait_hours = (datetime.datetime.now() - wait_start).total_seconds() / 3600
-                    
-                    logger.info(f"   📋 대기 리스트에서 발견: {wait_hours:.1f}시간 대기 중")
-                    
-                    # 대기 리스트에서 제거
                     del trading_state['buy_candidates'][stock_code]
-                    was_in_candidates = True
-                    logger.info(f"   🗑️ 매수 시도 전 대기 리스트에서 제거: {stock_name}")
-                    
-                    # 즉시 저장하여 동기화
-                    save_trading_state(trading_state)
+                    logger.info(f"   🗑️ 매수 대기 리스트에서 제거: {stock_name}")
                 
-                # 종목별 남은 예산 확인
-                remaining_budget = get_remaining_budget_for_stock(stock_code, trading_state)
-                if remaining_budget <= 10000:  # 최소 1만원 이상
-                    logger.info(f"   ❌ 종목별 예산 부족: {remaining_budget:,.0f}원")
+                # ===== 9단계: 분봉 타이밍 체크 (설정된 경우) =====
+                timing_result = "immediate"  # 기본값
+                
+                if hasattr(trading_config, 'use_intraday_timing') and trading_config.use_intraday_timing:
+                    timing_result = check_intraday_timing(stock_code, target_config, opportunity)
+                    logger.info(f"   📊 분봉 타이밍 전략: {timing_result} (점수: {daily_score})")
+                
+                if timing_result == "wait":
+                    # 분봉 타이밍 대기 필요
+                    logger.info(f"   ⏰ 분봉 타이밍 대기: {stock_name}")
+                    
+                    # 매수 대기 리스트에 추가
+                    if 'buy_candidates' not in trading_state:
+                        trading_state['buy_candidates'] = {}
+                    
+                    trading_state['buy_candidates'][stock_code] = {
+                        'opportunity': opportunity,
+                        'add_time': datetime.datetime.now().isoformat(),
+                        'daily_score': daily_score,
+                        'signal_strength': signal_strength,
+                        'timing_reason': '분봉 타이밍 대기'
+                    }
+                    
+                    logger.info(f"   📝 매수 대기 리스트에 추가: {stock_name}")
                     continue
                 
-                # 🎯 신호 강도별 분봉 타이밍 결정
-                use_intraday, max_wait_hours, timing_reason = should_use_intraday_timing(opportunity, target_config)
-                
-                logger.info(f"   📊 분봉 타이밍 전략: {timing_reason}")
-                
-                # 분봉 타이밍 적용 여부
-                if use_intraday:
-                    logger.info(f"   🔍 분봉 진입 타이밍 분석 중...")
-                    timing_analysis = analyze_intraday_entry_timing(stock_code, target_config)
-                    
-                    intraday_score = timing_analysis.get('entry_score', 0)
-                    min_intraday_score = target_config.get('min_entry_score', 20)
-                    
-                    logger.info(f"   🕐 분봉 점수: {intraday_score}/{min_intraday_score}점")
-                    
-                    if not timing_analysis['enter_now']:
-                        logger.info(f"   ❌ 분봉 진입 타이밍 부족으로 매수 포기")
-                        logger.info(f"      분봉 점수: {timing_analysis.get('entry_score', 0)}점")
-                        logger.info(f"      필요 점수: {target_config.get('min_entry_score', 20)}점")
-                        logger.info(f"      포기 사유: {timing_analysis['reason']}")
-                        # logger.info(f"   ⏳ 분봉 진입 타이밍 대기 결정")
-                        # logger.info(f"      사유: {timing_analysis['reason']}")
-                        # logger.info(f"      최대 대기시간: {max_wait_hours}시간")
-
-                        # 🔥 대기 리스트 재등록 (매수 실행 안하는 경우만)
-                        # if 'buy_candidates' not in trading_state:
-                        #     trading_state['buy_candidates'] = {}
-                        
-                        # trading_state['buy_candidates'][stock_code] = {
-                        #     'opportunity': opportunity,
-                        #     'wait_start_time': datetime.datetime.now().isoformat(),
-                        #     'max_wait_hours': max_wait_hours,
-                        #     'daily_score': daily_score,
-                        #     'signal_strength': signal_strength,
-                        #     'last_intraday_score': intraday_score,
-                        #     'min_intraday_score': min_intraday_score,
-                        #     'last_check_time': datetime.datetime.now().isoformat(),
-                        #     'timing_reason': timing_reason,
-                        #     'timing_analysis': timing_analysis,
-                        #     'was_reregistered': True  # 재등록 표시
-                        # }
-                        
-                        # logger.info(f"      → 매수 대기 리스트 재등록 완료")
-                        # save_trading_state(trading_state)  # 즉시 저장
-                        # continue
-                        logger.info(f"      → 분봉 점수 부족으로 매수 포기 (재등록 안함)")
-                        continue
-
+                elif timing_result in ["immediate", "강력한 신호로 즉시 매수"]:
+                    # 즉시 매수 진행
+                    if timing_result == "강력한 신호로 즉시 매수":
+                        logger.info(f"   🚀 일봉 신호 강도로 즉시 매수 진행")
                     else:
-                        logger.info(f"   ✅ 분봉 진입 타이밍 양호")
-                        logger.info(f"      사유: {timing_analysis['reason']}")
-                else:
-                    logger.info(f"   🚀 일봉 신호 강도로 즉시 매수 진행")
-
-                # 🆕 현재가 재조회
-                old_price = opportunity['price']
+                        logger.info(f"   ✅ 분봉 타이밍 조건 충족 - 즉시 매수")
+                
+                # ===== 10단계: 현재가 재조회 =====
+                logger.info(f"💰 즉시매수 전 현재가 재조회: {stock_name}")
+                old_price = stock_price
                 try:
                     current_price = KisKR.GetCurrentPrice(stock_code)
                     if current_price and current_price > 0:
                         actual_price = current_price
                         price_diff = actual_price - old_price
-                        logger.info(f"💰 즉시매수 전 현재가 재조회: {stock_name}")
                         logger.info(f"   스캔시 가격: {old_price:,}원")
                         logger.info(f"   현재 가격: {actual_price:,}원")
                         logger.info(f"   가격 변화: {price_diff:+,}원")
                         
                         # 가격 변화가 클 경우 추가 검증
                         price_change_rate = abs(price_diff) / old_price
-                        if price_change_rate > 0.03:  # 3% 이상 변화
+                        if price_change_rate > 0.02:  # 2% 이상 변화
                             logger.warning(f"⚠️ 가격 변화 {price_change_rate*100:.1f}% 감지")
-                            if price_diff > 0 and price_change_rate > 0.05:  # 5% 이상 상승시 포기
-                                logger.warning(f"💔 과도한 가격 상승으로 매수 포기")
-                                continue
                     else:
                         actual_price = old_price
                         logger.warning(f"⚠️ 현재가 조회 실패, 스캔시 가격 사용: {actual_price:,}원")
-                        
                 except Exception as price_error:
                     actual_price = old_price
                     logger.error(f"❌ 현재가 조회 중 오류: {str(price_error)}")
-
-                # 포지션 크기 계산
+                
+                # ===== 11단계: 포지션 크기 계산 =====
+                logger.info(f"💰 {stock_name}({stock_code}) 포지션 크기 계산 시작")
+                logger.info(f"   현재가: {actual_price:,}원")
+                
                 quantity = calculate_position_size(target_config, stock_code, actual_price, trading_state)
                 
                 if quantity < 1:
                     logger.info(f"   ❌ 매수 수량 부족 (계산된 수량: {quantity})")
                     continue
                 
-                # 최종 투자금액 계산
+                # ===== 12단계: 최종 투자금액 계산 및 로그 =====
                 estimated_investment = actual_price * quantity
                 estimated_fee = calculate_trading_fee(actual_price, quantity, True)
                 total_cost = estimated_investment + estimated_fee
                 
                 logger.info(f"   💰 매수 계획:")
                 logger.info(f"      수량: {quantity}주")
-                logger.info(f"      가격: {actual_price:,.0f}원")
-                logger.info(f"      투자금액: {estimated_investment:,.0f}원")
+                logger.info(f"      가격: {actual_price:,}원")
+                logger.info(f"      투자금액: {estimated_investment:,}원")
                 logger.info(f"      예상 수수료: {estimated_fee:,.0f}원")
                 logger.info(f"      총 소요: {total_cost:,.0f}원")
                 
-                # 🔥 3단계: 매수 주문 실행
+                # ===== 🔥 13단계: 매수 주문 실행 =====
                 logger.info(f"   🔵 매수 주문 실행: {stock_name}({stock_code})")
                 executed_price, executed_amount = execute_buy_order(
                     stock_code, target_config, quantity, actual_price
                 )
                 
                 if executed_price and executed_amount:
-                    # 🔥 4단계: 매수 성공 시 즉시 처리
+                    # ===== 14단계: 매수 성공 처리 =====
                     executed_stocks.append(stock_code)  # 실행된 종목 추가
+                    executed_count += 1
                     
                     # 매수 수수료 계산
                     buy_fee = calculate_trading_fee(executed_price, executed_amount, True)
                     actual_investment = executed_price * executed_amount
                     
                     logger.info(f"   ✅ 매수 체결 성공!")
-                    logger.info(f"      체결가: {executed_price:,.0f}원")
-                    logger.info(f"      체결량: {executed_amount}주")
-                    logger.info(f"      실제 투자금액: {actual_investment:,.0f}원")
-                    logger.info(f"      실제 수수료: {buy_fee:,.0f}원")
+                    logger.info(f"      체결가: {executed_price:,}원")
+                    logger.info(f"      체결수량: {executed_amount}주")
+                    logger.info(f"      실제투자: {actual_investment:,}원")
+                    logger.info(f"      매수수수료: {buy_fee:.2f}원")
                     
-                    # 🔥 5단계: 포지션 정보 저장 및 상태 업데이트
-                    position_info = {
+                    # 포지션 생성
+                    trading_state['positions'][stock_code] = {
                         'stock_code': stock_code,
                         'stock_name': stock_name,
                         'entry_price': executed_price,
@@ -6528,223 +6702,76 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                         'buy_fee': buy_fee,
                         'entry_time': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                         'high_price': executed_price,
-                        'trailing_stop': executed_price * (1 - target_config.get('trailing_stop', trading_config.trailing_stop_ratio)),
+                        'trailing_stop': executed_price * (1 - target_config.get('trailing_stop', 0.025)),
                         'target_config': target_config,
-                        'buy_analysis': opportunity['analysis'],
+                        'buy_analysis': opportunity.get('analysis', {}),
                         'signal_strength': signal_strength,
                         'daily_score': daily_score,
-                        'entry_method': 'intraday_timing' if use_intraday else 'daily_signal_only',
-                        'scan_price': old_price,
+                        'entry_method': 'daily_signal_only',
+                        'scan_price': stock_price,
                         'order_price': actual_price,
                         'price_improvement': executed_price - actual_price,
-                        'was_in_candidates': was_in_candidates  # 🔥 대기 리스트 출신 표시
+                        'was_in_candidates': False,
+                        'trailing_mode': 'LOSS_PROTECTION_ONLY'
                     }
                     
-                    # 분봉 타이밍 사용시 분봉 정보도 저장
-                    if use_intraday and 'timing_analysis' in locals():
-                        position_info['intraday_analysis'] = timing_analysis
-                        position_info['intraday_score'] = timing_analysis.get('entry_score', 0)
+                    # Discord 매수 알림
+                    buy_msg = f"📈 매수 체결 완료\n"
+                    buy_msg += f"종목: {stock_name}({stock_code})\n"
+                    buy_msg += f"체결: {executed_amount}주 @ {executed_price:,}원\n"
+                    buy_msg += f"투자금액: {actual_investment:,}원\n"
+                    buy_msg += f"신호강도: {signal_strength} ({daily_score}점)\n"
+                    buy_msg += f"가격개선: {executed_price - actual_price:+,}원"
                     
-                    trading_state['positions'][stock_code] = position_info
-                    executed_count += 1
-
-                    # 🔥 6단계: 당일 투자 금액 기록
-                    today = datetime.datetime.now().strftime('%Y-%m-%d')
-                    if 'daily_investments' not in trading_state:
-                        trading_state['daily_investments'] = {}
-                    if today not in trading_state['daily_investments']:
-                        trading_state['daily_investments'][today] = {}
-
-                    previous_daily = trading_state['daily_investments'][today].get(stock_code, 0)
-                    trading_state['daily_investments'][today][stock_code] = previous_daily + actual_investment
-
-                    logger.info(f"📊 {stock_name} 당일 누적 투자: {trading_state['daily_investments'][today][stock_code]:,}원")
-
-                    # 🔥 7단계: 최종 안전 확인 - 대기 리스트에서 완전 제거
-                    if 'buy_candidates' in trading_state and stock_code in trading_state['buy_candidates']:
-                        del trading_state['buy_candidates'][stock_code]
-                        logger.info(f"   🗑️ 매수 완료 후 대기 리스트에서 최종 제거: {stock_name}")
-                    
-                    # 🔥 8단계: 즉시 저장하여 동기화 보장
-                    save_trading_state(trading_state)
-                    logger.info(f"   💾 매수 완료 상태 즉시 저장: {stock_name}")
-
-                    # 예산 현황 업데이트
-                    updated_total_invested = get_total_invested_amount(trading_state)
-                    total_target_budget = get_per_stock_budget_limit() * active_stock_count
-                    remaining_total_budget = total_target_budget - updated_total_invested
-                    
-                    # 종목별 투자 현황
-                    current_stock_invested = actual_investment  # 방금 투자한 금액
-                    stock_usage_rate = (current_stock_invested / per_stock_limit * 100) if per_stock_limit > 0 else 0
-                    
-                    # 🎉 매수 완료 알림
-                    msg = f"🎉 매수 완료: {stock_name}({stock_code})\n"
-                    msg += f"매수가: {executed_price:,.0f}원 × {executed_amount}주\n"
-                    msg += f"투자금액: {actual_investment:,.0f}원\n"
-                    msg += f"수수료: {buy_fee:,.0f}원\n"
-
-                    # 가격 추적 정보
-                    if old_price != actual_price:
-                        price_diff = actual_price - old_price
-                        msg += f"\n💰 가격 추적:\n"
-                        msg += f"• 스캔시: {old_price:,}원\n"
-                        msg += f"• 주문시: {actual_price:,}원\n"
-                        msg += f"• 변화: {price_diff:+,}원\n"
-
-                    if executed_price != actual_price:
-                        execution_diff = executed_price - actual_price
-                        msg += f"• 체결개선: {execution_diff:+,}원\n"
-
-                    # 신호 정보
-                    msg += f"\n🎯 신호 정보:\n"
-                    msg += f"• 일봉 점수: {daily_score}점 ({signal_strength})\n"
-                    if use_intraday:
-                        intraday_score = timing_analysis.get('entry_score', 0) if 'timing_analysis' in locals() else 0
-                        msg += f"• 분봉 점수: {intraday_score}점\n"
-                        msg += f"• 진입 방식: 분봉 타이밍 적용\n"
-                    else:
-                        msg += f"• 진입 방식: 강한 신호로 즉시 매수\n"
-                    
-                    if was_in_candidates:
-                        msg += f"• 대기 이력: 있음 (대기 후 매수)\n"
-                    
-                    # 예산 현황
-                    msg += f"\n📊 예산 현황:\n"
-                    msg += f"• 전체 투자: {updated_total_invested:,.0f}원\n"
-                    msg += f"• 남은 예산: {remaining_total_budget:,.0f}원\n"
-                    msg += f"• 활성 종목 수: {active_stock_count}개\n"
-                    
-                    # 뉴스 분석 정보
-                    if opportunity.get('news_impact'):
-                        news_impact = opportunity['news_impact']
-                        decision = news_impact.get('decision', 'NEUTRAL')
-                        percentage = news_impact.get('percentage', 0)
-                        reason = news_impact.get('reason', '')
-                        
-                        msg += f"\n📰 뉴스 분석:\n"
-                        if decision == 'POSITIVE':
-                            msg += f"• ✅ 긍정 뉴스 ({percentage}% 신뢰도)\n"
-                            if reason:
-                                msg += f"• 내용: {reason[:80]}...\n"
-                        elif decision == 'NEGATIVE': 
-                            msg += f"• ❌ 부정 뉴스 ({percentage}% 신뢰도)\n"
-                            if reason:
-                                msg += f"• 내용: {reason[:80]}...\n"
-                        else:
-                            msg += f"• ⚪ 중립 뉴스 (영향 없음)\n"
-
-                    # 주요 매수 사유
-                    if opportunity.get('signals'):
-                        msg += f"\n📈 주요 매수 사유:\n"
-                        for signal in opportunity['signals'][:3]:
-                            msg += f"• {signal}\n"
-                    
-                    logger.info(msg)
-                    
-                    # Discord 알림 전송
                     if hasattr(trading_config, 'use_discord_alert') and trading_config.config.get('use_discord_alert', True):
-                        discord_alert.SendMessage(msg)
+                        discord_alert.SendMessage(buy_msg)
                     
-                    # 전체 예산 재확인 (다음 매수를 위해)
-                    total_available_budget = get_available_budget(trading_state)
-                    if total_available_budget < 10000:  # 1만원 미만이면 매수 중단
-                        logger.info("💰 전체 예산 부족으로 매수 중단")
+                    # 상태 저장
+                    # save_trading_state(trading_state)
+                    trading_state = save_and_verify_trading_state(trading_state, "매수 체결 후")
+                    
+                    logger.info(f"   🎯 매수 성공 카운터: {executed_count}/{max_new_positions}")
+                    
+                    # 최대 매수 수 도달시 종료
+                    if executed_count >= max_new_positions:
+                        logger.info(f"📊 최대 신규 매수 수 도달: {executed_count}개")
                         break
+                        
+                elif executed_price == "DELAYED_EXECUTION":
+                    # 지연 체결 처리
+                    logger.warning(f"⏰ 지연 체결: {stock_name}")
+                    logger.warning(f"   📋 주문 접수됨 - 다음 루프에서 포지션 생성 예정")
+                    executed_stocks.append(stock_code)  # 중복 방지를 위해 추가
+                    executed_count += 1
                     
-                    logger.info(f"   💰 남은 전체 예산: {total_available_budget:,.0f}원")
-                
+                    # 최대 매수 수 도달시 종료
+                    if executed_count >= max_new_positions:
+                        logger.info(f"📊 최대 신규 매수 수 도달 (지연 포함): {executed_count}개")
+                        break
+                        
                 else:
+                    # 매수 실패
                     logger.error(f"   ❌ 매수 주문 실패: {stock_name}({stock_code})")
                     logger.error(f"      주문 결과: {executed_price}, {executed_amount}")
                     
-                    # 🔥 매수 실패시 대기 리스트 재등록 (필요한 경우)
-                    if was_in_candidates and use_intraday:
-                        logger.info(f"   🔄 매수 실패로 대기 리스트 재등록: {stock_name}")
-                        if 'buy_candidates' not in trading_state:
-                            trading_state['buy_candidates'] = {}
-                        
-                        trading_state['buy_candidates'][stock_code] = {
-                            'opportunity': opportunity,
-                            'wait_start_time': datetime.datetime.now().isoformat(),
-                            'max_wait_hours': max_wait_hours,
-                            'daily_score': daily_score,
-                            'signal_strength': signal_strength,
-                            'timing_reason': f"매수 실패 후 재등록: {timing_reason}",
-                            'retry_count': 1
-                        }
-                        save_trading_state(trading_state)
-                
             except Exception as e:
-                logger.error(f"매수 실행 중 에러 ({stock_code}): {str(e)}")
-                logger.exception(f"매수 실행 상세 에러 ({stock_code}):")
+                logger.error(f"❌ 매수 검토 중 에러 ({stock_code}): {str(e)}")
+                logger.exception(f"❌ 상세 에러 정보:")
                 continue
         
-        # 🎯 실행 결과 요약
-        if executed_count > 0:
-            logger.info(f"\n🎯 매수 실행 완료: {executed_count}개 종목")
-            logger.info(f"📊 실행된 종목: {', '.join([s for s in executed_stocks])}")
-            
-            # 현재 포지션 현황
-            updated_positions = len(trading_state['positions'])
-            logger.info(f"📊 현재 보유 종목: {updated_positions}/{max_allowed_positions}개")
-            
-            # 전체 투자 현황
-            final_total_invested = get_total_invested_amount(trading_state)
-            final_available_budget = get_available_budget(trading_state)
-            
-            logger.info(f"💰 전체 투자 현황:")
-            logger.info(f"   - 총 투자됨: {final_total_invested:,.0f}원")
-            logger.info(f"   - 사용 가능: {final_available_budget:,.0f}원")
-        else:
-            logger.info(f"\n⏸️ 매수 실행 종목 없음")
-            logger.info(f"   사유: 예산 부족, 타이밍 대기, 중복 방지, 또는 기준 미달")
+        # ===== 15단계: 실행 결과 요약 =====
+        logger.info(f"\n📊 매수 실행 완료 요약:")
+        logger.info(f"   처리한 기회: {len(buy_opportunities[:max_new_positions])}개")
+        logger.info(f"   실행 성공: {executed_count}개")
+        logger.info(f"   실행 종목: {executed_stocks}")
         
-        # 매수 대기 종목 현황
-        if 'buy_candidates' in trading_state and trading_state['buy_candidates']:
-            candidate_count = len(trading_state['buy_candidates'])
-            logger.info(f"\n📋 매수 대기 종목: {candidate_count}개")
-            
-            for code, info in trading_state['buy_candidates'].items():
-                try:
-                    wait_start = datetime.datetime.fromisoformat(info['wait_start_time'])
-                    wait_minutes = (datetime.datetime.now() - wait_start).total_seconds() / 60
-                    max_wait_hours = info.get('max_wait_hours', 2.0)
-                    daily_score = info.get('daily_score', 0)
-                    signal_strength = info.get('signal_strength', 'NORMAL')
-                    
-                    stock_name = info['opportunity']['stock_name']
-                    was_reregistered = info.get('was_reregistered', False)
-                    retry_count = info.get('retry_count', 0)
-                    
-                    status_info = ""
-                    if was_reregistered:
-                        status_info += " [재등록]"
-                    if retry_count > 0:
-                        status_info += f" [재시도{retry_count}]"
-                    
-                    logger.info(f"   - {stock_name}({code}): {wait_minutes:.0f}분 대기 "
-                              f"(최대 {max_wait_hours}시간, {daily_score}점 {signal_strength}){status_info}")
-                except Exception as e:
-                    logger.warning(f"   - {code}: 대기 정보 오류 ({str(e)})")
-        
-        # 🔥 최종 저장
-        save_trading_state(trading_state)
-        logger.info(f"💾 매수 실행 완료 후 최종 상태 저장")
-        
+        logger.info("🏁 execute_buy_opportunities 함수 완료")
         return trading_state
         
     except Exception as e:
-        logger.error(f"매수 실행 중 전체 에러: {str(e)}")
-        logger.exception("매수 실행 상세 에러 정보:")
-        
-        # 에러 발생시에도 상태 저장
-        try:
-            save_trading_state(trading_state)
-        except:
-            pass
-        
-        return trading_state        
+        logger.error(f"❌ execute_buy_opportunities 전체 오류: {str(e)}")
+        logger.exception("❌ 상세 에러 정보:")
+        return trading_state
 
 def create_config_file(config_path: str = "target_stock_config.json") -> None:
     """기본 설정 파일 생성 (시장 추세 필터 + 분봉 타이밍 + 뉴스 분석 포함한 완전 개선 버전)"""
@@ -7174,6 +7201,48 @@ def next_day_priority_check(trading_state):
         
     except Exception as e:
         logger.error(f"익일 우선 검토 중 오류: {str(e)}")
+        return trading_state
+
+def save_and_verify_trading_state(trading_state, operation_name="상태저장"):
+    """상태 저장 후 검증하여 동기화 보장"""
+    try:
+        logger.debug(f"💾 {operation_name}: 저장 시작")
+        
+        # 1. 저장 전 pending_orders 기록
+        before_pending = list(trading_state.get('pending_orders', {}).keys())
+        logger.debug(f"   저장 전 pending_orders: {before_pending}")
+        
+        # 2. 저장 실행
+        save_trading_state(trading_state)
+        
+        # 3. 즉시 다시 로드하여 검증
+        reloaded_state = load_trading_state()
+        after_pending = list(reloaded_state.get('pending_orders', {}).keys())
+        
+        logger.debug(f"   저장 후 pending_orders: {after_pending}")
+        
+        # 4. 저장/로드 일치성 확인
+        if before_pending != after_pending:
+            logger.error(f"❌ {operation_name}: 저장/로드 불일치!")
+            logger.error(f"   저장 전: {before_pending}")
+            logger.error(f"   로드 후: {after_pending}")
+            
+            # Discord 알림
+            sync_error_msg = f"🚨 상태 동기화 오류!\n"
+            sync_error_msg += f"작업: {operation_name}\n"
+            sync_error_msg += f"저장 전: {len(before_pending)}개\n"
+            sync_error_msg += f"로드 후: {len(after_pending)}개\n"
+            sync_error_msg += f"→ 수동 확인 필요"
+            
+            if hasattr(trading_config, 'use_discord_alert') and trading_config.config.get('use_discord_alert', True):
+                discord_alert.SendMessage(sync_error_msg)
+        else:
+            logger.debug(f"✅ {operation_name}: 저장/로드 일치 확인")
+        
+        return reloaded_state
+        
+    except Exception as e:
+        logger.error(f"❌ {operation_name} 중 오류: {str(e)}")
         return trading_state
 
 def main():
