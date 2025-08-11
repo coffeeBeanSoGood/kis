@@ -1515,74 +1515,183 @@ def get_stock_data(stock_code):
 ################################### 매매 신호 분석 ##################################
 
 def check_market_trend():
-    """코스피/코스닥 지수 추세 확인"""
+    """코스피/코스닥 지수 추세 확인 - 디버깅 강화 버전"""
     try:
-        logger.debug("📊 시장 지수 추세 분석 시작...")
+        logger.info("📊 시장 지수 추세 분석 시작...")
         
-        # 코스피 지수 (최근 20일)
-        kospi_data = KisKR.GetOhlcvNew("KS11", 'D', 20, adj_ok=1)
-        kosdaq_data = KisKR.GetOhlcvNew("KQ11", 'D', 20, adj_ok=1)
+        # 코스피 지수 (KS11) 조회
+        logger.info("📈 코스피 지수 데이터 조회 중...")
+        kospi_data = None
+        try:
+            kospi_data = KisKR.GetOhlcvNew("KS11", 'D', 20, adj_ok=1)
+            if kospi_data is not None and len(kospi_data) > 0:
+                logger.info(f"✅ 코스피 데이터 조회 성공: {len(kospi_data)}일치 데이터")
+                logger.info(f"   최신 데이터: {kospi_data.iloc[-1]['close']:.2f} (날짜: {kospi_data.index[-1]})")
+            else:
+                logger.error("❌ 코스피 데이터 조회 실패: 데이터 없음")
+        except Exception as kospi_error:
+            logger.error(f"❌ 코스피 데이터 조회 중 오류: {str(kospi_error)}")
+            kospi_data = None
         
-        market_trend = {
-            'kospi_trend': analyze_index_trend(kospi_data) if kospi_data is not None else 'UNKNOWN',
-            'kosdaq_trend': analyze_index_trend(kosdaq_data) if kosdaq_data is not None else 'UNKNOWN',
-            'market_condition': 'UNKNOWN'
-        }
+        # 코스닥 지수 (KQ11) 조회
+        logger.info("📈 코스닥 지수 데이터 조회 중...")
+        kosdaq_data = None
+        try:
+            kosdaq_data = KisKR.GetOhlcvNew("KQ11", 'D', 20, adj_ok=1)
+            if kosdaq_data is not None and len(kosdaq_data) > 0:
+                logger.info(f"✅ 코스닥 데이터 조회 성공: {len(kosdaq_data)}일치 데이터")
+                logger.info(f"   최신 데이터: {kosdaq_data.iloc[-1]['close']:.2f} (날짜: {kosdaq_data.index[-1]})")
+            else:
+                logger.error("❌ 코스닥 데이터 조회 실패: 데이터 없음")
+        except Exception as kosdaq_error:
+            logger.error(f"❌ 코스닥 데이터 조회 중 오류: {str(kosdaq_error)}")
+            kosdaq_data = None
+        
+        # 추세 분석
+        logger.info("📊 지수 추세 분석 중...")
+        kospi_trend = 'UNKNOWN'
+        kosdaq_trend = 'UNKNOWN'
+        
+        if kospi_data is not None:
+            try:
+                kospi_trend = analyze_index_trend(kospi_data, "코스피")
+                logger.info(f"📈 코스피 추세 분석 결과: {kospi_trend}")
+            except Exception as e:
+                logger.error(f"❌ 코스피 추세 분석 중 오류: {str(e)}")
+        else:
+            logger.warning("⚠️ 코스피 데이터 없음 - UNKNOWN으로 설정")
+        
+        if kosdaq_data is not None:
+            try:
+                kosdaq_trend = analyze_index_trend(kosdaq_data, "코스닥")
+                logger.info(f"📈 코스닥 추세 분석 결과: {kosdaq_trend}")
+            except Exception as e:
+                logger.error(f"❌ 코스닥 추세 분석 중 오류: {str(e)}")
+        else:
+            logger.warning("⚠️ 코스닥 데이터 없음 - UNKNOWN으로 설정")
         
         # 전체 시장 상황 판단
-        kospi_trend = market_trend['kospi_trend']
-        kosdaq_trend = market_trend['kosdaq_trend']
+        logger.info("📊 전체 시장 상황 판단 중...")
+        market_condition = 'UNKNOWN'
         
-        if kospi_trend == 'DOWN' and kosdaq_trend == 'DOWN':
-            market_trend['market_condition'] = 'BEARISH'
+        if kospi_trend == 'UNKNOWN' or kosdaq_trend == 'UNKNOWN':
+            market_condition = 'UNKNOWN'
+            logger.warning("⚠️ 지수 데이터 부족으로 시장 상황 판단 불가")
+        elif kospi_trend == 'DOWN' and kosdaq_trend == 'DOWN':
+            market_condition = 'BEARISH'
+            logger.info("📉 시장 상황: 하락장 (코스피+코스닥 모두 하락)")
         elif kospi_trend == 'UP' and kosdaq_trend == 'UP':
-            market_trend['market_condition'] = 'BULLISH'
-        elif kospi_trend == 'UNKNOWN' or kosdaq_trend == 'UNKNOWN':
-            market_trend['market_condition'] = 'UNKNOWN'
+            market_condition = 'BULLISH'
+            logger.info("📈 시장 상황: 상승장 (코스피+코스닥 모두 상승)")
         else:
-            market_trend['market_condition'] = 'MIXED'
-            
-        logger.debug(f"📊 시장 추세 결과: {market_trend}")
+            market_condition = 'MIXED'
+            logger.info("📊 시장 상황: 혼조장 (코스피/코스닥 추세 상이)")
+        
+        market_trend = {
+            'kospi_trend': kospi_trend,
+            'kosdaq_trend': kosdaq_trend,
+            'market_condition': market_condition
+        }
+        
+        logger.info(f"📊 시장 추세 분석 완료: {market_trend}")
         return market_trend
         
     except Exception as e:
-        logger.error(f"시장 추세 확인 중 오류: {str(e)}")
+        logger.error(f"❌ 시장 추세 확인 중 전체 오류: {str(e)}")
+        logger.exception("❌ 시장 추세 확인 상세 오류:")
         return {
             'kospi_trend': 'UNKNOWN',
             'kosdaq_trend': 'UNKNOWN', 
             'market_condition': 'UNKNOWN'
         }
 
-def analyze_index_trend(index_data):
-    """지수 추세 분석"""
+def analyze_index_trend(index_data, index_name="지수"):
+    """지수 추세 분석 - 디버깅 강화 버전"""
     try:
-        if index_data is None or len(index_data) < 10:
+        logger.debug(f"📊 {index_name} 추세 분석 시작...")
+        
+        if index_data is None:
+            logger.error(f"❌ {index_name} 데이터가 None")
             return 'UNKNOWN'
         
-        # 5일, 20일 이동평균 계산
-        ma5 = index_data['close'].rolling(5).mean().iloc[-1]
-        ma20 = index_data['close'].rolling(20).mean().iloc[-1]
-        current_price = index_data['close'].iloc[-1]
+        if len(index_data) < 10:
+            logger.error(f"❌ {index_name} 데이터 부족: {len(index_data)}일 (최소 10일 필요)")
+            return 'UNKNOWN'
+        
+        logger.debug(f"✅ {index_name} 데이터 충분: {len(index_data)}일")
+        
+        # 데이터 컬럼 확인
+        required_columns = ['close']
+        for col in required_columns:
+            if col not in index_data.columns:
+                logger.error(f"❌ {index_name} 데이터에 {col} 컬럼 없음")
+                logger.error(f"   사용가능 컬럼: {list(index_data.columns)}")
+                return 'UNKNOWN'
+        
+        # 이동평균 계산
+        try:
+            ma5 = index_data['close'].rolling(5).mean().iloc[-1]
+            ma20 = index_data['close'].rolling(20).mean().iloc[-1]
+            current_price = index_data['close'].iloc[-1]
+            
+            logger.debug(f"📊 {index_name} 가격 정보:")
+            logger.debug(f"   현재가: {current_price:.2f}")
+            logger.debug(f"   5일 평균: {ma5:.2f}")
+            logger.debug(f"   20일 평균: {ma20:.2f}")
+            
+        except Exception as ma_error:
+            logger.error(f"❌ {index_name} 이동평균 계산 오류: {str(ma_error)}")
+            return 'UNKNOWN'
         
         # 추세 방향 판단
-        ma_trend = 'UP' if ma5 > ma20 else 'DOWN' if ma5 < ma20 else 'SIDEWAYS'
-        price_position = 'UP' if current_price > ma5 else 'DOWN' if current_price < ma5 else 'SIDEWAYS'
+        ma_trend = 'SIDEWAYS'
+        if ma5 > ma20:
+            ma_trend = 'UP'
+        elif ma5 < ma20:
+            ma_trend = 'DOWN'
         
-        # 최근 5일 변화율
-        price_change_5d = (current_price / index_data['close'].iloc[-6] - 1) * 100 if len(index_data) >= 6 else 0
+        price_position = 'SIDEWAYS'
+        if current_price > ma5:
+            price_position = 'UP'
+        elif current_price < ma5:
+            price_position = 'DOWN'
+        
+        logger.debug(f"📊 {index_name} 추세 요소:")
+        logger.debug(f"   이동평균 추세: {ma_trend} (5일평균 vs 20일평균)")
+        logger.debug(f"   가격 위치: {price_position} (현재가 vs 5일평균)")
+        
+        # 최근 5일 변화율 계산
+        price_change_5d = 0
+        try:
+            if len(index_data) >= 6:
+                price_5d_ago = index_data['close'].iloc[-6]
+                price_change_5d = (current_price / price_5d_ago - 1) * 100
+                logger.debug(f"📊 {index_name} 5일 변화율: {price_change_5d:.2f}%")
+            else:
+                logger.warning(f"⚠️ {index_name} 5일 변화율 계산 불가 (데이터 부족)")
+        except Exception as change_error:
+            logger.error(f"❌ {index_name} 변화율 계산 오류: {str(change_error)}")
         
         # 종합 판단
+        result = 'SIDEWAYS'
+        
         if ma_trend == 'UP' and price_position == 'UP' and price_change_5d > 1:
-            return 'UP'
+            result = 'UP'
+            logger.debug(f"📈 {index_name} 상승 추세: 이동평균↑ + 가격위치↑ + 5일변화율{price_change_5d:.1f}%")
         elif ma_trend == 'DOWN' and price_position == 'DOWN' and price_change_5d < -1:
-            return 'DOWN'
+            result = 'DOWN'
+            logger.debug(f"📉 {index_name} 하락 추세: 이동평균↓ + 가격위치↓ + 5일변화율{price_change_5d:.1f}%")
         else:
-            return 'SIDEWAYS'
+            logger.debug(f"📊 {index_name} 횡보 추세: 명확한 방향성 없음")
+        
+        logger.debug(f"✅ {index_name} 추세 분석 완료: {result}")
+        return result
             
     except Exception as e:
-        logger.error(f"지수 추세 분석 중 오류: {str(e)}")
+        logger.error(f"❌ {index_name} 추세 분석 중 오류: {str(e)}")
+        logger.exception(f"❌ {index_name} 추세 분석 상세 오류:")
         return 'UNKNOWN'
-    
+
 def analyze_buy_signal(stock_data, target_config, market_trend=None):
     """매수 신호 분석 - 조건부 차단 방식 (균형잡힌 버전) - 시장 추세 필터 추가"""
     try:
@@ -5301,6 +5410,13 @@ def scan_target_stocks(trading_state):
         # 🔥 NEW: 시장 추세 한 번 확인 (모든 종목에 공통 적용)
         market_trend = None
         if trading_config.config.get('use_market_trend_filter', True):
+            logger.info("📊 시장 추세 필터 활성화 - 분석 시작...")
+
+            # 첫 실행시 연결 테스트 (한 번만)
+            if not hasattr(scan_target_stocks, 'connection_tested'):
+                test_market_data_connection()
+                scan_target_stocks.connection_tested = True
+
             market_trend = check_market_trend()
             logger.info(f"📊 오늘 시장 추세: {market_trend['market_condition']} "
                        f"(코스피: {market_trend['kospi_trend']}, 코스닥: {market_trend['kosdaq_trend']})")
@@ -6595,12 +6711,28 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                     logger.info(f"   🗑️ 매수 대기 리스트에서 제거: {stock_name}")
                 
                 # ===== 9단계: 분봉 타이밍 체크 (설정된 경우) =====
+
                 timing_result = "immediate"  # 기본값
-                
+
                 if hasattr(trading_config, 'use_intraday_timing') and trading_config.use_intraday_timing:
-                    timing_result = check_intraday_timing(stock_code, target_config, opportunity)
-                    logger.info(f"   📊 분봉 타이밍 전략: {timing_result} (점수: {daily_score})")
-                
+                    # should_use_intraday_timing으로 사용 여부 먼저 체크
+                    use_timing, wait_hours, reason = should_use_intraday_timing(opportunity, target_config)
+                    
+                    if use_timing:
+                        # analyze_intraday_entry_timing으로 실제 분석
+                        timing_analysis = analyze_intraday_entry_timing(stock_code, target_config)
+                        timing_result = "immediate" if timing_analysis.get('enter_now', False) else "wait"
+                        
+                        logger.info(f"   📊 분봉 타이밍 전략: {timing_result} (점수: {daily_score})")
+                        logger.info(f"   📊 분석 결과: {timing_analysis.get('reason', '정보 없음')}")
+                        
+                        if timing_analysis.get('entry_signals'):
+                            logger.info(f"   📊 분봉 신호:")
+                            for signal in timing_analysis['entry_signals'][:3]:
+                                logger.info(f"      - {signal}")
+                    else:
+                        logger.info(f"   📊 분봉 타이밍 비활성화: {reason}")
+
                 if timing_result == "wait":
                     # 분봉 타이밍 대기 필요
                     logger.info(f"   ⏰ 분봉 타이밍 대기: {stock_name}")
@@ -6619,7 +6751,7 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                     
                     logger.info(f"   📝 매수 대기 리스트에 추가: {stock_name}")
                     continue
-                
+
                 elif timing_result in ["immediate", "강력한 신호로 즉시 매수"]:
                     # 즉시 매수 진행
                     if timing_result == "강력한 신호로 즉시 매수":
@@ -7244,6 +7376,60 @@ def save_and_verify_trading_state(trading_state, operation_name="상태저장"):
     except Exception as e:
         logger.error(f"❌ {operation_name} 중 오류: {str(e)}")
         return trading_state
+
+def test_market_data_connection():
+    """시장 데이터 연결 테스트 - 디버깅용"""
+    try:
+        logger.info("🔧 시장 데이터 연결 테스트 시작...")
+        
+        # 1. 코스피 지수 테스트
+        logger.info("1️⃣ 코스피 지수 연결 테스트...")
+        try:
+            kospi_test = KisKR.GetOhlcvNew("KS11", 'D', 5, adj_ok=1)
+            if kospi_test is not None and len(kospi_test) > 0:
+                logger.info("✅ 코스피 연결 성공")
+                logger.info(f"   데이터 형태: {type(kospi_test)}")
+                logger.info(f"   데이터 크기: {kospi_test.shape}")
+                logger.info(f"   컬럼: {list(kospi_test.columns)}")
+                logger.info(f"   최신 데이터: {kospi_test.iloc[-1]['close']:.2f}")
+            else:
+                logger.error("❌ 코스피 연결 실패")
+        except Exception as e:
+            logger.error(f"❌ 코스피 테스트 오류: {str(e)}")
+        
+        # 2. 코스닥 지수 테스트
+        logger.info("2️⃣ 코스닥 지수 연결 테스트...")
+        try:
+            kosdaq_test = KisKR.GetOhlcvNew("KQ11", 'D', 5, adj_ok=1)
+            if kosdaq_test is not None and len(kosdaq_test) > 0:
+                logger.info("✅ 코스닥 연결 성공")
+                logger.info(f"   데이터 형태: {type(kosdaq_test)}")
+                logger.info(f"   데이터 크기: {kosdaq_test.shape}")
+                logger.info(f"   컬럼: {list(kosdaq_test.columns)}")
+                logger.info(f"   최신 데이터: {kosdaq_test.iloc[-1]['close']:.2f}")
+            else:
+                logger.error("❌ 코스닥 연결 실패")
+        except Exception as e:
+            logger.error(f"❌ 코스닥 테스트 오류: {str(e)}")
+        
+        # 3. 대체 방법 테스트
+        logger.info("3️⃣ 대체 API 테스트...")
+        try:
+            # 삼성전자로 API 연결 테스트
+            samsung_test = KisKR.GetOhlcvNew("005930", 'D', 5, adj_ok=1)
+            if samsung_test is not None and len(samsung_test) > 0:
+                logger.info("✅ 대체 API 연결 성공 (삼성전자)")
+                logger.info("   → API 자체는 정상 작동 중")
+            else:
+                logger.error("❌ 대체 API도 실패")
+                logger.error("   → API 전체 문제 가능성")
+        except Exception as e:
+            logger.error(f"❌ 대체 API 테스트 오류: {str(e)}")
+        
+        logger.info("🔧 시장 데이터 연결 테스트 완료")
+        
+    except Exception as e:
+        logger.error(f"❌ 데이터 연결 테스트 중 오류: {str(e)}")
 
 def main():
     """메인 함수 (Config 적용)"""
