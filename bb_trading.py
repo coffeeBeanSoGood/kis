@@ -1514,95 +1514,299 @@ def get_stock_data(stock_code):
 
 ################################### 매매 신호 분석 ##################################
 
-def check_market_trend():
-    """코스피/코스닥 지수 추세 확인 - 디버깅 강화 버전"""
+def check_sector_based_market_trend(target_stocks):
+    """섹터 기반 시장 추세 분석 - 기존 지수 분석 대체"""
     try:
-        logger.info("📊 시장 지수 추세 분석 시작...")
+        logger.info("📊 섹터 기반 시장 추세 분석 시작...")
         
-        # 코스피 지수 (KS11) 조회
-        logger.info("📈 코스피 지수 데이터 조회 중...")
-        kospi_data = None
-        try:
-            kospi_data = KisKR.GetOhlcvNew("KS11", 'D', 20, adj_ok=1)
-            if kospi_data is not None and len(kospi_data) > 0:
-                logger.info(f"✅ 코스피 데이터 조회 성공: {len(kospi_data)}일치 데이터")
-                logger.info(f"   최신 데이터: {kospi_data.iloc[-1]['close']:.2f} (날짜: {kospi_data.index[-1]})")
-            else:
-                logger.error("❌ 코스피 데이터 조회 실패: 데이터 없음")
-        except Exception as kospi_error:
-            logger.error(f"❌ 코스피 데이터 조회 중 오류: {str(kospi_error)}")
-            kospi_data = None
+        # ===== 1단계: 타겟 종목들의 섹터 분류 =====
+        sector_groups = {}
+        total_stocks = 0
         
-        # 코스닥 지수 (KQ11) 조회
-        logger.info("📈 코스닥 지수 데이터 조회 중...")
-        kosdaq_data = None
-        try:
-            kosdaq_data = KisKR.GetOhlcvNew("KQ11", 'D', 20, adj_ok=1)
-            if kosdaq_data is not None and len(kosdaq_data) > 0:
-                logger.info(f"✅ 코스닥 데이터 조회 성공: {len(kosdaq_data)}일치 데이터")
-                logger.info(f"   최신 데이터: {kosdaq_data.iloc[-1]['close']:.2f} (날짜: {kosdaq_data.index[-1]})")
-            else:
-                logger.error("❌ 코스닥 데이터 조회 실패: 데이터 없음")
-        except Exception as kosdaq_error:
-            logger.error(f"❌ 코스닥 데이터 조회 중 오류: {str(kosdaq_error)}")
-            kosdaq_data = None
+        for stock_code, target_config in target_stocks.items():
+            if not target_config.get('enabled', True):
+                continue
+                
+            sector = target_config.get('sector', 'Unknown')
+            if sector not in sector_groups:
+                sector_groups[sector] = []
+            
+            sector_groups[sector].append({
+                'code': stock_code,
+                'name': target_config.get('name', stock_code),
+                'config': target_config
+            })
+            total_stocks += 1
         
-        # 추세 분석
-        logger.info("📊 지수 추세 분석 중...")
-        kospi_trend = 'UNKNOWN'
-        kosdaq_trend = 'UNKNOWN'
+        logger.info(f"📋 섹터별 분류 완료: {len(sector_groups)}개 섹터, {total_stocks}개 종목")
+        for sector, stocks in sector_groups.items():
+            stock_names = [s['name'] for s in stocks]
+            logger.info(f"   📊 {sector}: {len(stocks)}개 - {', '.join(stock_names)}")
         
-        if kospi_data is not None:
-            try:
-                kospi_trend = analyze_index_trend(kospi_data, "코스피")
-                logger.info(f"📈 코스피 추세 분석 결과: {kospi_trend}")
-            except Exception as e:
-                logger.error(f"❌ 코스피 추세 분석 중 오류: {str(e)}")
-        else:
-            logger.warning("⚠️ 코스피 데이터 없음 - UNKNOWN으로 설정")
-        
-        if kosdaq_data is not None:
-            try:
-                kosdaq_trend = analyze_index_trend(kosdaq_data, "코스닥")
-                logger.info(f"📈 코스닥 추세 분석 결과: {kosdaq_trend}")
-            except Exception as e:
-                logger.error(f"❌ 코스닥 추세 분석 중 오류: {str(e)}")
-        else:
-            logger.warning("⚠️ 코스닥 데이터 없음 - UNKNOWN으로 설정")
-        
-        # 전체 시장 상황 판단
-        logger.info("📊 전체 시장 상황 판단 중...")
-        market_condition = 'UNKNOWN'
-        
-        if kospi_trend == 'UNKNOWN' or kosdaq_trend == 'UNKNOWN':
-            market_condition = 'UNKNOWN'
-            logger.warning("⚠️ 지수 데이터 부족으로 시장 상황 판단 불가")
-        elif kospi_trend == 'DOWN' and kosdaq_trend == 'DOWN':
-            market_condition = 'BEARISH'
-            logger.info("📉 시장 상황: 하락장 (코스피+코스닥 모두 하락)")
-        elif kospi_trend == 'UP' and kosdaq_trend == 'UP':
-            market_condition = 'BULLISH'
-            logger.info("📈 시장 상황: 상승장 (코스피+코스닥 모두 상승)")
-        else:
-            market_condition = 'MIXED'
-            logger.info("📊 시장 상황: 혼조장 (코스피/코스닥 추세 상이)")
-        
-        market_trend = {
-            'kospi_trend': kospi_trend,
-            'kosdaq_trend': kosdaq_trend,
-            'market_condition': market_condition
+        # ===== 2단계: 각 섹터별 추세 분석 =====
+        sector_trends = {}
+        overall_trends = {
+            'bullish_sectors': [],
+            'bearish_sectors': [],
+            'mixed_sectors': [],
+            'unknown_sectors': []
         }
         
-        logger.info(f"📊 시장 추세 분석 완료: {market_trend}")
-        return market_trend
+        for sector, stocks in sector_groups.items():
+            logger.info(f"\n🔍 {sector} 섹터 분석 중...")
+            
+            sector_analysis_results = []
+            
+            # 각 종목의 섹터 위험도 분석
+            for stock_info in stocks:
+                stock_code = stock_info['code']
+                stock_name = stock_info['name']
+                target_config = stock_info['config']
+                
+                try:
+                    # 기존 analyze_sector_risk 함수 활용
+                    sector_analysis = analyze_sector_risk(stock_code, target_config)
+                    
+                    sector_analysis_results.append({
+                        'stock_code': stock_code,
+                        'stock_name': stock_name,
+                        'sector_risk': sector_analysis.get('sector_risk', 'UNKNOWN'),
+                        'sector_decline_rate': sector_analysis.get('sector_decline_rate', 0),
+                        'matched_sector': sector_analysis.get('matched_sector', sector),
+                        'analysis_results': sector_analysis.get('analysis_results', [])
+                    })
+                    
+                    logger.debug(f"   📈 {stock_name}: {sector_analysis.get('sector_risk', 'UNKNOWN')} "
+                               f"({sector_analysis.get('sector_decline_rate', 0):.2f}%)")
+                    
+                except Exception as e:
+                    logger.warning(f"   ❌ {stock_name} 섹터 분석 실패: {str(e)}")
+                    continue
+            
+            # ===== 3단계: 섹터별 종합 판단 =====
+            if not sector_analysis_results:
+                logger.warning(f"⚠️ {sector} 섹터: 분석 데이터 없음")
+                sector_trends[sector] = 'UNKNOWN'
+                overall_trends['unknown_sectors'].append(sector)
+                continue
+            
+            # 섹터 내 평균 변화율 계산
+            valid_rates = [r['sector_decline_rate'] for r in sector_analysis_results 
+                          if r['sector_decline_rate'] != 0]
+            
+            if not valid_rates:
+                sector_avg_change = 0
+            else:
+                sector_avg_change = sum(valid_rates) / len(valid_rates)
+            
+            # 위험도 분포 계산
+            risk_distribution = {}
+            for result in sector_analysis_results:
+                risk = result['sector_risk']
+                risk_distribution[risk] = risk_distribution.get(risk, 0) + 1
+            
+            # 섹터 추세 판정
+            total_analyzed = len(sector_analysis_results)
+            critical_ratio = risk_distribution.get('CRITICAL', 0) / total_analyzed
+            high_ratio = risk_distribution.get('HIGH', 0) / total_analyzed
+            medium_ratio = risk_distribution.get('MEDIUM', 0) / total_analyzed
+            low_ratio = risk_distribution.get('LOW', 0) / total_analyzed
+            
+            # 섹터 추세 결정 로직
+            if critical_ratio >= 0.5 or (critical_ratio + high_ratio) >= 0.7:
+                # 50% 이상이 CRITICAL이거나, 70% 이상이 HIGH 이상
+                sector_trend = 'BEARISH'
+                overall_trends['bearish_sectors'].append(sector)
+                logger.info(f"📉 {sector} 섹터: 하락 추세 (위험 {critical_ratio+high_ratio:.1%})")
+                
+            elif low_ratio >= 0.6 and sector_avg_change >= -0.5:
+                # 60% 이상이 LOW 위험도이고 평균 변화율이 양호
+                sector_trend = 'BULLISH'
+                overall_trends['bullish_sectors'].append(sector)
+                logger.info(f"📈 {sector} 섹터: 상승 추세 (안전 {low_ratio:.1%}, 평균 {sector_avg_change:.2f}%)")
+                
+            else:
+                # 그 외는 혼조
+                sector_trend = 'MIXED'
+                overall_trends['mixed_sectors'].append(sector)
+                logger.info(f"📊 {sector} 섹터: 혼조 (평균 {sector_avg_change:.2f}%)")
+            
+            sector_trends[sector] = sector_trend
+            
+            # 섹터 상세 정보 저장
+            sector_trends[f"{sector}_detail"] = {
+                'average_change': sector_avg_change,
+                'risk_distribution': risk_distribution,
+                'analyzed_count': total_analyzed,
+                'trend': sector_trend,
+                'stocks': sector_analysis_results
+            }
+        
+        # ===== 4단계: 전체 시장 상황 종합 판단 =====
+        logger.info(f"\n📊 전체 시장 상황 종합 판단...")
+        
+        total_sectors = len(sector_groups)
+        bullish_count = len(overall_trends['bullish_sectors'])
+        bearish_count = len(overall_trends['bearish_sectors'])
+        mixed_count = len(overall_trends['mixed_sectors'])
+        unknown_count = len(overall_trends['unknown_sectors'])
+        
+        # 전체 시장 조건 판정
+        if bearish_count >= total_sectors * 0.6:
+            # 60% 이상 섹터가 하락
+            market_condition = 'BEARISH'
+            logger.info("📉 전체 시장: 하락장 (다수 섹터 약세)")
+            
+        elif bullish_count >= total_sectors * 0.6:
+            # 60% 이상 섹터가 상승
+            market_condition = 'BULLISH'
+            logger.info("📈 전체 시장: 상승장 (다수 섹터 강세)")
+            
+        elif (bullish_count + mixed_count) >= total_sectors * 0.7:
+            # 70% 이상이 상승+혼조
+            market_condition = 'BULLISH'
+            logger.info("📈 전체 시장: 상승장 (섹터 전반 양호)")
+            
+        elif (bearish_count + mixed_count) >= total_sectors * 0.7:
+            # 70% 이상이 하락+혼조
+            market_condition = 'BEARISH'
+            logger.info("📉 전체 시장: 하락장 (섹터 전반 약세)")
+            
+        else:
+            # 그 외는 혼조
+            market_condition = 'MIXED'
+            logger.info("📊 전체 시장: 혼조장 (섹터별 엇갈림)")
+        
+        # ===== 5단계: 결과 요약 및 반환 =====
+        logger.info(f"\n📊 섹터 기반 시장 분석 완료:")
+        logger.info(f"   전체 판단: {market_condition}")
+        logger.info(f"   상승 섹터: {bullish_count}개 - {', '.join(overall_trends['bullish_sectors'])}")
+        logger.info(f"   하락 섹터: {bearish_count}개 - {', '.join(overall_trends['bearish_sectors'])}")
+        logger.info(f"   혼조 섹터: {mixed_count}개 - {', '.join(overall_trends['mixed_sectors'])}")
+        
+        if unknown_count > 0:
+            logger.info(f"   분석불가: {unknown_count}개 - {', '.join(overall_trends['unknown_sectors'])}")
+        
+        # 결과 반환
+        market_trend_result = {
+            'market_condition': market_condition,
+            'analysis_method': 'SECTOR_BASED',
+            'total_sectors': total_sectors,
+            'sector_distribution': {
+                'bullish': bullish_count,
+                'bearish': bearish_count, 
+                'mixed': mixed_count,
+                'unknown': unknown_count
+            },
+            'sector_trends': sector_trends,
+            'sector_details': overall_trends,
+            'analysis_time': datetime.datetime.now().isoformat()
+        }
+        
+        return market_trend_result
         
     except Exception as e:
-        logger.error(f"❌ 시장 추세 확인 중 전체 오류: {str(e)}")
-        logger.exception("❌ 시장 추세 확인 상세 오류:")
+        logger.error(f"❌ 섹터 기반 시장 분석 중 오류: {str(e)}")
+        logger.exception("❌ 섹터 분석 상세 오류:")
+        
+        # 에러 발생시 안전한 기본값 반환
+        return {
+            'market_condition': 'UNKNOWN',
+            'analysis_method': 'SECTOR_BASED_ERROR',
+            'error': str(e),
+            'sector_trends': {},
+            'analysis_time': datetime.datetime.now().isoformat()
+        }
+
+def get_sector_trend_for_stock(stock_code, target_config, market_trend_data):
+    """특정 종목의 섹터 추세 점수 계산"""
+    try:
+        stock_sector = target_config.get('sector', 'Unknown')
+        stock_name = target_config.get('name', stock_code)
+        
+        # 섹터 추세 데이터 가져오기
+        sector_trends = market_trend_data.get('sector_trends', {})
+        sector_trend = sector_trends.get(stock_sector, 'UNKNOWN')
+        sector_detail = sector_trends.get(f"{stock_sector}_detail", {})
+        
+        # 섹터 점수 계산
+        if sector_trend == 'BULLISH':
+            sector_score = 10  # 강한 가점
+            trend_description = "섹터 상승 추세"
+        elif sector_trend == 'MIXED':
+            sector_score = 0   # 중립
+            trend_description = "섹터 혼조"
+        elif sector_trend == 'BEARISH':
+            sector_score = -10  # 강한 감점
+            trend_description = "섹터 하락 추세"
+        else:
+            sector_score = 0   # 분석 불가시 중립
+            trend_description = "섹터 분석 불가"
+        
+        # 상세 정보
+        avg_change = sector_detail.get('average_change', 0)
+        risk_distribution = sector_detail.get('risk_distribution', {})
+        
+        logger.debug(f"📊 {stock_name} 섹터 점수: {sector_score}점 ({trend_description})")
+        if avg_change != 0:
+            logger.debug(f"   섹터 평균 변화율: {avg_change:.2f}%")
+        
+        return {
+            'sector_score': sector_score,
+            'sector_trend': sector_trend,
+            'trend_description': trend_description,
+            'sector_average_change': avg_change,
+            'sector_risk_distribution': risk_distribution
+        }
+        
+    except Exception as e:
+        logger.warning(f"종목 {stock_code} 섹터 점수 계산 오류: {str(e)}")
+        return {
+            'sector_score': 0,
+            'sector_trend': 'UNKNOWN',
+            'trend_description': "섹터 점수 계산 오류",
+            'sector_average_change': 0,
+            'sector_risk_distribution': {}
+        }
+
+def check_market_trend():
+    """기존 함수 호환성을 위한 래퍼 함수"""
+    try:
+        # 섹터 기반 분석 실행
+        market_trend_data = check_sector_based_market_trend(trading_config.target_stocks)
+        
+        # 기존 형식으로 변환하여 반환
+        market_condition = market_trend_data.get('market_condition', 'UNKNOWN')
+        
+        # 기존 코드와의 호환성을 위해 kospi_trend, kosdaq_trend도 추가
+        if market_condition == 'BULLISH':
+            kospi_trend = kosdaq_trend = 'UP'
+        elif market_condition == 'BEARISH':
+            kospi_trend = kosdaq_trend = 'DOWN'
+        else:
+            kospi_trend = kosdaq_trend = 'MIXED'
+        
+        compatible_result = {
+            'kospi_trend': kospi_trend,
+            'kosdaq_trend': kosdaq_trend, 
+            'market_condition': market_condition,
+            'analysis_method': 'SECTOR_BASED',
+            'sector_data': market_trend_data  # 추가 정보
+        }
+        
+        logger.info(f"📊 시장 추세 분석 완료 (섹터 기반): {market_condition}")
+        return compatible_result
+        
+    except Exception as e:
+        logger.error(f"❌ 시장 추세 분석 오류: {str(e)}")
+        
+        # 기존 형식의 안전한 기본값
         return {
             'kospi_trend': 'UNKNOWN',
-            'kosdaq_trend': 'UNKNOWN', 
-            'market_condition': 'UNKNOWN'
+            'kosdaq_trend': 'UNKNOWN',
+            'market_condition': 'UNKNOWN',
+            'analysis_method': 'SECTOR_BASED_ERROR',
+            'error': str(e)
         }
 
 def analyze_index_trend(index_data, index_name="지수"):
