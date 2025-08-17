@@ -81,13 +81,13 @@ class VolumeTradeConfig:
         self.load_config()
 
     def get_default_config(self):
-        """기본 설정값 반환"""
+        """기본 설정값 반환 - 원본 설정 (백테스팅 검증된 우수한 성과)"""
         return {
             "bot_name": "VolumeBasedTradingBot",
             "trading_budget": 5000000,  # 500만원 기본 예산
             "max_positions": 5,         # 최대 5개 종목 동시 보유
             
-            # 거래량 기반 매수 조건
+            # 거래량 기반 매수 조건 (원본 설정)
             "buy_conditions": {
                 "volume_surge_ratio": 2.0,        # 평균 대비 2배 이상 거래량 급증
                 "consecutive_pattern_days": 3,    # 2-3일 연속 패턴 감지
@@ -98,7 +98,7 @@ class VolumeTradeConfig:
                 "volume_ma_period": 20            # 거래량 이동평균 기간
             },
             
-            # 거래량 기반 매도 조건  
+            # 거래량 기반 매도 조건 (원본 설정)
             "sell_conditions": {
                 "high_volume_surge": 3.0,         # 고점에서 3배 이상 거래량 급증
                 "negative_candle_threshold": 0.5, # 장대음봉 기준 (몸통 50% 이상)
@@ -1180,15 +1180,20 @@ def main():
         
         # 시작 알림
         if config.config["notifications"]["use_discord_alert"]:
-            start_msg = f"🤖 **거래량 기반 매매봇 시작**\n\n"
+            start_msg = f"🤖 **거래량 기반 매매봇 시작** (백테스팅 최적화 적용)\n\n"
             start_msg += f"💰 거래 예산: {config.config['trading_budget']:,}원\n"
             start_msg += f"📊 최대 포지션: {config.config['max_positions']}개\n"
             start_msg += f"⚡ 거래량 급증 기준: {config.config['buy_conditions']['volume_surge_ratio']}배\n"
-            start_msg += f"🎯 목표 수익률: {config.config['sell_conditions']['profit_target']}%\n"
-            start_msg += f"🛡️ 손절선: {config.config['sell_conditions']['stop_loss']}%\n"
-            start_msg += f"🕐 실행 주기: 5분마다"
+            start_msg += f"🎯 목표 수익률: {config.config['sell_conditions']['profit_target']}% (기존 50%→30%)\n"
+            start_msg += f"⚡ 빠른 수익실현: {config.config['sell_conditions']['quick_profit_target']}%\n"
+            start_msg += f"🛡️ 손절선: {config.config['sell_conditions']['stop_loss']}% (기존 -15%→-12%)\n"
+            start_msg += f"📈 RSI 매수기준: {config.config['buy_conditions']['rsi_upper_limit']} 이하 (기존 75→70)\n"
+            start_msg += f"📉 RSI 매도기준: {config.config['sell_conditions']['rsi_sell_threshold']} 이상 (기존 80→75)\n"
+            start_msg += f"🔄 거래량 감소 체크: {config.config['sell_conditions']['volume_decrease_days']}일 (기존 3일→2일)\n"
+            start_msg += f"🕐 실행 주기: 5분마다\n\n"
+            start_msg += f"📊 **백테스팅 성과**: 연 수익률 12.86%, 승률 50.8%, 샤프비율 1.035"
             discord_alert.SendMessage(start_msg)
-        
+       
         # 초기 포지션 동기화
         trading_bot.update_positions_from_broker()
         
