@@ -40,21 +40,34 @@ class VolumeBacktestingEngine:
         # 백테스팅 설정 (기존 봇과 동일 - 원본 설정)
         self.config = {
             "buy_conditions": {
-                "volume_surge_ratio": 2.0,
+                # 거래량 급증 패턴 감지 강화
+                "volume_surge_ratio": 1.8,        # 2.0 → 1.8 (더 많은 신호 포착)
+                "volume_surge_ratio_strong": 2.5, # 강한 신호용 추가 기준
                 "consecutive_pattern_days": 3,
-                "pullback_volume_decrease": 0.7,
-                "candle_body_ratio": 0.6,
-                "min_price_increase": 3.0,
-                "rsi_upper_limit": 75,
-                "volume_ma_period": 20
+                "pullback_volume_decrease": 0.75,  # 0.7 → 0.75 (눌림목 조건 완화)
+                "candle_body_ratio": 0.55,        # 0.6 → 0.55 (양봉 조건 완화)
+                "min_price_increase": 2.5,        # 3.0 → 2.5 (가격 상승 조건 완화)
+                "rsi_upper_limit": 70,             # 75 → 70 (과매수 구간 진입 전 매수)
+                "volume_ma_period": 20,
+                # 신호 강도별 차별화 추가
+                "strong_signal_rsi_limit": 75,     # 강한 신호는 RSI 75까지 허용
+                "min_hold_days": 2                 # 최소 보유 기간 추가
             },
             "sell_conditions": {
-                "high_volume_surge": 3.0,
+                "high_volume_surge": 2.8,          # 3.0 → 2.8 (분배 패턴 조기 감지)
                 "negative_candle_threshold": 0.5,
-                "profit_target": 50.0,
-                "stop_loss": -15.0,
-                "volume_decrease_days": 3,
-                "rsi_sell_threshold": 80
+                # 신호별 차별화된 목표 수익률
+                "profit_target_normal": 25.0,      # 일반 신호: 25%
+                "profit_target_strong": 40.0,      # 강한 신호: 40%
+                "profit_target_pullback": 15.0,    # 눌림목: 15%
+                "quick_profit_target": 8.0,        # 빠른 수익실현: 8%
+                "stop_loss": -12.0,                # -15.0 → -12.0 (손절선 강화)
+                "volume_decrease_days": 2,          # 3 → 2 (너무 빠른 매도 방지)
+                "rsi_sell_threshold": 75,           # 80 → 75 (조기 수익실현)
+                # 보유기간별 매도 조건 추가
+                "min_hold_before_tech_sell": 3,     # 기술적 매도 전 최소 보유일
+                "trailing_stop_activation": 15.0,   # 15% 수익시 트레일링 스톱 활성화
+                "trailing_stop_ratio": 0.85        # 고점 대비 85% 하락시 매도
             }
         }
         
@@ -127,35 +140,48 @@ class VolumeBacktestingEngine:
             return None
 
     def detect_volume_surge_pattern(self, df, idx):
-        """거래량 급증 패턴 감지 (특정 날짜 기준)"""
+        """거래량 급증 패턴 감지 (개선된 버전)"""
         try:
-            if idx < 20:  # 최소 20일 데이터 필요
+            if idx < 20:
                 return False, {}
             
             buy_conditions = self.config["buy_conditions"]
             
-            # 현재일 데이터
             current_volume_ratio = df['volume_ratio'].iloc[idx]
             current_price_change = df['price_change'].iloc[idx]
             current_candle_body_ratio = df['candle_body_ratio'].iloc[idx]
             current_rsi = df['rsi'].iloc[idx]
             
-            # 1. 거래량 급증 + 양봉 + RSI 조건
+            # 신호 강도 판별
+            is_strong_signal = current_volume_ratio >= buy_conditions.get("volume_surge_ratio_strong", 2.5)
+            rsi_limit = buy_conditions.get("strong_signal_rsi_limit", 75) if is_strong_signal else buy_conditions["rsi_upper_limit"]
+            
+            # 1. 강화된 거래량 급증 + 양봉 패턴
             volume_surge = current_volume_ratio >= buy_conditions["volume_surge_ratio"]
             positive_candle = current_price_change >= buy_conditions["min_price_increase"]
             strong_candle = current_candle_body_ratio >= buy_conditions["candle_body_ratio"]
-            rsi_ok = current_rsi <= buy_conditions["rsi_upper_limit"]
+            rsi_ok = current_rsi <= rsi_limit
+            
+            # 2. 연속 거래량 증가 패턴 체크 (추가)
+            volume_momentum = False
+            if idx >= 2:
+                recent_volume_trend = df['volume_ratio'].iloc[idx-2:idx+1]
+                volume_momentum = (recent_volume_trend.iloc[1] > recent_volume_trend.iloc[0] and 
+                                recent_volume_trend.iloc[2] > recent_volume_trend.iloc[1])
             
             if volume_surge and positive_candle and strong_candle and rsi_ok:
+                signal_strength = "Strong" if is_strong_signal else "Normal"
                 return True, {
-                    'pattern_type': '장대양봉_대량거래',
+                    'pattern_type': f'장대양봉_대량거래_{signal_strength}',
                     'volume_surge_ratio': current_volume_ratio,
                     'price_change': current_price_change,
                     'candle_body_ratio': current_candle_body_ratio,
-                    'rsi': current_rsi
+                    'rsi': current_rsi,
+                    'signal_strength': signal_strength,
+                    'volume_momentum': volume_momentum
                 }
             
-            # 2. 3일 연속 패턴 체크
+            # 3. 개선된 3일 연속 패턴
             if idx >= 2:
                 day1_volume_surge = df['volume_ratio'].iloc[idx-2] >= buy_conditions["volume_surge_ratio"]
                 day1_positive = df['price_change'].iloc[idx-2] > 0
@@ -168,10 +194,11 @@ class VolumeBacktestingEngine:
                 if (day1_volume_surge and day1_positive and day2_volume_decrease and 
                     day3_volume_increase and day3_positive and rsi_ok):
                     return True, {
-                        'pattern_type': '3일_연속_매집_패턴',
+                        'pattern_type': '3일_연속_매집_패턴_개선',
                         'volume_surge_ratio': current_volume_ratio,
                         'price_change': current_price_change,
-                        'rsi': current_rsi
+                        'rsi': current_rsi,
+                        'signal_strength': "Normal"
                     }
             
             return False, {}
@@ -315,7 +342,7 @@ class VolumeBacktestingEngine:
             return False, f"분석 오류: {str(e)}"
 
     def check_sell_conditions(self, stock_code, position_info, df, idx):
-        """매도 조건 종합 체크"""
+        """매도 조건 종합 체크 (개선된 버전)"""
         try:
             sell_conditions = self.config["sell_conditions"]
             
@@ -323,7 +350,11 @@ class VolumeBacktestingEngine:
             entry_price = position_info['entry_price']
             profit_rate = (current_price - entry_price) / entry_price * 100
             
-            # 1. 손절선 체크
+            # 보유 기간 계산
+            hold_days = idx - position_info['entry_idx']
+            signal_strength = position_info.get('signal_data', {}).get('signal_strength', 'Normal')
+            
+            # 1. 강화된 손절선
             if profit_rate <= sell_conditions["stop_loss"]:
                 return True, "손절선_도달", {
                     'sell_type': '손절매',
@@ -331,15 +362,44 @@ class VolumeBacktestingEngine:
                     'reason': f'손절선 도달 ({profit_rate:.1f}%)'
                 }
             
-            # 2. 목표 수익률 달성
-            if profit_rate >= sell_conditions["profit_target"]:
+            # 2. 신호별 차별화된 목표 수익률
+            if signal_strength == "Strong":
+                target_profit = sell_conditions["profit_target_strong"]
+            elif "눌림목" in position_info.get('signal_type', ''):
+                target_profit = sell_conditions["profit_target_pullback"]
+            else:
+                target_profit = sell_conditions["profit_target_normal"]
+                
+            if profit_rate >= target_profit:
                 return True, "목표수익_달성", {
                     'sell_type': '익절매',
                     'profit_rate': profit_rate,
-                    'reason': f'목표 수익률 달성 ({profit_rate:.1f}%)'
+                    'reason': f'목표 수익률 달성 ({profit_rate:.1f}% >= {target_profit}%)'
                 }
             
-            # 3. 분배 패턴 체크
+            # 3. 빠른 수익실현 (단기 보유시)
+            if hold_days <= 2 and profit_rate >= sell_conditions["quick_profit_target"]:
+                return True, "빠른수익실현", {
+                    'sell_type': '익절매',
+                    'profit_rate': profit_rate,
+                    'reason': f'빠른 수익실현 ({hold_days}일차, {profit_rate:.1f}%)'
+                }
+            
+            # 4. 트레일링 스톱 (15% 이상 수익시)
+            if profit_rate >= sell_conditions["trailing_stop_activation"]:
+                # 최근 5일 최고가 대비 현재가 체크
+                if idx >= 5:
+                    recent_high = df['high'].iloc[idx-4:idx+1].max()
+                    trailing_ratio = current_price / recent_high
+                    
+                    if trailing_ratio <= sell_conditions["trailing_stop_ratio"]:
+                        return True, "트레일링스톱", {
+                            'sell_type': '익절매',
+                            'profit_rate': profit_rate,
+                            'reason': f'트레일링 스톱 ({trailing_ratio:.2f} <= {sell_conditions["trailing_stop_ratio"]})'
+                        }
+            
+            # 5. 분배 패턴 (기존과 동일하지만 조건 완화)
             distribution_detected, dist_info = self.detect_distribution_pattern(df, idx)
             if distribution_detected:
                 return True, "분배패턴_감지", {
@@ -349,37 +409,28 @@ class VolumeBacktestingEngine:
                     'pattern_info': dist_info
                 }
             
-            # 4. 대량거래 음봉 출현
-            if idx >= 1:
-                current_volume_ratio = df['volume_ratio'].iloc[idx]
-                price_change = df['price_change'].iloc[idx]
-                
-                if (current_volume_ratio >= sell_conditions["high_volume_surge"] and 
-                    price_change < -2):
-                    return True, "대량거래_음봉", {
-                        'sell_type': '기술적매도',
-                        'profit_rate': profit_rate,
-                        'reason': f'대량거래 음봉 (거래량: {current_volume_ratio:.1f}배, 하락: {price_change:.1f}%)'
-                    }
-            
-            # 5. 거래량 감소 + 가격 하락 지속
+            # 6. 개선된 거래량 감소 + 하락 조건 (최소 보유일 고려)
+            min_hold_days = sell_conditions.get("min_hold_before_tech_sell", 3)
             volume_decrease_days = sell_conditions["volume_decrease_days"]
-            if idx >= volume_decrease_days:
+            
+            if hold_days >= min_hold_days and idx >= volume_decrease_days:
                 recent_volume_trend = df['volume_ratio'].iloc[idx-volume_decrease_days+1:idx+1].mean()
                 recent_price_trend = df['price_change'].iloc[idx-volume_decrease_days+1:idx+1].mean()
                 
-                volume_decreasing = recent_volume_trend < 1.0
-                price_declining = recent_price_trend < 0
+                volume_decreasing = recent_volume_trend < 0.8  # 0.8배 이하로 감소
+                price_declining = recent_price_trend < -1.0    # 1% 이상 하락
                 
-                if volume_decreasing and price_declining and profit_rate < 10:
-                    return True, "거래량감소_하락지속", {
-                        'sell_type': '기술적매도',
-                        'profit_rate': profit_rate,
-                        'reason': f'{volume_decrease_days}일간 거래량 감소 + 가격 하락'
-                    }
+                # 수익 상황에 따라 다르게 적용
+                if volume_decreasing and price_declining:
+                    if profit_rate < 5:  # 수익이 적으면 빠르게 매도
+                        return True, "거래량감소_하락지속", {
+                            'sell_type': '기술적매도',
+                            'profit_rate': profit_rate,
+                            'reason': f'{volume_decrease_days}일간 거래량 감소 + 가격 하락 (보유 {hold_days}일)'
+                        }
             
-            # 6. RSI 과매수 구간
-            if profit_rate > 20 and idx >= 14:
+            # 7. RSI 과매수 (수익 상황에서만)
+            if profit_rate > 10 and idx >= 14:  # 10% 이상 수익시에만
                 current_rsi = df['rsi'].iloc[idx]
                 if current_rsi >= sell_conditions["rsi_sell_threshold"]:
                     return True, "RSI_과매수", {
@@ -872,7 +923,8 @@ class VolumeBacktestingEngine:
 
 ################################### 실행 함수 ##################################
 
-def run_volume_backtest(stock_list, initial_capital=5000000, max_positions=5):
+def run_volume_backtest(stock_list, initial_capital=5000000, max_positions=5, 
+                       start_date=None, end_date=None):
     """
     거래량 기반 백테스팅 실행
     
@@ -880,6 +932,8 @@ def run_volume_backtest(stock_list, initial_capital=5000000, max_positions=5):
         stock_list (list): 백테스팅 대상 종목 리스트 ['005930', '000660', ...]
         initial_capital (int): 초기 투자금액
         max_positions (int): 최대 동시 보유 종목 수
+        start_date (str): 백테스팅 시작일 (YYYY-MM-DD 형식, 예: "2023-01-01")
+        end_date (str): 백테스팅 종료일 (YYYY-MM-DD 형식, 예: "2024-12-31")
     
     Returns:
         dict: 백테스팅 결과 리포트
@@ -896,11 +950,31 @@ def run_volume_backtest(stock_list, initial_capital=5000000, max_positions=5):
         commission_rate=0.00015  # 한국 주식 수수료 0.015%
     )
     
+    # 날짜 변환
+    start_datetime = None
+    end_datetime = None
+    
+    if start_date:
+        try:
+            start_datetime = datetime.strptime(start_date, "%Y-%m-%d")
+            logger.info(f"백테스팅 시작일: {start_date}")
+        except ValueError:
+            logger.error(f"잘못된 시작일 형식: {start_date} (YYYY-MM-DD 형식으로 입력하세요)")
+            return None
+    
+    if end_date:
+        try:
+            end_datetime = datetime.strptime(end_date, "%Y-%m-%d")
+            logger.info(f"백테스팅 종료일: {end_date}")
+        except ValueError:
+            logger.error(f"잘못된 종료일 형식: {end_date} (YYYY-MM-DD 형식으로 입력하세요)")
+            return None
+    
     # 백테스팅 실행
-    report = engine.run_backtest(stock_list)
+    report = engine.run_backtest(stock_list, start_datetime, end_datetime)
     
     if report:
-        # 결과 출력
+        # 결과 출력 (기존 코드와 동일)
         print("\n" + "=" * 60)
         print("📊 백테스팅 결과 리포트")
         print("=" * 60)
@@ -1017,8 +1091,10 @@ if __name__ == "__main__":
     try:
         result = run_volume_backtest(
             stock_list=test_stocks,
-            initial_capital=5000000,  # 500만원
-            max_positions=5           # 최대 5개 종목
+            initial_capital=5000000,
+            max_positions=5,
+            start_date="2025-07-10",  # 시작일 설정
+            end_date="2025-08-18"     # 종료일 설정
         )
         
         if result:

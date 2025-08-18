@@ -89,25 +89,34 @@ class VolumeTradeConfig:
             
             # 거래량 기반 매수 조건 (원본 설정)
             "buy_conditions": {
-                "volume_surge_ratio": 2.0,        # 평균 대비 2배 이상 거래량 급증
-                "consecutive_pattern_days": 3,    # 2-3일 연속 패턴 감지
-                "pullback_volume_decrease": 0.7,  # 눌림목에서 거래량 30% 감소
-                "candle_body_ratio": 0.6,         # 장대양봉 몸통 비율 60% 이상
-                "min_price_increase": 3.0,        # 최소 3% 이상 상승
-                "rsi_upper_limit": 75,            # RSI 75 이하에서만 매수
-                "volume_ma_period": 20            # 거래량 이동평균 기간
+                "volume_surge_ratio": 1.8,        # 기존 2.0 → 1.8
+                "volume_surge_ratio_strong": 2.5, # 강한 신호 기준 추가
+                "consecutive_pattern_days": 3,
+                "pullback_volume_decrease": 0.75,  # 기존 0.7 → 0.75
+                "candle_body_ratio": 0.55,        # 기존 0.6 → 0.55
+                "min_price_increase": 2.5,        # 기존 3.0 → 2.5
+                "rsi_upper_limit": 70,             # 기존 75 → 70
+                "strong_signal_rsi_limit": 75,     # 강한 신호용
+                "volume_ma_period": 20,
+                "min_hold_days": 2
             },
-            
+
             # 거래량 기반 매도 조건 (원본 설정)
             "sell_conditions": {
-                "high_volume_surge": 3.0,         # 고점에서 3배 이상 거래량 급증
-                "negative_candle_threshold": 0.5, # 장대음봉 기준 (몸통 50% 이상)
-                "profit_target": 50.0,            # 목표 수익률 50%
-                "stop_loss": -15.0,               # 손절선 -15%
-                "volume_decrease_days": 3,        # 거래량 감소 지속 일수
-                "rsi_sell_threshold": 80          # RSI 80 이상에서 매도 고려
-            },
-            
+                "high_volume_surge": 2.8,          # 기존 3.0 → 2.8
+                "negative_candle_threshold": 0.5,
+                "profit_target_normal": 25.0,      # 기존 50.0 → 25.0
+                "profit_target_strong": 40.0,      # 강한 신호용
+                "profit_target_pullback": 15.0,    # 눌림목용
+                "quick_profit_target": 8.0,        # 빠른 수익실현
+                "stop_loss": -12.0,                # 기존 -15.0 → -12.0
+                "volume_decrease_days": 2,          # 기존 3 → 2
+                "rsi_sell_threshold": 75,           # 기존 80 → 75
+                "min_hold_before_tech_sell": 3,
+                "trailing_stop_activation": 15.0,
+                "trailing_stop_ratio": 0.85
+            },            
+           
             # 다중 시간프레임 설정
             "timeframes": {
                 "daily": {"period": 60, "weight": 0.6},      # 일봉 60일, 가중치 60%
