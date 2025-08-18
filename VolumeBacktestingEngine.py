@@ -1093,7 +1093,7 @@ if __name__ == "__main__":
             stock_list=test_stocks,
             initial_capital=5000000,
             max_positions=5,
-            start_date="2025-07-10",  # 시작일 설정
+            start_date="2025-03-10",  # 시작일 설정
             end_date="2025-08-18"     # 종료일 설정
         )
         
