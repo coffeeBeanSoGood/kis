@@ -1,0 +1,249 @@
+{
+    "bot_name": "SmartMagicSplitBot_AI_US",
+    "currency": "USD",
+    "use_absolute_budget": true,
+    "absolute_budget": 1800,
+    "absolute_budget_strategy": "proportional",
+    "initial_total_asset": 4202.11,
+    "div_num": 3,
+    "buy_limit_system": {
+        "global_limits": {
+            "enable": true,
+            "daily_max": 8,
+            "weekly_max": 25,
+            "monthly_max": 60,
+            "high_frequency_penalty": {
+                "threshold": 5,
+                "penalty_hours": 4,
+                "severity_multiplier": 1.5
+            },
+            "market_condition_modifier": {
+                "bull": 1.2,
+                "bear": 0.8,
+                "neutral": 1.0,
+                "high": 1.3,
+                "low": 0.8
+            },
+            "partial_sell_cooldown": {
+                "enable": true,
+                "first_partial": 1,
+                "second_partial": 2,
+                "full_sell": 4,
+                "_comment": "부분매도별 차등 쿨다운 - 하이브리드 시스템과 조화"
+            }
+        },
+        "dynamic_limits": {
+            "enable": true,
+            "base_daily": 5,
+            "per_stock_max": 3,
+            "market_bonus": {
+                "downtrend": 5,
+                "uptrend": 2,
+                "neutral": 3
+            },
+            "volatility_bonus": 4,
+            "opportunity_bonus": {
+                "high_density": 4,
+                "medium_density": 2,
+                "low_density": 1
+            },
+            "absolute_max": 12
+        },
+        "_comment": "🔥 AI 테마 특화 - 초고속 진입 + 하이브리드 보호"
+    },
+    "market_position_limits": {
+        "strong_uptrend": 5,
+        "uptrend": 5,
+        "neutral": 4,
+        "downtrend": 4,
+        "strong_downtrend": 3,
+        "_comment": "AI 테마 모멘텀 특화"
+    },
+    "progressive_buy_drops": {
+        "2": 0.03,
+        "3": 0.04
+    },
+    "target_stocks": {
+        "NVDA": {
+            "name": "NVIDIA Corporation",
+            "weight": 0.6,
+            "enabled": true,
+            "max_positions": 3,
+            "min_pullback": 0.005,
+            "max_rsi_buy": 78,
+            "profit_target": 8,
+            "stop_loss": -12,
+            "partial_sell_config": {
+                "enable": true,
+                "first_sell_threshold": 2.5,
+                "first_sell_ratio": 0.25,
+                "hybrid_protection": {
+                    "enable": true,
+                    "min_quantity_for_partial": 2,
+                    "min_profit_for_trailing": 5,
+                    "post_partial_trailing": 0.03,
+                    "emergency_trailing_enable": true,
+                    "emergency_max_profit_threshold": 2.5,
+                    "emergency_trailing_drop": 0.06,
+                    "_comment": "AI 테마 특화: 초고속 수익확보 + 5% 이상에서만 트레일링"
+                }
+            },
+            "news_weight": 0.25,
+            "ai_theme_weight": 0.6, 
+            "_comment": "AI 대장주 - 초민감 모멘텀 포착"
+        },
+        "PLTR": {
+            "name": "Palantir Technologies Inc",
+            "weight": 0.4,
+            "enabled": true,
+            "max_positions": 3,
+            "min_pullback": 0.01,
+            "max_rsi_buy": 75,
+            "profit_target": 12,
+            "stop_loss": -15,
+            "partial_sell_config": {
+                "enable": true,
+                "first_sell_threshold": 4,
+                "first_sell_ratio": 0.3,
+                "hybrid_protection": {
+                    "enable": true,
+                    "min_quantity_for_partial": 2,
+                    "min_profit_for_trailing": 5,
+                    "post_partial_trailing": 0.04,
+                    "emergency_trailing_enable": true,
+                    "emergency_max_profit_threshold": 4,
+                    "emergency_trailing_drop": 0.08,
+                    "_comment": "AI 분석 플랫폼 특화: 빠른 수익확보 + 5% 이상에서만 트레일링"
+                }
+            },
+            "news_weight": 0.2,
+            "ai_theme_weight": 0.55,
+            "_comment": "AI 분석 플랫폼 - 정부계약 모멘텀"
+        }
+    },
+    "comprehensive_scoring": {
+        "enable": true,
+        "position_thresholds": {
+            "1": 55,
+            "2": 50,
+            "3": 45
+        },
+        "_comment": "PLTR AI 특화 종합점수 기준 완화"
+    },
+    "individual_stock_limits": {
+        "enable": true,
+        "default_daily_max": 3,
+        "stock_specific": {
+            "NVDA": {
+                "daily_max": 4,
+                "weekly_max": 12
+            },
+            "PLTR": {
+                "daily_max": 4,
+                "weekly_max": 12
+            }
+        },
+        "_comment": "AI 테마 개별 강도 중시"
+    },
+    "risk_management": {
+        "max_position_ratio": 0.45,
+        "emergency_stop_loss": -0.12,
+        "daily_loss_limit": -0.08,
+        "position_size_limit": 0.4,
+        "_comment": "AI 테마 공격적 설정"
+    },
+    "technical_analysis": {
+        "enable": true,
+        "rsi_period": 14,
+        "ma_periods": [
+            5,
+            20,
+            60
+        ],
+        "volume_analysis": true,
+        "trend_confirmation": true,
+        "momentum_weight": 0.4,
+        "_comment": "AI 테마 모멘텀 중시"
+    },
+    "news_analysis": {
+        "enable": true,
+        "sentiment_weight": 0.25,
+        "cache_duration_minutes": 180,
+        "ai_theme_bonus": 0.15,
+        "earnings_weight": 0.3,
+        "_comment": "AI 테마 뉴스 가중치 강화"
+    },
+    "volatility_adjustment": -0.02,
+    "time_based_rules": {
+        "45_day_threshold": -0.1,
+        "90_day_threshold": -0.06
+    },
+    "_readme": {
+        "설명": "🔥 AI 테마 특화 하이브리드 보호 시스템",
+        "업데이트_날짜": "2025-08-16",
+        "투자전략": "AI 테마 모멘텀 최적화 + 하이브리드 수익 보호",
+        "총예산": "$1,800 (AI 테마 특화)",
+        "통화": "USD (달러)",
+        "표준화": "weight 필드 사용으로 원전봇과 통일"
+    },
+    "_comment_hybrid_system": "🔥 AI 테마 특화 하이브리드 보호 시스템 - weight 필드 추가",
+    "last_config_update": "2025-08-18T23:30:26.278020",
+    "performance_tracking": {
+        "best_performance": 0.0010135384366427639,
+        "worst_performance": -0.004740666666666711
+    },
+    "trading_limits": {
+        "daily_trading_limits": {
+            "enable": true,
+            "max_daily_trades": 6,
+            "max_stock_trades": 2,
+            "reset_hour": 9,
+            "market_condition_multiplier": {
+                "strong_uptrend": 1.5,
+                "uptrend": 1.2,
+                "neutral": 1.0,
+                "downtrend": 0.8,
+                "strong_downtrend": 0.6
+            },
+            "partial_sell_cooldown": {
+                "enable": true,
+                "first_partial": 1,
+                "second_partial": 2,
+                "full_sell": 4,
+                "_comment": "부분매도별 차등 쿨다운 - 하이브리드 시스템과 조화"
+            }
+        },
+        "dynamic_limits": {
+            "enable": true,
+            "base_daily": 5,
+            "per_stock_max": 3,
+            "market_bonus": {
+                "downtrend": 5,
+                "uptrend": 2,
+                "neutral": 3
+            },
+            "volatility_bonus": 4,
+            "opportunity_bonus": {
+                "high_density": 4,
+                "medium_density": 2,
+                "low_density": 1
+            },
+            "absolute_max": 12
+        },
+        "_comment": "🔥 AI 테마 특화 - 초고속 진입 + 하이브리드 보호"
+    },
+    "use_discord_alert": true,
+    "discord_webhook_url": "",
+    "trading_enabled": true,
+    "auto_trading": true,
+    "market_hours_only": true,
+    "pre_market_trading": false,
+    "after_hours_trading": false,
+    "market_timing": {
+        "enable": true,
+        "spy_trend_weight": 0.3,
+        "individual_strength_weight": 0.7,
+        "market_condition_adjustment": true,
+        "_comment": "AI 테마 개별 강도 중시"
+    }
+}
