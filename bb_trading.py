@@ -7224,7 +7224,7 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
             {"code": "017960", "name": "한국카본", "sector": "화학", "enabled": True, "type": "balanced"},
             {"code": "033500", "name": "동성화인텍", "sector": "화학", "enabled": False, "type": "growth"},  # 비활성
             {"code": "051600", "name": "한전KPS", "sector": "건설", "enabled": True, "type": "balanced"},
-            {"code": "000720", "name": "현대건설", "sector": "건설", "enabled": True, "type": "balanced"}
+            {"code": "000720", "name": "현대건설", "sector": "건설", "enabled": False, "type": "balanced"}  # 비활성
         ]
 
         for stock_config in stock_configs:
@@ -7813,13 +7813,13 @@ def main():
             
             # 새로운 매수 기회 스캔 (15시 이전까지만)
             if now.hour < 15:
-                logger.info("=== 타겟 종목 매수 기회 스캔 ===")
-                buy_opportunities = scan_target_stocks(trading_state)
+                # logger.info("=== 타겟 종목 매수 기회 스캔 ===")
+                # buy_opportunities = scan_target_stocks(trading_state)
 
-                if buy_opportunities:
-                    # 매수 실행
-                    trading_state = execute_buy_opportunities(buy_opportunities, trading_state)
-                    save_trading_state(trading_state)
+                # if buy_opportunities:
+                #     # 매수 실행
+                #     trading_state = execute_buy_opportunities(buy_opportunities, trading_state)
+                #     save_trading_state(trading_state)
             
             # 1시간마다 타겟 종목 현황 보고
             if (now - last_status_report).seconds >= 3600:
