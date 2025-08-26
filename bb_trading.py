@@ -132,14 +132,14 @@ class TradingConfig:
             "max_stock_price": 200000,
             
             # 🔥 손익 관리 설정 - 개선된 버전
-            "stop_loss_ratio": -0.04,          # -2.5% → -4.0%로 완화
+            "stop_loss_ratio": -0.05,          # -2.5% → -5.0%로 완화
             "take_profit_ratio": 0.05,          # 분할매도 도입 후 8%에서 하향
             "trailing_stop_ratio": 0.025,       # 1.8% → 2.5%로 완화
             "max_daily_loss": -0.06,            # -4% → -6%로 완화
             "max_daily_profit": 0.08,           # 6% → 8%로 상향
             
             # 🔥 손절 지연 설정 (새로 추가)
-            "stop_loss_delay_hours": 2,         # 매수 후 2시간은 손절 지연
+            "stop_loss_delay_hours": 3,         # 매수 후 3시간은 손절 지연
             "volatility_stop_multiplier": 1.5,  # 변동성 기반 손절 배수
             "use_adaptive_stop": True,          # 적응형 손절 사용
             "min_holding_hours": 4,             # 최소 보유시간 4시간
@@ -7221,9 +7221,9 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
             {"code": "034020", "name": "두산에너빌리티", "sector": "기계", "enabled": False, "type": "growth"},  # 비활성
             {"code": "010140", "name": "삼성중공업", "sector": "조선", "enabled": True, "type": "growth"},
             {"code": "007660", "name": "이수페타시스", "sector": "화학", "enabled": True, "type": "growth"},
-            {"code": "017960", "name": "한국카본", "sector": "화학", "enabled": True, "type": "balanced"},
+            {"code": "017960", "name": "한국카본", "sector": "화학", "enabled": True, "type": "growth"},
             {"code": "033500", "name": "동성화인텍", "sector": "화학", "enabled": False, "type": "growth"},  # 비활성
-            {"code": "051600", "name": "한전KPS", "sector": "건설", "enabled": True, "type": "balanced"},
+            {"code": "051600", "name": "한전KPS", "sector": "건설", "enabled": False, "type": "balanced"}, # 비활성
             {"code": "000720", "name": "현대건설", "sector": "건설", "enabled": False, "type": "balanced"}  # 비활성
         ]
 
@@ -7812,14 +7812,14 @@ def main():
                 save_trading_state(trading_state)
             
             # 새로운 매수 기회 스캔 (15시 이전까지만)
-            if now.hour < 15:
-                # logger.info("=== 타겟 종목 매수 기회 스캔 ===")
-                # buy_opportunities = scan_target_stocks(trading_state)
+            # if now.hour < 15:
+            #     logger.info("=== 타겟 종목 매수 기회 스캔 ===")
+            #     buy_opportunities = scan_target_stocks(trading_state)
 
-                # if buy_opportunities:
-                #     # 매수 실행
-                #     trading_state = execute_buy_opportunities(buy_opportunities, trading_state)
-                #     save_trading_state(trading_state)
+            #     if buy_opportunities:
+            #         # 매수 실행
+            #         trading_state = execute_buy_opportunities(buy_opportunities, trading_state)
+            #         save_trading_state(trading_state)
             
             # 1시간마다 타겟 종목 현황 보고
             if (now - last_status_report).seconds >= 3600:
