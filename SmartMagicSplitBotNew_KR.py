@@ -137,36 +137,34 @@ class SmartSplitConfig:
                 "high_profit_sell_reduction": False,
                 "rsi_upper_bound": 65                       
             },
-            
-            "breakout": {            # PLUS K방산 - 돌파형 템플릿 (차트 최적화)
-                "period": 60,
-                "recent_period": 30,
-                "recent_weight": 0.7,
-                "hold_profit_target": 12,       
-                "quick_profit_target": 7,      
-                "base_profit_target": 18,       
-                "safety_protection_ratio": 0.88,
-                "time_based_sell_days": 45,        
-                "partial_sell_ratio": 0.20,        
+            "blue_chip": {            # 🆕 삼성전자 - 대형주 블루칩 템플릿
+                "period": 90,                           # 장기 추세 중시
+                "recent_period": 20,                    # 단기 변동성 완화
+                "recent_weight": 0.6,                   # 장기 가중치 증가
+                "hold_profit_target": 8,                # 안정적 목표 수익률
+                "quick_profit_target": 4,               # 빠른 확정 (변동성 낮음)
+                "base_profit_target": 12,               # 기본 목표
+                "safety_protection_ratio": 0.92,        # 높은 보호 비율
+                "time_based_sell_days": 60,             # 장기 보유 가능
+                "partial_sell_ratio": 0.50,             # 부분 매도 비율 높임
                 "min_holding": 0,
-                "reentry_cooldown_base_hours": 6,          
-                "min_pullback_for_reentry": 2.5,           
-                "volatility_cooldown_multiplier": 0.6,     
+                "reentry_cooldown_base_hours": 8,       # 충분한 쿨다운
+                "min_pullback_for_reentry": 1.8,        # 낮은 조정 요구 (안정성)
+                "volatility_cooldown_multiplier": 0.8,   # 변동성 완화
                 "market_cooldown_adjustment": True,
                 "enable_sequential_validation": True,
                 "dynamic_drop_adjustment": True,
-                "uptrend_sell_ratio_multiplier": 0.6,      
+                "uptrend_sell_ratio_multiplier": 0.8,   # 상승장 보유 비율 증가
                 "high_profit_sell_reduction": True,
-                "rsi_upper_bound": 68                       
+                "rsi_upper_bound": 75                    # RSI 상한 여유 (안정성)
             }
         }
-        
         # 🔥 차트 분석 기반 최적화된 3종목 설정 (비중 재조정)
         target_stocks_config = {
-            "042660": {"weight": 0.30, "stock_type": "high_volatility"},     
-            "034020": {"weight": 0.35, "stock_type": "stable_growth"},       
-            "449450": {"weight": 0.35, "stock_type": "breakout"}             
-        }
+            "042660": {"weight": 0.30, "stock_type": "high_volatility"},     # 한화오션
+            "034020": {"weight": 0.35, "stock_type": "stable_growth"},       # 두산에너빌리티
+            "005930": {"weight": 0.35, "stock_type": "blue_chip"}            # 🆕 삼성전자
+        }        
         
         # 종목별 정보 수집 및 설정 생성 (기존 로직 유지)
         target_stocks = {}
@@ -180,7 +178,7 @@ class SmartSplitConfig:
                 stock_names = {
                     "042660": "한화오션", 
                     "034020": "두산에너빌리티",
-                    "449450": "PLUS K방산"
+                    "005930": "삼성전자"
                 }
                 
                 try:
@@ -369,7 +367,7 @@ class SmartSplitConfig:
                 
                 # 📊 차트 분석 기반 3종목별 특화 손절선
                 "stock_specific_overrides": {
-                    "042660": {  # 한화오션 - 고변동성 대응 관대
+                    "042660": {  # 한화오션 - 고변동성 여유
                         "position_1": -0.10,     
                         "position_2": -0.14,     
                         "position_3_plus": -0.18 
@@ -379,10 +377,10 @@ class SmartSplitConfig:
                         "position_2": -0.16,     
                         "position_3_plus": -0.20 
                     },
-                    "449450": {  # PLUS K방산 - 돌파형 여유
-                        "position_1": -0.14,     
-                        "position_2": -0.18,     
-                        "position_3_plus": -0.22 
+                    "005930": {  # 🆕 삼성전자 - 블루칩 보수적 (빠른 손절)
+                        "position_1": -0.08,     # 1차: -8% (보수적)
+                        "position_2": -0.12,     # 2차: -12% (표준)
+                        "position_3_plus": -0.16 # 3차+: -16% (여유)
                     }
                 },
                 
@@ -4768,14 +4766,15 @@ class SmartMagicSplit:
             rsi_limits = {
                 "042660": 75,  # 한화오션: 높은 변동성으로 완화
                 "034020": 65,  # 두산에너빌리티: 안정적이므로 보수적
-                "449450": 68   # PLUS K방산: 돌파 후이므로 적정
+                "005930": 72   # 🆕 삼성전자: 블루칩 안정성 (적정 완화)
             }
-            
+
             pullback_requirements = {
                 "042660": 3.0,  # 한화오션: 높은 조정 요구
                 "034020": 2.0,  # 두산에너빌리티: 낮은 조정 요구  
-                "449450": 2.5   # PLUS K방산: 표준
+                "005930": 1.8   # 🆕 삼성전자: 낮은 조정 요구 (안정성)
             }
+
             
             max_rsi = rsi_limits.get(stock_code, 70)
             min_pullback = pullback_requirements.get(stock_code, 2.5)
