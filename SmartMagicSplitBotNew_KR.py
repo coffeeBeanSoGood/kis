@@ -724,7 +724,7 @@ class SmartMagicSplit:
         self.stop_loss_adjustment = 0.0
         self.max_positions_allowed = 5
         self.disable_high_risk_stocks = False
-        self.suspend_all_buys = False
+        self.suspend_all_buys = True  # ← False를 True로 변경 (신규매수 완전 중단)
         self.bear_market_mode = False
         self.defer_new_entries_hours = 0
         self.last_trend_check_time = None
@@ -3937,11 +3937,156 @@ class SmartMagicSplit:
             logger.error(f"성과 요약 계산 중 오류: {str(e)}")
             return {}
 
+################################### 🔥 개선된 수익 확정 로직 ##################################
+
+    def check_profit_cap(self, stock_code, magic_data, current_price, stock_config):
+        """🎯 수익률 상한제 체크 - 시장상황별 동적 조정"""
+        try:
+            position_num = magic_data['Number']
+            entry_price = magic_data['EntryPrice']
+            current_amount = magic_data.get('CurrentAmt', magic_data['EntryAmt'])
+            
+            if current_amount <= 0:
+                return False, ""
+            
+            # 현재 수익률 계산
+            current_return = (current_price - entry_price) / entry_price * 100
+            
+            # 수익률 상한제 설정 확인
+            profit_cap_settings = stock_config.get('profit_cap_settings', {})
+            if not profit_cap_settings.get('enable', False):
+                return False, ""
+            
+            # 현재 시장상황 감지
+            market_timing = getattr(self, '_current_market_timing', self.detect_market_timing())
+            
+            # 시장상황별 상한 가져오기
+            market_caps = profit_cap_settings.get('market_based_caps', {})
+            current_market_config = market_caps.get(market_timing, market_caps.get('neutral', {}))
+            
+            # 차수별 상한 (1차~5차)
+            position_caps = current_market_config.get('position_caps', [20, 18, 15, 12, 10])
+            if position_num <= len(position_caps):
+                profit_cap = position_caps[position_num - 1]
+            else:
+                profit_cap = position_caps[-1]  # 마지막 값 사용
+            
+            # 상한 도달 체크
+            if current_return >= profit_cap:
+                logger.warning(f"🎯 {stock_code} {position_num}차 수익률 상한 도달!")
+                logger.warning(f"   현재 수익률: {current_return:.1f}% ≥ 상한: {profit_cap}%")
+                logger.warning(f"   시장상황: {market_timing}")
+                return True, f"수익상한도달({current_return:.1f}%≥{profit_cap}%_시장:{market_timing})"
+            
+            # 경고 레벨 체크
+            warning_level = current_market_config.get('warning_level', profit_cap * 0.8)
+            if current_return >= warning_level:
+                logger.info(f"⚠️ {stock_code} {position_num}차 상한 경고!")
+                logger.info(f"   현재: {current_return:.1f}% ≥ 경고: {warning_level}% (상한: {profit_cap}%)")
+            
+            return False, ""
+            
+        except Exception as e:
+            logger.error(f"수익률 상한 체크 오류: {str(e)}")
+            return False, ""
+
+    def check_enhanced_trailing_stop(self, stock_code, magic_data, current_price, stock_config):
+        """🔄 안전한 트레일링 스탑 체크 - 수익 구간에서만 작동"""
+        try:
+            position_num = magic_data['Number']
+            entry_price = magic_data['EntryPrice']
+            current_amount = magic_data.get('CurrentAmt', magic_data['EntryAmt'])
+            
+            if current_amount <= 0:
+                return False, ""
+            
+            # 현재 수익률 계산
+            current_return = (current_price - entry_price) / entry_price * 100
+            
+            # 트레일링 스탑 설정 확인
+            trailing_config = stock_config.get('enhanced_trailing_stop', {})
+            if not trailing_config.get('enable', False):
+                return False, ""
+            
+            # 최고점 추적
+            max_profit_key = f'max_profit_{position_num}'
+            max_profit = magic_data.get(max_profit_key, 0)
+            
+            # 🛡️ 안전장치 1: 손실 상태에서는 트레일링 비활성화
+            if current_return <= 0:
+                return False, "손실상태_트레일링_비활성화"
+            
+            # 🛡️ 안전장치 2: 최소 활성화 수익률 체크
+            min_activation = trailing_config.get('min_profit_activation', 5)
+            if max_profit < min_activation:
+                return False, f"최소활성화수익_미달({max_profit:.1f}%<{min_activation}%)"
+            
+            # 🛡️ 안전장치 3: 최소 유지 수익률 체크
+            min_keep_profit = trailing_config.get('min_keep_profit', 2)
+            if current_return <= min_keep_profit:
+                return False, f"최소유지수익_보호({current_return:.1f}%≤{min_keep_profit}%)"
+            
+            # 🔄 트레일링 거리 계산 (구간별 차등)
+            profit_zones = trailing_config.get('profit_zones', [
+                {"min": 5, "max": 10, "trailing": 3},
+                {"min": 10, "max": 20, "trailing": 4},
+                {"min": 20, "max": 999, "trailing": 5}
+            ])
+            
+            trailing_distance = 3  # 기본값
+            for zone in profit_zones:
+                if zone['min'] <= max_profit < zone['max']:
+                    trailing_distance = zone['trailing']
+                    break
+            
+            # 🔧 동적 조정 (변동성, 시장 스트레스)
+            dynamic_adjustment = trailing_config.get('dynamic_adjustment', {})
+            
+            # 변동성 조정
+            try:
+                df = Common.GetOhlcv("KR", stock_code, 20)
+                if df is not None and len(df) >= 15:
+                    volatility = df['close'].pct_change().std() * 100
+                    if volatility > 5.0:  # 고변동성
+                        volatility_bonus = dynamic_adjustment.get('high_volatility_bonus', 1)
+                        trailing_distance += volatility_bonus
+                        logger.debug(f"📊 {stock_code} 고변동성 조정: +{volatility_bonus}%p")
+            except:
+                pass
+            
+            # 시장 상황 조정
+            market_timing = getattr(self, '_current_market_timing', self.detect_market_timing())
+            if market_timing in ['downtrend', 'strong_downtrend']:
+                stress_bonus = dynamic_adjustment.get('market_stress_bonus', 2)
+                trailing_distance += stress_bonus
+                logger.debug(f"📉 {stock_code} 시장스트레스 조정: +{stress_bonus}%p")
+            
+            # 🎯 트레일링 라인 계산
+            trailing_line = max_profit - trailing_distance
+            safe_trailing_line = max(trailing_line, min_keep_profit)  # 최소 수익 보장
+            
+            # 🔥 트레일링 스탑 발동 체크
+            if current_return <= safe_trailing_line:
+                logger.warning(f"🔄 {stock_code} {position_num}차 트레일링 스탑 발동!")
+                logger.warning(f"   최고점: {max_profit:.1f}% → 현재: {current_return:.1f}%")
+                logger.warning(f"   트레일링 거리: {trailing_distance}%p")
+                logger.warning(f"   트레일링 라인: {safe_trailing_line:.1f}%")
+                return True, f"안전트레일링({max_profit:.1f}%→{current_return:.1f}%,거리:{trailing_distance}%p)"
+            
+            # 디버그 로깅
+            logger.debug(f"🔄 {stock_code} {position_num}차 트레일링 상태:")
+            logger.debug(f"   현재: {current_return:.1f}% | 최고: {max_profit:.1f}% | 라인: {safe_trailing_line:.1f}%")
+            
+            return False, ""
+            
+        except Exception as e:
+            logger.error(f"트레일링 스탑 체크 오류: {str(e)}")
+            return False, ""
 
 ################################### 🔥 개선된 메인 매매 로직 ##################################
 
-    def process_improved_selling_logic(self, stock_code, stock_info, magic_data_list, indicators, holdings):
-        """개선된 매도 로직 - 🚀 즉시 적용 개선사항 통합"""
+    def process_enhanced_selling_logic(self, stock_code, stock_info, magic_data_list, indicators, holdings):
+        """🚀 개선된 매도 로직 - 상한제 + 트레일링 스탑 통합"""
         
         current_price = indicators['current_price']
         stock_config = config.target_stocks[stock_code]
@@ -3972,19 +4117,43 @@ class SmartMagicSplit:
                 sell_reason = ""
                 sell_ratio = 1.0  # 기본 전량 매도
                 
-                # 🚀 1순위: 빠른 수익 확정 체크
-                quick_sell, quick_reason = self.check_quick_profit_opportunity(
+                # 🎯 1순위: 수익률 상한제 체크 (NEW!)
+                cap_sell, cap_reason = self.check_profit_cap(
                     stock_code, magic_data, current_price, stock_config
                 )
                 
-                if quick_sell:
+                if cap_sell:
                     should_sell = True
-                    sell_reason = quick_reason
-                    sell_ratio = 0.5  # 50% 부분 매도 (나머지는 더 기다림)
-                    logger.info(f"💰 {stock_code} {position_num}차 빠른 수익 확정: 50% 부분 매도")
+                    sell_reason = cap_reason
+                    sell_ratio = 1.0  # 상한 도달시 무조건 전량매도
+                    logger.warning(f"🎯 {stock_code} {position_num}차 수익 상한 매도")
                 
-                # 🛡️ 2순위: 안전장치 보호선 체크  
+                # 🔄 2순위: 안전한 트레일링 스탑 체크 (NEW!)
                 elif max_profit_achieved > 0:
+                    trailing_sell, trailing_reason = self.check_enhanced_trailing_stop(
+                        stock_code, magic_data, current_price, stock_config
+                    )
+                    
+                    if trailing_sell:
+                        should_sell = True
+                        sell_reason = trailing_reason
+                        sell_ratio = 1.0  # 트레일링 스탑은 전량매도
+                        logger.warning(f"🔄 {stock_code} {position_num}차 트레일링 스탑 매도")
+                
+                # 🚀 3순위: 기존 빠른 수익 확정 체크
+                if not should_sell:
+                    quick_sell, quick_reason = self.check_quick_profit_opportunity(
+                        stock_code, magic_data, current_price, stock_config
+                    )
+                    
+                    if quick_sell:
+                        should_sell = True
+                        sell_reason = quick_reason
+                        sell_ratio = 0.5  # 50% 부분 매도 (1주라서 실제로는 0주)
+                        logger.info(f"💰 {stock_code} {position_num}차 빠른 수익 확정: 50% 부분 매도")
+                
+                # 🛡️ 4순위: 기존 안전장치 보호선 체크  
+                if not should_sell and max_profit_achieved > 0:
                     safety_sell, safety_reason = self.check_safety_protection(
                         stock_code, magic_data, current_price, stock_config, max_profit_achieved
                     )
@@ -3995,23 +4164,23 @@ class SmartMagicSplit:
                         sell_ratio = 1.0  # 안전장치는 전량 매도
                         logger.warning(f"🛡️ {stock_code} {position_num}차 안전장치 매도")
                 
-                # 🎯 3순위: 기본 목표가 달성 (개선된 목표)
-                elif current_return >= stock_config.get('hold_profit_target', 6):
-                    should_sell = True
-                    sell_reason = f"목표달성({current_return:.1f}%≥{stock_config.get('hold_profit_target', 6)}%)"
-                    
-                    # 상승장에서는 부분 매도, 다른 상황에서는 전량 매도
-                    # market_timing = self.detect_market_timing()
-                    market_timing = getattr(self, '_current_market_timing', self.detect_market_timing())                  
-                    if market_timing in ["strong_uptrend", "uptrend"]:
-                        sell_ratio = stock_config.get('partial_sell_ratio', 0.4)  # 40% 부분 매도
-                        logger.info(f"📈 {stock_code} {position_num}차 상승장 목표 달성: {sell_ratio*100:.0f}% 부분 매도")
-                    else:
-                        sell_ratio = 1.0  # 전량 매도
-                        logger.info(f"🎯 {stock_code} {position_num}차 목표 달성: 전량 매도")
+                # 🎯 5순위: 기존 기본 목표가 달성
+                if not should_sell:
+                    if current_return >= stock_config.get('hold_profit_target', 6):
+                        should_sell = True
+                        sell_reason = f"목표달성({current_return:.1f}%≥{stock_config.get('hold_profit_target', 6)}%)"
+                        
+                        # 상승장에서는 부분 매도, 다른 상황에서는 전량 매도
+                        market_timing = getattr(self, '_current_market_timing', self.detect_market_timing())                  
+                        if market_timing in ["strong_uptrend", "uptrend"]:
+                            sell_ratio = stock_config.get('partial_sell_ratio', 0.4)  # 40% 부분 매도 (1주라서 0주)
+                            logger.info(f"📈 {stock_code} {position_num}차 상승장 목표 달성: {sell_ratio*100:.0f}% 부분 매도")
+                        else:
+                            sell_ratio = 1.0  # 전량 매도
+                            logger.info(f"🎯 {stock_code} {position_num}차 목표 달성: 전량 매도")
                 
-                # ⏰ 4순위: 시간 기반 매도
-                else:
+                # ⏰ 6순위: 기존 시간 기반 매도
+                if not should_sell:
                     time_sell, time_reason = self.check_time_based_sell(
                         stock_code, magic_data, current_price, stock_config
                     )
@@ -4019,22 +4188,38 @@ class SmartMagicSplit:
                     if time_sell:
                         should_sell = True
                         sell_reason = time_reason
-                        sell_ratio = 0.6  # 60% 매도 (장기 보유 시 적극 확정)
+                        sell_ratio = 0.6  # 60% 매도 (1주라서 0주)
                         logger.info(f"⏰ {stock_code} {position_num}차 시간 기반 매도: 60% 매도")
                 
-                # 🔥 매도 실행
+                # 🔥 매도 실행 (기존 로직 유지)
                 if should_sell:
-                    sell_amount = max(1, int(current_amount * sell_ratio))
+                    # 🔥 핵심: 1주 보유시 0주 계산 문제 해결
+                    if current_amount == 1 and sell_ratio < 1.0:
+                        # 부분매도가 0주로 계산되는 경우 처리
+                        calculated_amount = int(current_amount * sell_ratio)
+                        if calculated_amount == 0:
+                            # 🎯 상한제나 트레일링 스탑은 강제 전량매도
+                            if cap_sell or trailing_sell:
+                                sell_amount = 1
+                                logger.info(f"🔧 {stock_code} {position_num}차 1주 강제매도: {sell_reason}")
+                            else:
+                                # 일반 부분매도는 스킵 (기존 로직 유지)
+                                logger.debug(f"⏭️ {stock_code} {position_num}차 부분매도 스킵: 1주×{sell_ratio:.1%}=0주")
+                                continue
+                        else:
+                            sell_amount = calculated_amount
+                    else:
+                        sell_amount = max(1, int(current_amount * sell_ratio))
                     
                     # 매도량이 보유량보다 크면 조정
                     if sell_amount > holdings['amount']:
                         sell_amount = holdings['amount']
                     
-                    # 매도 주문 실행
+                    # 매도 주문 실행 (기존 함수 사용)
                     result, error = self.handle_sell(stock_code, sell_amount, current_price)
                     
                     if result:
-                        # 🎉 매도 성공 처리
+                        # 🎉 매도 성공 처리 (기존 로직)
                         magic_data['CurrentAmt'] = current_amount - sell_amount
                         
                         if magic_data['CurrentAmt'] <= 0:
@@ -4049,12 +4234,12 @@ class SmartMagicSplit:
                         # 실현 손익 계산
                         realized_pnl = (current_price - entry_price) * sell_amount
                         magic_data['SellHistory'].append({
-                            "date": datetime.now().strftime("%Y-%m-%d"),     # ✅ 소문자로 변경
-                            "time": datetime.now().strftime("%H:%M:%S"),     # 일관성을 위해 소문자
+                            "date": datetime.now().strftime("%Y-%m-%d"),
+                            "time": datetime.now().strftime("%H:%M:%S"),
                             "amount": sell_amount,
                             "price": current_price,
                             "profit": realized_pnl,
-                            "return_pct": current_return,                    # 소문자 + 언더스코어
+                            "return_pct": current_return,
                             "sell_ratio": sell_ratio,
                             "reason": sell_reason,
                             "max_profit": max_profit_achieved
@@ -4063,8 +4248,8 @@ class SmartMagicSplit:
                         # 누적 실현 손익 업데이트
                         self.update_realized_pnl(stock_code, realized_pnl)
                         
-                        # 성공 메시지
-                        sell_type = "부분" if sell_ratio < 1.0 else "전량"
+                        # 🎯 개선된 성공 메시지
+                        sell_type = "전량" if sell_ratio >= 1.0 else "부분"
                         msg = f"✅ {stock_code} {position_num}차 {sell_type} 매도 완료!\n"
                         msg += f"💰 {sell_amount}주 @ {current_price:,.0f}원\n"
                         msg += f"📊 수익률: {current_return:+.2f}%\n"
@@ -4072,14 +4257,18 @@ class SmartMagicSplit:
                         msg += f"🎯 사유: {sell_reason}\n"
                         
                         if max_profit_achieved > current_return:
-                            msg += f"📈 최고점: {max_profit_achieved:.1f}%에서 확정\n"
+                            msg += f"📈 최고점: {max_profit_achieved:.1f}%\n"
                         
-                        if sell_ratio < 1.0:
-                            remaining = current_amount - sell_amount
-                            msg += f"💎 잔여: {remaining}주 계속 보유"
-                        
+                        # 🔥 개선사항 표시
+                        if cap_sell:
+                            msg += f"🎯 수익상한제 적용\n"
+                        elif trailing_sell:
+                            msg += f"🔄 안전 트레일링 스탑 적용\n"
+                            
                         logger.info(msg)
-                        discord_alert.SendMessage(msg)
+                        
+                        if config.config.get("use_discord_alert", True):
+                            discord_alert.SendMessage(msg)
                         
                         sells_executed = True
                         
@@ -4121,7 +4310,7 @@ class SmartMagicSplit:
                     
                     # 🚨 손절 및 수익 매도만 실행
                     self.execute_adaptive_stop_loss(stock_code, indicators, magic_data_list)
-                    self.process_improved_selling_logic(
+                    self.process_enhanced_selling_logic(
                         stock_code, stock_info, magic_data_list, indicators, holdings
                     )
                     
@@ -4216,7 +4405,7 @@ class SmartMagicSplit:
                 emergency_msg += f"📊 정지 사유: {emergency_reason}\n"
                 emergency_msg += f"🛑 모든 자동 매매 활동 중단\n"
                 emergency_msg += f"🔧 수동 확인 및 설정 조정 필요"
-                discord_alert.SendMessage(emergency_msg)
+                #discord_alert.SendMessage(emergency_msg)
             
             return  # 모든 매매 중단
 
@@ -4273,7 +4462,7 @@ class SmartMagicSplit:
                         continue  # 손절 실행되면 다른 매도 로직 스킵
                     
                     # 🔥 손절되지 않은 경우에만 수익 매도 로직 실행
-                    sells_executed = self.process_improved_selling_logic(
+                    sells_executed = self.process_enhanced_selling_logic(
                         stock_code, stock_info, stock_data_info['MagicDataList'], indicators, holdings
                     )
                     
