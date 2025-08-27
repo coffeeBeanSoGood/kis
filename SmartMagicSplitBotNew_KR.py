@@ -722,13 +722,218 @@ class SmartMagicSplit:
         self.stop_loss_adjustment = 0.0
         self.max_positions_allowed = 5
         self.disable_high_risk_stocks = False
-        self.suspend_all_buys = True  # ← False를 True로 변경 (신규매수 완전 중단)
+        # self.suspend_all_buys = True  # ← False를 True로 변경 (신규매수 완전 중단)
+        self.suspend_all_buys = False  # ← 핵심 변경: True를 False로!
         self.bear_market_mode = False
         self.defer_new_entries_hours = 0
         self.last_trend_check_time = None
         self.current_protection_level = "normal"               
 
 ########################################### 추세적 하락 대응 시스템 ############################################
+
+    def detect_market_trend_with_individual_stocks(self):
+        """🚨 개별 종목 상황을 고려한 스마트 하락 보호 시스템"""
+        try:
+            # 🔥 1. 코스피 전체 상황 분석
+            kospi_df = Common.GetOhlcv("KR", "KOSPI", 90)
+            if kospi_df is None or len(kospi_df) < 60:
+                return "neutral", 0, {}
+            
+            current_price = kospi_df['close'].iloc[-1]
+            
+            # 이동평균선 계산
+            ma5 = kospi_df['close'].rolling(5).mean().iloc[-1]
+            ma20 = kospi_df['close'].rolling(20).mean().iloc[-1]
+            ma60 = kospi_df['close'].rolling(60).mean().iloc[-1]
+            
+            # 고점 대비 하락률 계산
+            recent_high = kospi_df['high'].rolling(60).max().iloc[-1]
+            kospi_decline = (current_price - recent_high) / recent_high
+            
+            # 연속 하락일 계산
+            consecutive_red_days = 0
+            for i in range(len(kospi_df) - 1, 0, -1):
+                if kospi_df['close'].iloc[i] < kospi_df['close'].iloc[i-1]:
+                    consecutive_red_days += 1
+                else:
+                    break
+            
+            # 변동성 측정
+            returns = kospi_df['close'].pct_change()
+            volatility = returns.rolling(20).std().iloc[-1] * 100
+            
+            # 🔥 2. 보유 종목별 개별 상황 분석
+            target_stocks = config.target_stocks
+            individual_analysis = {}
+            
+            for stock_code, stock_info in target_stocks.items():
+                try:
+                    stock_df = Common.GetOhlcv("KR", stock_code, 60)
+                    if stock_df is None or len(stock_df) < 30:
+                        continue
+                    
+                    stock_current = stock_df['close'].iloc[-1]
+                    stock_high = stock_df['high'].rolling(30).max().iloc[-1]
+                    stock_decline = (stock_current - stock_high) / stock_high
+                    
+                    # 개별 종목 RSI
+                    stock_rsi = self.get_technical_indicators(stock_code).get('rsi', 50)
+                    
+                    # 보유 포지션 확인
+                    holdings = self.get_current_holdings(stock_code)
+                    has_positions = holdings['amount'] > 0
+                    
+                    individual_analysis[stock_code] = {
+                        'decline_rate': stock_decline,
+                        'rsi': stock_rsi,
+                        'has_positions': has_positions,
+                        'stock_name': stock_info.get('name', stock_code),
+                        'protection_needed': self._calculate_individual_protection_need(
+                            stock_decline, stock_rsi, has_positions
+                        )
+                    }
+                    
+                except Exception as e:
+                    logger.warning(f"{stock_code} 개별 분석 실패: {str(e)}")
+                    continue
+            
+            # 🔥 3. 스마트 보호 결정 로직
+            market_trend, risk_level, protection_msg = self._make_smart_protection_decision(
+                kospi_decline, individual_analysis, consecutive_red_days, volatility
+            )
+            
+            # 로깅
+            logger.info(f"🔍 스마트 시장 분석: {market_trend}")
+            logger.info(f"   📉 코스피 고점대비: {kospi_decline*100:.1f}%")
+            logger.info(f"   🔴 연속하락: {consecutive_red_days}일")
+            logger.info(f"   📊 변동성: {volatility:.1f}%")
+            if individual_analysis:
+                avg_individual_decline = sum(info['decline_rate'] for info in individual_analysis.values()) / len(individual_analysis)
+                avg_rsi = sum(info['rsi'] for info in individual_analysis.values()) / len(individual_analysis)
+                logger.info(f"   📈 개별종목 평균하락: {avg_individual_decline*100:.1f}%")
+                logger.info(f"   📊 개별종목 평균RSI: {avg_rsi:.1f}")
+            logger.info(f"   ⚠️ 위험수준: {risk_level}/10")
+            logger.info(f"   🛡️ 보호사유: {protection_msg}")
+            
+            return market_trend, risk_level, {
+                'kospi_decline': kospi_decline,
+                'consecutive_red_days': consecutive_red_days,
+                'volatility': volatility,
+                'individual_analysis': individual_analysis,
+                'protection_reason': protection_msg
+            }
+            
+        except Exception as e:
+            logger.error(f"스마트 하락 보호 분석 오류: {str(e)}")
+            return "neutral", 5, {}
+
+    def _calculate_individual_protection_need(self, stock_decline, rsi, has_positions):
+        """개별 종목의 보호 필요성 계산"""
+        protection_score = 0
+        
+        # 하락률 기준 점수 (완화된 기준)
+        if stock_decline <= -0.25:      # -25% 이상
+            protection_score += 4
+        elif stock_decline <= -0.18:    # -18% 이상  
+            protection_score += 3
+        elif stock_decline <= -0.12:    # -12% 이상 (기존 -10%에서 완화)
+            protection_score += 2
+        elif stock_decline <= -0.08:    # -8% 이상 (기존 -5%에서 완화)
+            protection_score += 1
+        
+        # RSI 과매도 구간에서는 보호 완화
+        if rsi <= 25:
+            protection_score -= 2  # 극한 과매도시 보호 완화
+        elif rsi <= 35:
+            protection_score -= 1  # 과매도시 보호 완화
+        elif rsi >= 75:
+            protection_score += 1  # 과매수시 보호 강화
+        
+        # 포지션 보유 상황 고려
+        if has_positions:
+            protection_score += 1  # 포지션 있으면 보호 약간 강화
+        
+        return max(0, protection_score)
+
+    def _make_smart_protection_decision(self, kospi_decline, individual_analysis, consecutive_red_days, volatility):
+        """스마트 보호 결정 - 개별 종목 상황 종합"""
+        
+        # 🔥 1. 코스피 기본 위험도 계산 (완화된 기준)
+        if kospi_decline <= -0.25:      # -25% 이상 (기존 -20%)
+            kospi_risk = 4
+        elif kospi_decline <= -0.18:    # -18% 이상 (기존 -15%)
+            kospi_risk = 3  
+        elif kospi_decline <= -0.12:    # -12% 이상 (기존 -10%)
+            kospi_risk = 2
+        elif kospi_decline <= -0.08:    # -8% 이상 (기존 -5%)
+            kospi_risk = 1
+        else:
+            kospi_risk = 0
+        
+        # 🔥 2. 개별 종목 상황 종합
+        total_stocks = len(individual_analysis)
+        if total_stocks == 0:
+            return "neutral", 5, "종목 데이터 없음"
+        
+        # 종목별 보호 필요성 평균
+        protection_scores = [info['protection_needed'] for info in individual_analysis.values()]
+        avg_individual_risk = sum(protection_scores) / len(protection_scores)
+        
+        # 과매도 종목 비율 계산
+        oversold_stocks = sum(1 for info in individual_analysis.values() if info['rsi'] <= 30)
+        oversold_ratio = oversold_stocks / total_stocks
+        
+        # 포지션 보유 종목 수
+        position_stocks = sum(1 for info in individual_analysis.values() if info['has_positions'])
+        
+        # 🔥 3. 추가 안전장치
+        additional_risk = 0
+        
+        # 연속 하락일 체크 (완화)
+        if consecutive_red_days >= 7:    # 기존 5→7일
+            additional_risk += 2
+        elif consecutive_red_days >= 5:  # 기존 3→5일
+            additional_risk += 1
+        
+        # 변동성 체크 (완화)
+        if volatility > 5.0:    # 기존 4.0→5.0
+            additional_risk += 2
+        elif volatility > 3.5:  # 기존 2.5→3.5
+            additional_risk += 1
+        
+        # 🔥 4. 최종 보호 결정
+        final_risk = kospi_risk + additional_risk
+        
+        # 개별 종목 상황이 양호하면 보호 완화
+        protection_msg = f"코스피 {kospi_decline*100:.1f}% 하락"
+        
+        if avg_individual_risk <= 1.5 and oversold_ratio >= 0.5:
+            final_risk -= 2
+            protection_msg += f", 개별종목 과매도({oversold_ratio*100:.0f}%)로 보호 완화"
+        
+        # 포지션 보유가 적으면 보호 완화
+        if position_stocks <= 1:
+            final_risk -= 1
+            protection_msg += f", 포지션 적음({position_stocks}개)으로 완화"
+        
+        # 개별 종목들이 모두 심각하면 보호 강화
+        if avg_individual_risk >= 3.0:
+            final_risk += 1
+            protection_msg += f", 개별종목도 심각하여 보호 강화"
+        
+        # 최종 리스크 레벨 결정
+        final_risk = max(0, min(4, final_risk))
+        
+        if final_risk == 0:
+            return "normal", 3, protection_msg + " → 정상 운영"
+        elif final_risk == 1:
+            return "mild_protection", 4, protection_msg + " → 경미한 보호"
+        elif final_risk == 2:
+            return "moderate_protection", 6, protection_msg + " → 중간 보호" 
+        elif final_risk == 3:
+            return "strong_protection", 8, protection_msg + " → 강한 보호"
+        else:
+            return "emergency_protection", 10, protection_msg + " → 응급 보호"
 
     def detect_market_trend_enhanced(self):
         """🚨 강화된 시장 추세 감지 - 추세적 하락 대비"""
@@ -852,6 +1057,81 @@ class SmartMagicSplit:
             logger.error(f"강화된 시장 추세 감지 오류: {str(e)}")
             return "neutral", 5, {}
 
+    def apply_smart_downtrend_protection(self, protection_level, risk_level, protection_reason):
+        """스마트 하락 보호 적용 - 단계별 차등 적용"""
+        try:
+            if protection_level == "normal":
+                # 정상 상태 - 보호 해제
+                self.reset_protection_measures()
+                return False, "정상 운영"
+            
+            elif protection_level == "mild_protection":
+                # 경미한 보호 - 매수량만 소폭 축소
+                self.position_size_multiplier = 0.9  # 10% 축소
+                self.stop_loss_adjustment = 0.01     # 1%p 강화
+                self.max_positions_allowed = 5       # 모든 차수 허용
+                self.suspend_all_buys = False        # 매수 허용
+                
+                logger.warning(f"🟡 경미한 보호 활성화: {protection_reason}")
+                protection_msg = "경미한 보호: 매수량 10% 축소"
+                
+            elif protection_level == "moderate_protection":
+                # 중간 보호 - 기존 1단계와 유사하지만 완화
+                self.position_size_multiplier = 0.8  # 20% 축소
+                self.stop_loss_adjustment = 0.02     # 2%p 강화
+                self.max_positions_allowed = 4       # 4차수까지 허용
+                self.suspend_all_buys = False        # 매수 허용
+                
+                logger.warning(f"🟠 중간 보호 활성화: {protection_reason}")
+                protection_msg = "중간 보호: 매수량 20% 축소, 4차수까지"
+                
+            elif protection_level == "strong_protection":
+                # 강한 보호 - 기존 2단계와 유사하지만 매수 중단하지 않음
+                self.position_size_multiplier = 0.6  # 40% 축소
+                self.stop_loss_adjustment = 0.03     # 3%p 강화
+                self.max_positions_allowed = 3       # 3차수까지만
+                self.suspend_all_buys = False        # 매수는 허용 (중요!)
+                
+                logger.error(f"🔴 강한 보호 활성화: {protection_reason}")
+                protection_msg = "강한 보호: 매수량 40% 축소, 3차수까지"
+                
+            else:  # emergency_protection
+                # 응급 보호 - 매수 중단
+                self.suspend_all_buys = True
+                self.execute_emergency_partial_sell(0.2)  # 20% 매도 (기존 30%)
+                self.bear_market_mode = True
+                
+                logger.error(f"🚨 응급 보호 활성화: {protection_reason}")
+                protection_msg = "응급 보호: 매수 중단, 20% 응급매도"
+            
+            # Discord 알림
+            if config.config.get("use_discord_alert", True):
+                protection_alert = f"🛡️ **스마트 하락 보호 작동**\n"
+                protection_alert += f"📊 {protection_reason}\n"
+                protection_alert += f"🔧 조치: {protection_msg}"
+                discord_alert.SendMessage(protection_alert)
+            
+            # 현재 보호 레벨 업데이트
+            self.current_protection_level = protection_level
+            
+            return True, protection_msg
+            
+        except Exception as e:
+            logger.error(f"스마트 하락 보호 적용 오류: {str(e)}")
+            return False, f"보호 적용 실패: {str(e)}"
+
+    def reset_protection_measures(self):
+        """보호 조치 해제"""
+        self.position_size_multiplier = 1.0
+        self.stop_loss_adjustment = 0.0
+        self.max_positions_allowed = 5
+        self.disable_high_risk_stocks = False
+        self.suspend_all_buys = False
+        self.bear_market_mode = False
+        self.current_protection_level = "normal"
+        
+        logger.info("✅ 모든 하락 보호 조치 해제 - 정상 운영 재개")
+
     def apply_downtrend_protection(self, market_trend, risk_level, trend_details):
         """🛡️ 추세적 하락 대비 보호 조치 적용"""
         try:
@@ -964,7 +1244,7 @@ class SmartMagicSplit:
                 alert_msg += f"⚠️ 위험 수준: {risk_level}/10\n"
                 alert_msg += f"🛡️ 보호 조치: {protection_msg}\n"
                 alert_msg += f"⏰ 적용 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-                discord_alert.SendMessage(alert_msg)
+                # discord_alert.SendMessage(alert_msg)
             
             logger.error(f"🛡️ {protection_msg}")
             return True, protection_msg
@@ -4352,8 +4632,13 @@ class SmartMagicSplit:
         if (self.last_trend_check_time is None or 
             (current_time - self.last_trend_check_time).total_seconds() > 300):  # 5분
             
-            market_trend, risk_level, trend_details = self.detect_market_trend_enhanced()
-            protection_applied, protection_msg = self.apply_downtrend_protection(
+            # market_trend, risk_level, trend_details = self.detect_market_trend_enhanced()
+            # protection_applied, protection_msg = self.apply_downtrend_protection(
+            #     market_trend, risk_level, trend_details
+            # )
+
+            market_trend, risk_level, trend_details = self.detect_market_trend_with_individual_stocks()
+            protection_applied, protection_msg = self.apply_smart_downtrend_protection(
                 market_trend, risk_level, trend_details
             )
             
@@ -4763,19 +5048,29 @@ class SmartMagicSplit:
                 return False, f"RSI 범위 벗어남({indicators['rsi']:.1f})"
             
             # 🔥 3. 종목별 차별화된 조건 (기존 개선사항)
+            # rsi_limits = {
+            #     "042660": 75,  # 한화오션: 높은 변동성으로 완화
+            #     "034020": 65,  # 두산에너빌리티: 안정적이므로 보수적
+            #     "005930": 72   # 🆕 삼성전자: 블루칩 안정성 (적정 완화)
+            # }
             rsi_limits = {
-                "042660": 75,  # 한화오션: 높은 변동성으로 완화
-                "034020": 65,  # 두산에너빌리티: 안정적이므로 보수적
-                "005930": 72   # 🆕 삼성전자: 블루칩 안정성 (적정 완화)
+                "042660": 75,  # 한화오션: 유지
+                "034020": 75,  # ⭐ 두산에너빌리티: 조정 구간 활용 (65→75)
+                "005930": 72   # 삼성전자: 유지
             }
+
+            # pullback_requirements = {
+            #     "042660": 3.0,  # 한화오션: 높은 조정 요구
+            #     "034020": 2.0,  # 두산에너빌리티: 낮은 조정 요구  
+            #     "005930": 1.8   # 🆕 삼성전자: 낮은 조정 요구 (안정성)
+            # }
 
             pullback_requirements = {
-                "042660": 3.0,  # 한화오션: 높은 조정 요구
-                "034020": 2.0,  # 두산에너빌리티: 낮은 조정 요구  
-                "005930": 1.8   # 🆕 삼성전자: 낮은 조정 요구 (안정성)
+                "042660": 3.0,  # 한화오션: 유지
+                "034020": 1.2,  # ⭐ 두산에너빌리티: 진입 장벽 낮춤 (2.0→1.2)
+                "005930": 1.8   # 삼성전자: 유지
             }
 
-            
             max_rsi = rsi_limits.get(stock_code, 70)
             min_pullback = pullback_requirements.get(stock_code, 2.5)
             
