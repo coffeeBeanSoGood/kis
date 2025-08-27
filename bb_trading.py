@@ -2491,20 +2491,161 @@ def analyze_intraday_entry_timing(stock_code, target_config):
         entry_signals = []
         entry_score = 0
         
-        # RSI 신호 (페널티 포함)
-        if intraday_rsi <= 30:
-            entry_score += 30
-            entry_signals.append(f"분봉 RSI 과매도 {intraday_rsi:.1f} (+30)")
+        # # RSI 신호 (페널티 포함)
+        # if intraday_rsi <= 30:
+        #     entry_score += 30
+        #     entry_signals.append(f"분봉 RSI 과매도 {intraday_rsi:.1f} (+30)")
+        # elif intraday_rsi <= 45:
+        #     entry_score += 20
+        #     entry_signals.append(f"분봉 RSI 조정 {intraday_rsi:.1f} (+20)")
+        # elif intraday_rsi >= 80:
+        #     entry_score -= 20
+        #     entry_signals.append(f"분봉 RSI 과매수 페널티 {intraday_rsi:.1f} (-20)")
+        # elif intraday_rsi >= 70:
+        #     entry_score -= 10
+        #     entry_signals.append(f"분봉 RSI 과매수 주의 {intraday_rsi:.1f} (-10)")
+
+        # 🔥 1단계: 일봉 신호 강도에 따른 동적 RSI 기준 설정
+        # target_config에서 최근 분석 결과 가져오기
+        daily_score = target_config.get('last_signal_score', 50)
+        signal_strength = target_config.get('last_signal_strength', 'NORMAL')
+
+        # 백업: target_config에 정보가 없으면 RSI 기반 추정
+        if daily_score == 50 and 'last_signal_score' not in target_config:
+            # 현재 RSI로 대략적인 신호 강도 추정
+            try:
+                stock_data = get_stock_data(stock_code)
+                if stock_data:
+                    daily_rsi = stock_data.get('RSI', 50)
+                    if daily_rsi <= 25:
+                        daily_score = 70  # 강한 신호로 추정
+                        signal_strength = 'STRONG'
+                    elif daily_rsi <= 35:
+                        daily_score = 60  # 중간 신호로 추정
+                        signal_strength = 'NORMAL'
+                    else:
+                        daily_score = 45  # 약한 신호로 추정
+                        signal_strength = 'WEAK'
+            except:
+                daily_score = 50
+                signal_strength = 'NORMAL'
+
+        # 일봉 신호 강도별 RSI 허용 기준
+        if signal_strength == 'STRONG' or daily_score >= 70:
+            # 매우 강한 일봉 신호: RSI 기준 대폭 완화
+            rsi_neutral_threshold = 65
+            rsi_caution_threshold = 75
+            risk_level = "LOW"
+        elif daily_score >= 60:
+            # 강한 일봉 신호: RSI 기준 적당히 완화  
+            rsi_neutral_threshold = 58
+            rsi_caution_threshold = 72
+            risk_level = "LOW-MED"
+        elif daily_score >= 50:
+            # 중간 일봉 신호: RSI 기준 약간 완화
+            rsi_neutral_threshold = 52
+            rsi_caution_threshold = 70
+            risk_level = "MEDIUM"
+        else:
+            # 약한 일봉 신호: 기존 엄격한 기준 유지
+            rsi_neutral_threshold = 45
+            rsi_caution_threshold = 68
+            risk_level = "HIGH"
+
+        logger.debug(f"📊 {stock_name} RSI 동적 기준: 중립선 {rsi_neutral_threshold}, 주의선 {rsi_caution_threshold} (리스크: {risk_level})")
+
+        # 🔥 2단계: 개선된 RSI 점수 체계 (리스크 관리 포함)
+        rsi_score = 0
+        if intraday_rsi <= 25:
+            # 극과매도: 최고 점수
+            rsi_score = 35
+            entry_signals.append(f"분봉 RSI 극과매도 {intraday_rsi:.1f} (+35)")
+            
+        elif intraday_rsi <= 35:
+            # 강과매도: 높은 점수
+            rsi_score = 30
+            entry_signals.append(f"분봉 RSI 강과매도 {intraday_rsi:.1f} (+30)")
+            
         elif intraday_rsi <= 45:
-            entry_score += 20
-            entry_signals.append(f"분봉 RSI 조정 {intraday_rsi:.1f} (+20)")
-        elif intraday_rsi >= 80:
-            entry_score -= 20
-            entry_signals.append(f"분봉 RSI 과매수 페널티 {intraday_rsi:.1f} (-20)")
-        elif intraday_rsi >= 70:
-            entry_score -= 10
-            entry_signals.append(f"분봉 RSI 과매수 주의 {intraday_rsi:.1f} (-10)")
-        
+            # 과매도: 기본 점수
+            rsi_score = 25
+            entry_signals.append(f"분봉 RSI 과매도 {intraday_rsi:.1f} (+25)")
+            
+        elif intraday_rsi <= rsi_neutral_threshold:
+            # 동적 중립 구간: 일봉 신호에 따라 조정
+            if daily_score >= 65:
+                rsi_score = 20  # 강한 일봉에서는 높은 점수
+                entry_signals.append(f"분봉 RSI 조정구간 {intraday_rsi:.1f} (+20, 강한일봉)")
+            elif daily_score >= 55:
+                rsi_score = 15  # 중간 일봉에서는 적당한 점수
+                entry_signals.append(f"분봉 RSI 조정구간 {intraday_rsi:.1f} (+15, 중간일봉)")
+            elif daily_score >= 45:
+                rsi_score = 10  # 약한 일봉에서는 낮은 점수
+                entry_signals.append(f"분봉 RSI 조정구간 {intraday_rsi:.1f} (+10, 약한일봉)")
+            else:
+                rsi_score = 5   # 매우 약한 일봉에서는 최소 점수
+                entry_signals.append(f"분봉 RSI 조정구간 {intraday_rsi:.1f} (+5, 매우약한일봉)")
+
+        elif intraday_rsi <= rsi_caution_threshold:
+            # 동적 주의 구간: 리스크 관리 점수
+            caution_penalty = min(10, (intraday_rsi - rsi_neutral_threshold) * 2)  # 점진적 페널티
+            rsi_score = max(0, 8 - caution_penalty)
+            entry_signals.append(f"분봉 RSI 주의구간 {intraday_rsi:.1f} (+{rsi_score}, 페널티-{caution_penalty:.0f})")
+            
+        elif intraday_rsi <= 85:
+            # 과매수 구간: 페널티 적용
+            if daily_score >= 70:
+                # 강한 일봉 신호에서는 페널티 완화
+                rsi_score = -8
+                entry_signals.append(f"분봉 RSI 과매수 {intraday_rsi:.1f} (-8, 강한일봉완화)")
+            else:
+                # 일반적인 페널티
+                rsi_score = -15
+                entry_signals.append(f"분봉 RSI 과매수 페널티 {intraday_rsi:.1f} (-15)")
+                
+        else:
+            # 극과매수: 강한 페널티 (리스크 높음)
+            rsi_score = -25
+            entry_signals.append(f"분봉 RSI 극과매수 페널티 {intraday_rsi:.1f} (-25)")
+
+        entry_score += rsi_score
+
+        # 🔥 3단계: 추가 리스크 관리 장치
+        risk_flags = []
+
+        # 과매수 리스크 체크
+        if intraday_rsi >= 75:
+            risk_flags.append(f"과매수리스크(RSI:{intraday_rsi:.1f})")
+            
+        # 일봉-분봉 신호 불일치 체크  
+        if daily_score >= 60 and intraday_rsi >= 70:
+            risk_flags.append("일봉분봉불일치")
+            entry_score -= 5  # 추가 페널티
+            
+        # 극한 조건 재확인
+        if intraday_rsi >= 80 and intraday_bb_ratio >= 1.01:
+            risk_flags.append("분봉극한조건")
+            entry_score -= 10  # 강한 추가 페널티
+
+        if risk_flags:
+            entry_signals.append(f"⚠️ 리스크 플래그: {', '.join(risk_flags)}")
+            logger.warning(f"⚠️ {stock_name} 분봉 리스크 플래그: {', '.join(risk_flags)}")
+
+        # 🔥 4단계: 최소 진입 점수는 target_config에서 가져오기
+        base_min_score = target_config.get('min_entry_score', 20)
+
+        # 리스크 레벨에 따른 최소 점수 조정
+        if risk_level == "LOW":
+            dynamic_min_score = max(10, base_min_score - 8)  # 기준 완화
+        elif risk_level == "LOW-MED":
+            dynamic_min_score = max(12, base_min_score - 5)  # 약간 완화
+        elif risk_level == "MEDIUM":
+            dynamic_min_score = max(15, base_min_score - 3)  # 조금 완화
+        else:  # HIGH
+            dynamic_min_score = base_min_score  # 기존 기준 유지
+
+        logger.debug(f"📊 {stock_name} 동적 최소점수: {dynamic_min_score} (기본: {base_min_score}, 리스크: {risk_level})")
+
         # 볼린저밴드 신호
         bb_lower_5m = df_5m['BB_Lower'].iloc[-1]
         if not pd.isna(bb_lower_5m) and current_price <= bb_lower_5m * 1.02:
