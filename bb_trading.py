@@ -2510,6 +2510,10 @@ def analyze_intraday_entry_timing(stock_code, target_config):
         daily_score = target_config.get('last_signal_score', 50)
         signal_strength = target_config.get('last_signal_strength', 'NORMAL')
 
+        # 임시 디버깅 로그
+        logger.info(f"🔍 {stock_name} 분봉분석 디버깅: daily_score={daily_score}, signal_strength={signal_strength}")
+        logger.info(f"🔍 {stock_name} target_config keys: {list(target_config.keys())}")
+
         # 백업: target_config에 정보가 없으면 RSI 기반 추정
         if daily_score == 50 and 'last_signal_score' not in target_config:
             # 현재 RSI로 대략적인 신호 강도 추정
@@ -2552,7 +2556,8 @@ def analyze_intraday_entry_timing(stock_code, target_config):
             rsi_caution_threshold = 68
             risk_level = "HIGH"
 
-        logger.debug(f"📊 {stock_name} RSI 동적 기준: 중립선 {rsi_neutral_threshold}, 주의선 {rsi_caution_threshold} (리스크: {risk_level})")
+        # logger.debug(f"📊 {stock_name} RSI 동적 기준: 중립선 {rsi_neutral_threshold}, 주의선 {rsi_caution_threshold} (리스크: {risk_level})")
+        logger.info(f"📊 {stock_name} RSI 동적 기준: 중립선 {rsi_neutral_threshold}, 주의선 {rsi_caution_threshold} (리스크: {risk_level})")
 
         # 🔥 2단계: 개선된 RSI 점수 체계 (리스크 관리 포함)
         rsi_score = 0
@@ -4285,178 +4290,7 @@ def analyze_sell_signal_with_surge_adaptive(stock_data, position, target_config)
             'reason': f'분석 오류: {str(e)}',
             'sell_method': 'error'
         }
-
-#////////////////////////////////////////////////////////////////////////////////////////
-
-def analyze_intraday_entry_timing(stock_code, target_config):
-    """분봉 기준 최적 진입 타이밍 분석 - API 호출 방식 수정"""
-    try:
-        # 🔥 KIS API 정확한 사용법으로 수정
-        try:
-            # 방법 1: KisKR.GetOhlcvNew 사용 (분봉)
-            # 'M' = 분봉, 개수, adj_ok=1 (수정주가 적용)
-            df_5m = KisKR.GetOhlcvNew(stock_code, 'M', 24, adj_ok=1)
-            
-            if df_5m is None or len(df_5m) < 10:
-                logger.debug(f"KisKR.GetOhlcvNew 분봉 조회 실패: {stock_code}")
-                
-                # 방법 2: Common.GetOhlcv 기본 호출 (일봉을 짧게)
-                df_5m = Common.GetOhlcv("KR", stock_code, 24)  # period 파라미터 제거
-                
-        except Exception as api_e:
-            logger.debug(f"분봉 API 호출 실패: {str(api_e)}, 일봉으로 대체")
-            # 방법 3: 일봉 데이터로 대체 (기존 방식)
-            df_5m = Common.GetOhlcv("KR", stock_code, 24)
-        
-        if df_5m is None or len(df_5m) < 10:
-            logger.debug(f"모든 데이터 조회 실패: {stock_code}")
-            return {'enter_now': True, 'reason': '데이터 부족으로 즉시 진입'}
-        
-        current_price = KisKR.GetCurrentPrice(stock_code)
-        if not current_price:
-            return {'enter_now': True, 'reason': '현재가 조회 실패로 즉시 진입'}
-        
-        # 🔥 데이터 길이에 따른 적응적 분석
-        data_length = len(df_5m)
-        logger.debug(f"{stock_code} 데이터 길이: {data_length}")
-        
-        # 기술적 지표 계산 (데이터 길이에 맞게 조정)
-        rsi_period = min(14, data_length // 2)
-        ma_short = min(5, data_length // 4)
-        ma_long = min(20, data_length // 2)
-        bb_period = min(20, data_length // 2)
-        
-        if rsi_period < 3:
-            return {'enter_now': True, 'reason': '데이터 부족으로 즉시 진입'}
-        
-        # 기술적 지표 계산
-        df_5m['RSI'] = TechnicalIndicators.calculate_rsi(df_5m, rsi_period)
-        df_5m['MA_Short'] = df_5m['close'].rolling(window=ma_short).mean()
-        df_5m['MA_Long'] = df_5m['close'].rolling(window=ma_long).mean()
-        
-        # 볼린저밴드 (데이터가 충분할 때만)
-        if data_length >= bb_period:
-            bb_data = TechnicalIndicators.calculate_bollinger_bands(df_5m, bb_period, 2.0)
-            df_5m[['BB_Mid', 'BB_Upper', 'BB_Lower']] = bb_data
-        else:
-            # 볼린저밴드 계산 불가시 더미 값
-            df_5m['BB_Mid'] = df_5m['close']
-            df_5m['BB_Upper'] = df_5m['close'] * 1.02
-            df_5m['BB_Lower'] = df_5m['close'] * 0.98
-        
-        entry_signals = []
-        entry_score = 0
-        
-        # 🎯 1) RSI 기반 신호
-        try:
-            rsi_current = df_5m['RSI'].iloc[-1]
-            if not pd.isna(rsi_current):
-                if rsi_current <= 30:
-                    entry_score += 30
-                    entry_signals.append(f"RSI 과매도 {rsi_current:.1f} (+30)")
-                elif rsi_current <= 40:
-                    entry_score += 20
-                    entry_signals.append(f"RSI 조정 {rsi_current:.1f} (+20)")
-                elif rsi_current >= 70:
-                    entry_score -= 20
-                    entry_signals.append(f"RSI 과매수 {rsi_current:.1f} (-20)")
-        except:
-            pass
-        
-        # 🎯 2) 볼린저밴드 기반 신호
-        try:
-            bb_lower = df_5m['BB_Lower'].iloc[-1]
-            bb_upper = df_5m['BB_Upper'].iloc[-1]
-            
-            if not pd.isna(bb_lower) and current_price <= bb_lower * 1.02:
-                entry_score += 25
-                entry_signals.append("볼린저 하단 근접 (+25)")
-            elif not pd.isna(bb_upper) and current_price >= bb_upper * 0.98:
-                entry_score -= 15
-                entry_signals.append("볼린저 상단 근접 (-15)")
-        except:
-            pass
-        
-        # 🎯 3) 이동평균선 지지
-        try:
-            ma_short_current = df_5m['MA_Short'].iloc[-1]
-            if not pd.isna(ma_short_current):
-                distance_ratio = abs(current_price - ma_short_current) / ma_short_current
-                if distance_ratio <= 0.01:  # 1% 이내
-                    entry_score += 20
-                    entry_signals.append(f"{ma_short}MA 지지 (+20)")
-        except:
-            pass
-        
-        # 🎯 4) 거래량 신호
-        try:
-            if data_length >= 10:
-                recent_volume = df_5m['volume'].iloc[-3:].mean()
-                past_volume = df_5m['volume'].iloc[-10:-3].mean()
-                
-                if past_volume > 0:
-                    volume_ratio = recent_volume / past_volume
-                    if volume_ratio >= 1.2:
-                        entry_score += 15
-                        entry_signals.append(f"거래량 증가 {volume_ratio:.1f}배 (+15)")
-        except:
-            pass
-        
-        # 🎯 5) 가격 추세 신호
-        try:
-            if data_length >= 5:
-                # 최근 변화율 계산
-                recent_changes = df_5m['close'].pct_change().iloc[-4:]
-                down_count = sum(1 for x in recent_changes if x < -0.01)  # 1% 이상 하락
-                last_change = df_5m['close'].pct_change().iloc[-1]
-                
-                if down_count >= 2 and last_change > 0.005:  # 연속 하락 후 반등
-                    entry_score += 20
-                    entry_signals.append("반등 신호 (+20)")
-                
-                # 고점 근처 체크
-                recent_high = df_5m['high'].iloc[-min(10, data_length):].max()
-                if current_price >= recent_high * 0.98:
-                    entry_score -= 10
-                    entry_signals.append("단기 고점 근처 (-10)")
-        except:
-            pass
-        
-        # 🎯 진입 결정
-        min_entry_score = target_config.get('min_entry_score', 20)  # 기준 완화
-        
-        # 데이터 부족시 기준 완화
-        if data_length < 20:
-            min_entry_score = max(10, min_entry_score - 10)
-            entry_signals.append(f"데이터 부족으로 기준 완화 ({data_length}개)")
-        
-        enter_now = entry_score >= min_entry_score
-        
-        result = {
-            'enter_now': enter_now,
-            'entry_score': entry_score,
-            'entry_signals': entry_signals,
-            'reason': f"{'진입 타이밍 양호' if enter_now else '진입 대기'} (점수: {entry_score}/{min_entry_score})",
-            'data_info': {
-                'data_length': data_length,
-                'rsi_period': rsi_period,
-                'ma_periods': [ma_short, ma_long]
-            }
-        }
-        
-        logger.debug(f"{stock_code} 분봉 분석 결과: {result['reason']}")
-        return result
-            
-    except Exception as e:
-        logger.error(f"분봉 진입 타이밍 분석 중 오류: {str(e)}")
-        # 오류 발생시에도 매수 기회를 놓치지 않도록 즉시 진입
-        return {
-            'enter_now': True, 
-            'entry_score': 0,
-            'entry_signals': [f"분석 오류: {str(e)}"],
-            'reason': '분석 오류로 즉시 진입'
-        }
-    
+   
 ################################### 상태 관리 ##################################
 
 def load_trading_state():
