@@ -7812,14 +7812,14 @@ def main():
                 save_trading_state(trading_state)
             
             # 새로운 매수 기회 스캔 (15시 이전까지만)
-            # if now.hour < 15:
-            #     logger.info("=== 타겟 종목 매수 기회 스캔 ===")
-            #     buy_opportunities = scan_target_stocks(trading_state)
+            if now.hour < 15:
+                logger.info("=== 타겟 종목 매수 기회 스캔 ===")
+                buy_opportunities = scan_target_stocks(trading_state)
 
-            #     if buy_opportunities:
-            #         # 매수 실행
-            #         trading_state = execute_buy_opportunities(buy_opportunities, trading_state)
-            #         save_trading_state(trading_state)
+                if buy_opportunities:
+                    # 매수 실행
+                    trading_state = execute_buy_opportunities(buy_opportunities, trading_state)
+                    save_trading_state(trading_state)
             
             # 1시간마다 타겟 종목 현황 보고
             if (now - last_status_report).seconds >= 3600:
