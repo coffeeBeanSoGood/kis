@@ -4940,7 +4940,10 @@ def process_buy_candidates(trading_state):
                     continue
                 
                 # 대기 시간 계산
-                wait_start = datetime.datetime.fromisoformat(candidate_info['wait_start_time'])
+                wait_start = datetime.datetime.fromisoformat(
+                    candidate_info.get('wait_start_time', datetime.datetime.now().isoformat())
+                )
+
                 wait_hours = (datetime.datetime.now() - wait_start).total_seconds() / 3600
                 max_wait_hours = candidate_info.get('max_wait_hours', 3.0)
                 
@@ -6945,15 +6948,26 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
                     if 'buy_candidates' not in trading_state:
                         trading_state['buy_candidates'] = {}
                     
+                    # 🔥 수정: wait_start_time과 필요한 모든 필드 추가
                     trading_state['buy_candidates'][stock_code] = {
                         'opportunity': opportunity,
-                        'add_time': datetime.datetime.now().isoformat(),
                         'daily_score': daily_score,
                         'signal_strength': signal_strength,
-                        'timing_reason': '분봉 타이밍 대기'
+                        'timing_reason': timing_analysis.get('reason', '분봉 타이밍 대기'),
+                        'max_wait_hours': trading_config.max_candidate_wait_hours,  # 기본 2시간
+                        'wait_start_time': datetime.datetime.now().isoformat(),     # 🔥 핵심: 대기 시작 시간
+                        'min_intraday_score': 20,  # 분봉 최소 점수
+                        'last_intraday_score': timing_analysis.get('entry_score', 0),  # 현재 분봉 점수
+                        'created_at': datetime.datetime.now().isoformat()  # 생성 시간
                     }
                     
-                    logger.info(f"   📝 매수 대기 리스트에 추가: {stock_name}")
+                    logger.info(f"   📋 매수 대기 후보 등록: {stock_name}")
+                    logger.info(f"      최대 대기: {trading_config.max_candidate_wait_hours}시간")
+                    logger.info(f"      대기 사유: {timing_analysis.get('reason', '분봉 타이밍 대기')}")
+                    
+                    # 즉시 저장하여 다른 프로세스와 동기화
+                    save_trading_state(trading_state)
+                    executed_count += 1  # 매수 처리 완료로 카운트
                     continue
 
                 elif timing_result in ["immediate", "강력한 신호로 즉시 매수"]:
