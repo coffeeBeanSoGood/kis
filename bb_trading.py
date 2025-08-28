@@ -2559,59 +2559,67 @@ def analyze_intraday_entry_timing(stock_code, target_config):
         # logger.debug(f"📊 {stock_name} RSI 동적 기준: 중립선 {rsi_neutral_threshold}, 주의선 {rsi_caution_threshold} (리스크: {risk_level})")
         logger.info(f"📊 {stock_name} RSI 동적 기준: 중립선 {rsi_neutral_threshold}, 주의선 {rsi_caution_threshold} (리스크: {risk_level})")
 
-        # 🔥 2단계: 개선된 RSI 점수 체계 (리스크 관리 포함)
+        # 🔥 2단계: 개선된 RSI 점수 체계 (페널티 완화 + 긍정 점수 확대)
         rsi_score = 0
         if intraday_rsi <= 25:
-            # 극과매도: 최고 점수
-            rsi_score = 35
-            entry_signals.append(f"분봉 RSI 극과매도 {intraday_rsi:.1f} (+35)")
+            # 극과매도: 최고 점수 확대
+            rsi_score = 40  # 기존 35 → 40
+            entry_signals.append(f"분봉 RSI 극과매도 {intraday_rsi:.1f} (+40)")
             
         elif intraday_rsi <= 35:
-            # 강과매도: 높은 점수
-            rsi_score = 30
-            entry_signals.append(f"분봉 RSI 강과매도 {intraday_rsi:.1f} (+30)")
+            # 강과매도: 높은 점수 확대  
+            rsi_score = 35  # 기존 30 → 35
+            entry_signals.append(f"분봉 RSI 강과매도 {intraday_rsi:.1f} (+35)")
             
         elif intraday_rsi <= 45:
-            # 과매도: 기본 점수
-            rsi_score = 25
-            entry_signals.append(f"분봉 RSI 과매도 {intraday_rsi:.1f} (+25)")
+            # 과매도: 기본 점수 확대
+            rsi_score = 30  # 기존 25 → 30
+            entry_signals.append(f"분봉 RSI 과매도 {intraday_rsi:.1f} (+30)")
             
         elif intraday_rsi <= rsi_neutral_threshold:
-            # 동적 중립 구간: 일봉 신호에 따라 조정
+            # 동적 중립 구간: 일봉 신호에 따라 조정 (점수 확대)
             if daily_score >= 65:
-                rsi_score = 20  # 강한 일봉에서는 높은 점수
-                entry_signals.append(f"분봉 RSI 조정구간 {intraday_rsi:.1f} (+20, 강한일봉)")
+                rsi_score = 25  # 기존 20 → 25
+                entry_signals.append(f"분봉 RSI 조정구간 {intraday_rsi:.1f} (+25, 강한일봉)")
             elif daily_score >= 55:
-                rsi_score = 15  # 중간 일봉에서는 적당한 점수
-                entry_signals.append(f"분봉 RSI 조정구간 {intraday_rsi:.1f} (+15, 중간일봉)")
+                rsi_score = 20  # 기존 15 → 20
+                entry_signals.append(f"분봉 RSI 조정구간 {intraday_rsi:.1f} (+20, 중간일봉)")
             elif daily_score >= 45:
-                rsi_score = 10  # 약한 일봉에서는 낮은 점수
-                entry_signals.append(f"분봉 RSI 조정구간 {intraday_rsi:.1f} (+10, 약한일봉)")
+                rsi_score = 15  # 기존 10 → 15
+                entry_signals.append(f"분봉 RSI 조정구간 {intraday_rsi:.1f} (+15, 약한일봉)")
             else:
-                rsi_score = 5   # 매우 약한 일봉에서는 최소 점수
-                entry_signals.append(f"분봉 RSI 조정구간 {intraday_rsi:.1f} (+5, 매우약한일봉)")
+                rsi_score = 10   # 기존 5 → 10
+                entry_signals.append(f"분봉 RSI 조정구간 {intraday_rsi:.1f} (+10, 매우약한일봉)")
 
         elif intraday_rsi <= rsi_caution_threshold:
-            # 동적 주의 구간: 리스크 관리 점수
-            caution_penalty = min(10, (intraday_rsi - rsi_neutral_threshold) * 2)  # 점진적 페널티
-            rsi_score = max(0, 8 - caution_penalty)
+            # 동적 주의 구간: 리스크 관리 점수 (페널티 완화)
+            caution_penalty = min(5, (intraday_rsi - rsi_neutral_threshold) * 1)  # 기존 10, *2 → 5, *1
+            rsi_score = max(5, 15 - caution_penalty)  # 기존 0, 8 → 5, 15
             entry_signals.append(f"분봉 RSI 주의구간 {intraday_rsi:.1f} (+{rsi_score}, 페널티-{caution_penalty:.0f})")
             
         elif intraday_rsi <= 85:
-            # 과매수 구간: 페널티 적용
+            # 과매수 구간: 페널티 대폭 완화
             if daily_score >= 70:
-                # 강한 일봉 신호에서는 페널티 완화
-                rsi_score = -8
-                entry_signals.append(f"분봉 RSI 과매수 {intraday_rsi:.1f} (-8, 강한일봉완화)")
+                # 강한 일봉 신호에서는 페널티 거의 없음
+                rsi_score = 0  # 기존 -8 → 0
+                entry_signals.append(f"분봉 RSI 과매수 {intraday_rsi:.1f} (0, 강한일봉완화)")
+            elif daily_score >= 60:
+                # 중간 일봉 신호에서도 페널티 최소화
+                rsi_score = -3  # 기존 -15 → -3
+                entry_signals.append(f"분봉 RSI 과매수 {intraday_rsi:.1f} (-3, 중간일봉완화)")
             else:
-                # 일반적인 페널티
-                rsi_score = -15
-                entry_signals.append(f"분봉 RSI 과매수 페널티 {intraday_rsi:.1f} (-15)")
+                # 일반적인 페널티도 완화
+                rsi_score = -5  # 기존 -15 → -5
+                entry_signals.append(f"분봉 RSI 과매수 페널티 {intraday_rsi:.1f} (-5)")
                 
         else:
-            # 극과매수: 강한 페널티 (리스크 높음)
-            rsi_score = -25
-            entry_signals.append(f"분봉 RSI 극과매수 페널티 {intraday_rsi:.1f} (-25)")
+            # 극과매수: 페널티 완화하되 여전히 주의
+            if daily_score >= 70:
+                rsi_score = -5  # 강한 신호에서는 극과매수도 허용
+                entry_signals.append(f"분봉 RSI 극과매수 {intraday_rsi:.1f} (-5, 강한일봉완화)")
+            else:
+                rsi_score = -10  # 기존 -25 → -10
+                entry_signals.append(f"분봉 RSI 극과매수 페널티 {intraday_rsi:.1f} (-10)")
 
         entry_score += rsi_score
 
@@ -2622,15 +2630,15 @@ def analyze_intraday_entry_timing(stock_code, target_config):
         if intraday_rsi >= 75:
             risk_flags.append(f"과매수리스크(RSI:{intraday_rsi:.1f})")
             
-        # 일봉-분봉 신호 불일치 체크  
+        # 일봉-분봉 신호 불일치 체크 완화  
         if daily_score >= 60 and intraday_rsi >= 70:
             risk_flags.append("일봉분봉불일치")
-            entry_score -= 5  # 추가 페널티
+            entry_score -= 2  # 기존 -5 → -2 (페널티 완화)
             
-        # 극한 조건 재확인
-        if intraday_rsi >= 80 and intraday_bb_ratio >= 1.01:
+        # 극한 조건 재확인 완화
+        if intraday_rsi >= 80 and intraday_bb_ratio >= 1.02:  # 기존 1.01 → 1.02
             risk_flags.append("분봉극한조건")
-            entry_score -= 10  # 강한 추가 페널티
+            entry_score -= 5  # 기존 -10 → -5 (페널티 완화)
 
         if risk_flags:
             entry_signals.append(f"⚠️ 리스크 플래그: {', '.join(risk_flags)}")
@@ -2661,30 +2669,46 @@ def analyze_intraday_entry_timing(stock_code, target_config):
 
         logger.debug(f"📊 {stock_name} 동적 최소점수: {dynamic_min_score} (기본: {base_min_score}, 리스크: {risk_level})")
 
-        # 볼린저밴드 신호
+        # 볼린저밴드 신호 확대
         bb_lower_5m = df_5m['BB_Lower'].iloc[-1]
         if not pd.isna(bb_lower_5m) and current_price <= bb_lower_5m * 1.02:
-            entry_score += 25
-            entry_signals.append("분봉 볼린저 하단 근접 (+25)")
-        elif intraday_bb_ratio >= 1.0:
-            entry_score -= 15
-            entry_signals.append(f"분봉 볼밴 상단 페널티 (-15)")
+            entry_score += 30  # 기존 25 → 30 (긍정 점수 확대)
+            entry_signals.append("분봉 볼린저 하단 근접 (+30)")
+        elif not pd.isna(bb_lower_5m) and current_price <= bb_lower_5m * 1.05:  # 새로운 단계 추가
+            entry_score += 20
+            entry_signals.append("분봉 볼린저 하단 근처 (+20)")
+        elif intraday_bb_ratio >= 1.02:  # 기존 1.0 → 1.02 (더 관대하게)
+            # 일봉 신호 강도에 따른 차등 페널티
+            if daily_score >= 65:
+                penalty = -3  # 강한 신호에서는 페널티 최소
+                entry_signals.append(f"분봉 볼밴 상단 ({penalty}점, 강한일봉완화)")
+            else:
+                penalty = -5  # 기존 -15 → -5 (페널티 완화)
+                entry_signals.append(f"분봉 볼밴 상단 페널티 ({penalty})")
+            entry_score += penalty
         elif intraday_bb_ratio >= 0.98:
-            entry_score -= 8
-            entry_signals.append(f"분봉 볼밴 상단 주의 (-8)")
+            # 기존 -8 → -3 (페널티 완화)
+            entry_score -= 3
+            entry_signals.append(f"분봉 볼밴 상단 주의 (-3)")
         
-        # 이동평균 지지 신호
+        # 이동평균 지지 신호 확대
         try:
             ma_short_current = df_5m['MA_Short'].iloc[-1]
             if not pd.isna(ma_short_current):
                 distance_ratio = abs(current_price - ma_short_current) / ma_short_current
-                if distance_ratio <= 0.01:
-                    entry_score += 20
+                if distance_ratio <= 0.005:  # 0.5% 이내
+                    entry_score += 25  # 기존 20 → 25
+                    entry_signals.append(f"{ma_short}MA 강력지지 (+25)")
+                elif distance_ratio <= 0.01:  # 1% 이내
+                    entry_score += 20  # 기존에 없던 단계 추가
                     entry_signals.append(f"{ma_short}MA 지지 (+20)")
+                elif distance_ratio <= 0.02:  # 2% 이내
+                    entry_score += 10  # 새로운 단계 추가
+                    entry_signals.append(f"{ma_short}MA 근처 (+10)")
         except:
             pass
-        
-        # 거래량 신호
+
+        # 거래량 신호 확대
         try:
             if data_length >= 10:
                 recent_volume = df_5m['volume'].iloc[-3:].mean()
@@ -2692,30 +2716,44 @@ def analyze_intraday_entry_timing(stock_code, target_config):
                 
                 if past_volume > 0:
                     volume_ratio = recent_volume / past_volume
-                    if volume_ratio >= 1.3:
-                        entry_score += 15
-                        entry_signals.append(f"분봉 거래량 증가 {volume_ratio:.1f}배 (+15)")
+                    if volume_ratio >= 2.0:  # 새로운 단계 추가
+                        entry_score += 25
+                        entry_signals.append(f"분봉 거래량 폭증 {volume_ratio:.1f}배 (+25)")
+                    elif volume_ratio >= 1.5:  # 기존 1.3 → 1.5 (기준 상향)
+                        entry_score += 20  # 기존 15 → 20
+                        entry_signals.append(f"분봉 거래량 급증 {volume_ratio:.1f}배 (+20)")
+                    elif volume_ratio >= 1.2:  # 새로운 단계 추가
+                        entry_score += 10
+                        entry_signals.append(f"분봉 거래량 증가 {volume_ratio:.1f}배 (+10)")
         except:
             pass
         
-        # 반등 신호 및 고점 페널티
+        # 반등 신호 및 고점 페널티 수정
         try:
             if data_length >= 5:
                 recent_changes = df_5m['close'].pct_change().iloc[-4:]
                 down_count = sum(1 for x in recent_changes if x < -0.01)
                 last_change = df_5m['close'].pct_change().iloc[-1]
                 
-                if down_count >= 2 and last_change > 0.005:
-                    entry_score += 20
-                    entry_signals.append("분봉 반등 신호 (+20)")
+                if down_count >= 3 and last_change > 0.01:  # 기준 강화하고 점수 확대
+                    entry_score += 30  # 기존 20 → 30
+                    entry_signals.append("분봉 강력반등 신호 (+30)")
+                elif down_count >= 2 and last_change > 0.005:
+                    entry_score += 25  # 기존 20 → 25
+                    entry_signals.append("분봉 반등 신호 (+25)")
+                elif down_count >= 1 and last_change > 0.003:  # 새로운 단계 추가
+                    entry_score += 15
+                    entry_signals.append("분봉 약한반등 (+15)")
                 
+                # 고점 페널티 완화
                 recent_high = df_5m['high'].iloc[-min(10, data_length):].max()
-                if current_price >= recent_high * 0.98:
-                    entry_score -= 10
-                    entry_signals.append("분봉 단기 고점 페널티 (-10)")
+                if current_price >= recent_high * 0.99:  # 기존 0.98 → 0.99 (더 관대하게)
+                    penalty = -5 if daily_score >= 60 else -8  # 기존 -10, 신호강도 연동
+                    entry_score += penalty
+                    entry_signals.append(f"분봉 단기 고점 페널티 ({penalty})")
         except:
             pass
-        
+       
         # 🔥 9단계: 진입 기준 결정 (시간대별 차등)
         base_min_score = target_config.get('min_entry_score', 20)
         
@@ -2817,7 +2855,7 @@ def analyze_intraday_entry_timing(stock_code, target_config):
             }
 
 def should_use_intraday_timing(opportunity, target_config):
-    """개선된 분봉 타이밍 사용 여부 결정 - 신호 강도별 차등 적용"""
+    """신호 강도별 분봉 타이밍 사용 여부 결정 - 강화된 차등 적용"""
     try:
         # 전역 설정에서 분봉 타이밍이 비활성화된 경우
         if not getattr(trading_config, 'use_intraday_timing', False):
@@ -2826,17 +2864,21 @@ def should_use_intraday_timing(opportunity, target_config):
         daily_score = opportunity['score']
         signal_strength = opportunity.get('signal_strength', 'NORMAL')
         
-        # 신호 강도별 차등 적용 (더 관대하게)
-        if signal_strength == 'STRONG' and daily_score >= 65:
+        # 신호 강도별 차등 적용 (더 강화된 버전)
+        if signal_strength == 'STRONG' and daily_score >= 70:
             # 매우 강한 신호: 즉시 매수
             return False, 0, f"강력한 신호로 즉시 매수 (점수: {daily_score})"
             
-        elif daily_score >= 60:
-            # 강한 신호: 15분만 대기
-            return True, 0.25, f"강한 신호로 15분 대기 (점수: {daily_score})"
+        elif daily_score >= 65:
+            # 강한 신호: 매우 짧은 대기
+            return True, 0.1, f"강한 신호로 6분 대기 (점수: {daily_score})"
+            
+        elif daily_score >= 55:
+            # 중간-강 신호: 짧은 대기
+            return True, 0.25, f"중강 신호로 15분 대기 (점수: {daily_score})"
             
         elif daily_score >= 50:
-            # 중간 신호: 30분 대기
+            # 중간 신호: 적당한 대기
             return True, 0.5, f"중간 신호로 30분 대기 (점수: {daily_score})"
             
         elif daily_score >= 45:
@@ -2844,12 +2886,12 @@ def should_use_intraday_timing(opportunity, target_config):
             return True, 1.0, f"보통 신호로 1시간 대기 (점수: {daily_score})"
             
         else:
-            # 약한 신호: 1.5시간 대기
+            # 약한 신호: 적당한 대기 (기존 2시간에서 단축)
             return True, 1.5, f"약한 신호로 1.5시간 대기 (점수: {daily_score})"
             
     except Exception as e:
         logger.error(f"분봉 타이밍 결정 중 오류: {str(e)}")
-        return False, 0, "오류로 즉시 매수"  # 오류시 즉시 매수로 변경
+        return False, 0, "오류로 즉시 매수"
 
 def calculate_adaptive_stop_loss(stock_data, position, target_config):
     """적응형 손절 계산 - 변동성과 시장 환경 고려"""
