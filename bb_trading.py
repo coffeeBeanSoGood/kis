@@ -2637,17 +2637,27 @@ def analyze_intraday_entry_timing(stock_code, target_config):
             logger.warning(f"⚠️ {stock_name} 분봉 리스크 플래그: {', '.join(risk_flags)}")
 
         # 🔥 4단계: 최소 진입 점수는 target_config에서 가져오기
-        base_min_score = target_config.get('min_entry_score', 20)
+        # base_min_score = target_config.get('min_entry_score', 20)
+        base_min_score = target_config.get('min_entry_score', 5)  # 20 → 5로 변경
 
         # 리스크 레벨에 따른 최소 점수 조정
+        # if risk_level == "LOW":
+        #     dynamic_min_score = max(10, base_min_score - 8)  # 기준 완화
+        # elif risk_level == "LOW-MED":
+        #     dynamic_min_score = max(12, base_min_score - 5)  # 약간 완화
+        # elif risk_level == "MEDIUM":
+        #     dynamic_min_score = max(15, base_min_score - 3)  # 조금 완화
+        # else:  # HIGH
+        #     dynamic_min_score = base_min_score  # 기존 기준 유지
+
         if risk_level == "LOW":
-            dynamic_min_score = max(10, base_min_score - 8)  # 기준 완화
+            dynamic_min_score = max(-10, base_min_score - 15)  # 대폭 완화
         elif risk_level == "LOW-MED":
-            dynamic_min_score = max(12, base_min_score - 5)  # 약간 완화
+            dynamic_min_score = max(-5, base_min_score - 12)   # 많이 완화  
         elif risk_level == "MEDIUM":
-            dynamic_min_score = max(15, base_min_score - 3)  # 조금 완화
+            dynamic_min_score = max(0, base_min_score - 8)     # 완화
         else:  # HIGH
-            dynamic_min_score = base_min_score  # 기존 기준 유지
+            dynamic_min_score = max(5, base_min_score - 5)     # 약간 완화
 
         logger.debug(f"📊 {stock_name} 동적 최소점수: {dynamic_min_score} (기본: {base_min_score}, 리스크: {risk_level})")
 
@@ -2709,22 +2719,37 @@ def analyze_intraday_entry_timing(stock_code, target_config):
         # 🔥 9단계: 진입 기준 결정 (시간대별 차등)
         base_min_score = target_config.get('min_entry_score', 20)
         
+        # if is_very_early:  # 09:15 이전
+        #     min_entry_score = base_min_score + 10  # 더 엄격
+        #     time_penalty_reason = "극초반 엄격 모드"
+        # elif is_early_market:  # 09:15~09:30
+        #     min_entry_score = base_min_score + 5   # 약간 엄격
+        #     time_penalty_reason = "장 초반 엄격 모드"
+        # else:  # 09:30 이후
+        #     min_entry_score = base_min_score        # 기본 기준
+        #     time_penalty_reason = "정상 시간대"
+
         if is_very_early:  # 09:15 이전
-            min_entry_score = base_min_score + 10  # 더 엄격
-            time_penalty_reason = "극초반 엄격 모드"
-        elif is_early_market:  # 09:15~09:30
-            min_entry_score = base_min_score + 5   # 약간 엄격
-            time_penalty_reason = "장 초반 엄격 모드"
+            min_entry_score = max(-5, base_min_score - 5)  # 완화
+            time_penalty_reason = "극초반 완화 모드"
+        elif is_early_market:  # 09:15~09:30  
+            min_entry_score = max(-10, base_min_score - 8)  # 많이 완화
+            time_penalty_reason = "장초반 완화 모드"
         else:  # 09:30 이후
-            min_entry_score = base_min_score        # 기본 기준
+            min_entry_score = max(-15, base_min_score - 10)  # 대폭 완화
             time_penalty_reason = "정상 시간대"
-        
+
         # 데이터 부족시 기준 완화
+        # if data_length < 20:
+        #     discount = min(8, base_min_score // 3)
+        #     min_entry_score = max(10, min_entry_score - discount)
+        #     entry_signals.append(f"데이터 부족으로 기준 완화 ({data_length}개, -{discount}점)")
+
         if data_length < 20:
-            discount = min(8, base_min_score // 3)
-            min_entry_score = max(10, min_entry_score - discount)
-            entry_signals.append(f"데이터 부족으로 기준 완화 ({data_length}개, -{discount}점)")
-        
+            discount = min(15, base_min_score + 10)  # 할인 확대
+            min_entry_score = max(-20, min_entry_score - discount)  # 최소값 더 낮춤
+            entry_signals.append(f"데이터 부족으로 기준 대폭 완화 ({data_length}개, -{discount}점)")
+
         # 🔥 10단계: 최종 진입 결정
         enter_now = entry_score >= min_entry_score
         
@@ -2792,7 +2817,7 @@ def analyze_intraday_entry_timing(stock_code, target_config):
             }
 
 def should_use_intraday_timing(opportunity, target_config):
-    """신호 강도별 분봉 타이밍 사용 여부 결정"""
+    """개선된 분봉 타이밍 사용 여부 결정 - 신호 강도별 차등 적용"""
     try:
         # 전역 설정에서 분봉 타이밍이 비활성화된 경우
         if not getattr(trading_config, 'use_intraday_timing', False):
@@ -2801,30 +2826,30 @@ def should_use_intraday_timing(opportunity, target_config):
         daily_score = opportunity['score']
         signal_strength = opportunity.get('signal_strength', 'NORMAL')
         
-        # 🎯 신호 강도별 차등 적용
-        if signal_strength == 'STRONG' and daily_score >= 70:
+        # 신호 강도별 차등 적용 (더 관대하게)
+        if signal_strength == 'STRONG' and daily_score >= 65:
             # 매우 강한 신호: 즉시 매수
             return False, 0, f"강력한 신호로 즉시 매수 (점수: {daily_score})"
             
         elif daily_score >= 60:
-            # 강한 신호: 30분만 대기
-            return True, 0.5, f"강한 신호로 30분 대기 (점수: {daily_score})"
+            # 강한 신호: 15분만 대기
+            return True, 0.25, f"강한 신호로 15분 대기 (점수: {daily_score})"
             
         elif daily_score >= 50:
-            # 중간 신호: 1시간 대기
-            return True, 1.0, f"중간 신호로 1시간 대기 (점수: {daily_score})"
+            # 중간 신호: 30분 대기
+            return True, 0.5, f"중간 신호로 30분 대기 (점수: {daily_score})"
             
-        elif daily_score >= 40:
-            # 보통 신호: 2시간 대기 (기존)
-            return True, 2.0, f"보통 신호로 2시간 대기 (점수: {daily_score})"
+        elif daily_score >= 45:
+            # 보통 신호: 1시간 대기
+            return True, 1.0, f"보통 신호로 1시간 대기 (점수: {daily_score})"
             
         else:
-            # 약한 신호: 분봉 타이밍 더 엄격하게
+            # 약한 신호: 1.5시간 대기
             return True, 1.5, f"약한 신호로 1.5시간 대기 (점수: {daily_score})"
             
     except Exception as e:
         logger.error(f"분봉 타이밍 결정 중 오류: {str(e)}")
-        return True, 2.0, "오류로 기본 대기"
+        return False, 0, "오류로 즉시 매수"  # 오류시 즉시 매수로 변경
 
 def calculate_adaptive_stop_loss(stock_data, position, target_config):
     """적응형 손절 계산 - 변동성과 시장 환경 고려"""
@@ -7099,40 +7124,37 @@ def execute_buy_opportunities(buy_opportunities, trading_state):
         return trading_state
 
 def create_config_file(config_path: str = "target_stock_config.json") -> None:
-    """기본 설정 파일 생성 (시장 추세 필터 + 분봉 타이밍 + 뉴스 분석 포함한 완전 개선 버전)"""
+    """기본 설정 파일 생성 - 분봉 타이밍 개선 적용"""
     try:
         logger.info("후보종목 풀 방식 설정 파일 생성 시작...")
-        # 🔥 후보종목 풀 확장 (기존 4개 + 추가 4개)
+        
+        # 후보종목 풀 확장 (기존 4개 + 추가 4개)
         sample_codes = [
             "272210", "034020", "010140", "007660",  # 기존: 한화시스템, 두산에너빌리티, 삼성중공업, 이수페타시스
             "017960", "033500", "051600", "000720"   # 추가: 한국카본, 동성화인텍, 한전KPS, 현대건설
         ]
 
-        # 🎯 특성별 파라미터 수정 (시장 추세 필터 반영)
+        # 특성별 파라미터 수정 (분봉 타이밍 개선 반영)
         characteristic_params = {
             "growth": {
                 "allocation_ratio": 0.7,
                 "profit_target": 0.05,
-                "stop_loss": -0.035,           # 손절 기준 강화
+                "stop_loss": -0.035,
                 "rsi_oversold": 55,
                 "rsi_overbought": 75,
-                "min_score": 40,               # 매수 기준 상향
-                "trailing_stop": 0.025,        
-                "min_holding_hours": 24,       
+                "min_score": 40,
+                "trailing_stop": 0.025,
+                "min_holding_hours": 24,
                 "use_adaptive_stop": True,
                 "volatility_stop_multiplier": 1.5,
                 "stop_loss_delay_hours": 2,
-                
-                # 🎯 분봉 진입 타이밍 설정
-                "min_entry_score": 20,              
+                "min_entry_score": 5,  # 기본값 완화: 20 → 5
                 "intraday_rsi_oversold": 35,
                 "intraday_rsi_overbought": 70,
                 "intraday_volume_threshold": 1.2,
                 "use_bb_entry_timing": True,
                 "bb_lower_margin": 0.02,
                 "ma_support_margin": 0.01,
-
-                # 🆕 분할매도 설정
                 "use_partial_sell": True,
                 "min_holding_amount": 1,
                 "partial_sell_cooldown_hours": 1,
@@ -7146,16 +7168,16 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
             "balanced": {
                 "allocation_ratio": 0.6,
                 "profit_target": 0.05,
-                "stop_loss": -0.035,           
+                "stop_loss": -0.035,
                 "rsi_oversold": 55,
                 "rsi_overbought": 75,
-                "min_score": 40,               
-                "trailing_stop": 0.025,       
-                "min_holding_hours": 24,      
+                "min_score": 40,
+                "trailing_stop": 0.025,
+                "min_holding_hours": 24,
                 "use_adaptive_stop": True,
                 "volatility_stop_multiplier": 1.4,
                 "stop_loss_delay_hours": 2,
-                "min_entry_score": 25,              
+                "min_entry_score": 5,  # 기본값 완화: 25 → 5
                 "intraday_rsi_oversold": 40,
                 "intraday_rsi_overbought": 65,
                 "intraday_volume_threshold": 1.15,
@@ -7172,19 +7194,19 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
                 "emergency_full_sell_loss": -0.07,
                 "min_order_amount": 10000
             },
-            "value": {
+            "conservative": {
                 "allocation_ratio": 0.5,
-                "profit_target": 0.05,
-                "stop_loss": -0.035,           
+                "profit_target": 0.04,
+                "stop_loss": -0.03,
                 "rsi_oversold": 60,
                 "rsi_overbought": 70,
-                "min_score": 45,               # value는 더 보수적
-                "trailing_stop": 0.025,        
-                "min_holding_hours": 24,      
+                "min_score": 45,
+                "trailing_stop": 0.02,
+                "min_holding_hours": 48,
                 "use_adaptive_stop": True,
-                "volatility_stop_multiplier": 1.3,
-                "stop_loss_delay_hours": 1,
-                "min_entry_score": 30,              
+                "volatility_stop_multiplier": 1.2,
+                "stop_loss_delay_hours": 3,
+                "min_entry_score": 3,  # 기본값 완화: 30 → 3
                 "intraday_rsi_oversold": 45,
                 "intraday_rsi_overbought": 60,
                 "intraday_volume_threshold": 1.1,
@@ -7192,68 +7214,81 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
                 "bb_lower_margin": 0.03,
                 "ma_support_margin": 0.02,
                 "use_partial_sell": True,
-                "min_holding_amount": 1,
-                "partial_sell_cooldown_hours": 2,            
-                "partial_sell_min_profit": 0.02,             
-                "defensive_mode_threshold": 0.02,
-                "normal_mode_threshold": 0.025,
-                "full_sell_profit_threshold": 0.12,         
+                "min_holding_amount": 2,
+                "partial_sell_cooldown_hours": 2,
+                "partial_sell_min_profit": 0.012,
+                "defensive_mode_threshold": 0.012,
+                "normal_mode_threshold": 0.018,
+                "full_sell_profit_threshold": 0.12,
                 "emergency_full_sell_loss": -0.06,
-                "min_order_amount": 10000
+                "min_order_amount": 15000
             }
         }
 
-        # 🔥 후보종목 정보 수집 (실제 종목명 및 섹터 조회)
-        candidate_stocks = {}
-        stock_configs = [
-            {"code": "272210", "name": "한화시스템", "sector": "우주항공과국방", "enabled": True, "type": "growth"},
-            {"code": "034020", "name": "두산에너빌리티", "sector": "기계", "enabled": False, "type": "growth"},  # 비활성
-            {"code": "010140", "name": "삼성중공업", "sector": "조선", "enabled": True, "type": "growth"},
-            {"code": "007660", "name": "이수페타시스", "sector": "화학", "enabled": True, "type": "growth"},
-            {"code": "017960", "name": "한국카본", "sector": "화학", "enabled": True, "type": "growth"},
-            {"code": "033500", "name": "동성화인텍", "sector": "화학", "enabled": False, "type": "growth"},  # 비활성
-            {"code": "051600", "name": "한전KPS", "sector": "건설", "enabled": False, "type": "balanced"}, # 비활성
-            {"code": "000720", "name": "현대건설", "sector": "건설", "enabled": False, "type": "balanced"}  # 비활성
-        ]
+        # 종목별 정보 (실제 데이터)
+        stock_info = {
+            "272210": {"name": "한화시스템", "sector": "우주항공과국방", "characteristic": "growth", "enabled": True},
+            "034020": {"name": "두산에너빌리티", "sector": "기계", "characteristic": "growth", "enabled": False},
+            "010140": {"name": "삼성중공업", "sector": "조선", "characteristic": "growth", "enabled": True},
+            "007660": {"name": "이수페타시스", "sector": "화학", "characteristic": "growth", "enabled": True},
+            "017960": {"name": "한국카본", "sector": "화학", "characteristic": "growth", "enabled": True},
+            "033500": {"name": "동성화인텍", "sector": "화학", "characteristic": "growth", "enabled": False},
+            "051600": {"name": "한전KPS", "sector": "건설", "characteristic": "balanced", "enabled": False},
+            "000720": {"name": "현대건설", "sector": "건설", "characteristic": "balanced", "enabled": False}
+        }
 
-        for stock_config in stock_configs:
-            stock_code = stock_config["code"]
-            char_type = stock_config["type"]
-            
-            # 특성별 파라미터 적용
+        # 후보종목 설정 생성
+        candidate_stocks = {}
+        
+        for stock_code in sample_codes:
+            info = stock_info[stock_code]
+            char_type = info["characteristic"]
             params = characteristic_params[char_type].copy()
+            
+            # 기본 정보 추가
             params.update({
-                "name": stock_config["name"],
-                "sector": stock_config["sector"],
-                "enabled": stock_config["enabled"],
+                "name": info["name"],
+                "sector": info["sector"],
+                "enabled": info["enabled"],
                 "characteristic_type": char_type,
-                "is_candidate": stock_config["enabled"]  # enabled와 동일하게 설정
+                "is_candidate": info["enabled"]  # enabled와 동일하게 설정
             })
             
-            candidate_stocks[stock_code] = params
-            logger.info(f"후보종목 설정: {stock_code}({stock_config['name']}) - {char_type} ({'활성' if stock_config['enabled'] else '비활성'})")
-        
-        # 전체 설정 구성 (시장 추세 필터 포함)
-        config = {
-            # 🔥 후보종목을 target_stocks로 설정 (기존 구조 유지)
-            "target_stocks": candidate_stocks,
+            # 일부 종목에 개별 신호 정보 추가 (예시)
+            if stock_code == "272210":
+                params.update({
+                    "last_signal_strength": "NORMAL",
+                    "last_signal_score": 55
+                })
+            elif stock_code == "010140":
+                params.update({
+                    "last_signal_strength": "NORMAL", 
+                    "last_signal_score": 42
+                })
+            elif stock_code == "007660":
+                params.update({
+                    "last_signal_strength": "NORMAL",
+                    "last_signal_score": 20
+                })
+            elif stock_code == "017960":
+                params.update({
+                    "last_signal_strength": "NORMAL",
+                    "last_signal_score": 35
+                })
             
-            # 🔥 후보종목 풀 방식 설정
-            "use_candidate_pool": True,              
-            "target_holding_count": 2,               
-            "candidate_selection_method": "score",   
-            "min_selection_score": 45,              
-            "rebalance_interval_hours": 24,          
-            "max_candidate_positions": 4,            
-            "max_positions": 3,
+            candidate_stocks[stock_code] = params
+
+        # 전체 설정 구성
+        config = {
+            "target_stocks": candidate_stocks,
             
             # 기본 거래 설정
             "trade_budget_ratio": 0.9,
+            "max_positions": 3,
             "min_stock_price": 3000,
             "max_stock_price": 200000,
-            "market_open_wait_minutes": 30,
             
-            # 🎯 손익 관리 설정 (개선된 버전)
+            # 손익 관리 설정
             "stop_loss_ratio": -0.04,
             "take_profit_ratio": 0.05,
             "trailing_stop_ratio": 0.025,
@@ -7264,16 +7299,7 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
             "use_adaptive_stop": True,
             "min_holding_hours": 4,
             
-            # 트레일링 스탑 고도화 설정
-            "min_protection_ratio": 0.03,
-            "trailing_activation_profit": 0.02,
-            "profit_protection_threshold": 0.04,
-            "conservative_threshold": 0.02,
-            "breakeven_range": 0.02,
-            "max_trailing_loss": 0.1,
-            "trailing_safety_margin": 0.005,
-            
-            # 🎯 기술적 분석 설정
+            # 기술적 분석 설정
             "rsi_period": 14,
             "rsi_oversold": 35,
             "rsi_overbought": 75,
@@ -7282,22 +7308,44 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
             "macd_signal": 9,
             "bb_period": 20,
             "bb_std": 2.0,
-            "default_min_score": 40,
             
-            # 적응형 전략 사용 설정
+            # 기타 설정
+            "last_sector_update": "20250827",
+            "bot_name": "TargetStockBot",
+            "use_discord_alert": True,
+            "check_interval_minutes": 30,
+            
+            # 후보종목 풀 설정
+            "use_candidate_pool": True,
+            "target_holding_count": 2,
+            "candidate_selection_method": "score",
+            "min_selection_score": 40,  # 완화: 45 → 40
+            "rebalance_interval_hours": 24,
+            "max_candidate_positions": 4,
+            
+            # 추가 전략 설정
+            "market_open_wait_minutes": 30,
+            "min_protection_ratio": 0.03,
+            "trailing_activation_profit": 0.02,
+            "profit_protection_threshold": 0.04,
+            "conservative_threshold": 0.02,
+            "breakeven_range": 0.02,
+            "max_trailing_loss": 0.1,
+            "trailing_safety_margin": 0.005,
+            "default_min_score": 40,
             "use_adaptive_strategy": True,
             "use_trend_filter": True,
             
-            # 🔥 분봉 타이밍 전역 설정
-            "use_intraday_timing": True,
-            "intraday_check_interval": 10,
+            # 분봉 타이밍 설정 (개선된 버전)
+            "use_intraday_timing": False,  # 기본값 비활성화 (안정성 우선)
+            "intraday_check_interval": 30,  # 완화: 10 → 30초
             "default_check_interval": 30,
-            "max_candidate_wait_hours": 2,
+            "max_candidate_wait_hours": 1,  # 완화: 2 → 1시간
             "intraday_data_period": "5m",
             "intraday_data_count": 24,
             "force_buy_after_wait": True,
             
-            # 🔥 뉴스 분석 설정
+            # 뉴스 분석 설정
             "use_news_analysis": True,
             "news_check_threshold": 20,
             "always_check_news": False,
@@ -7307,71 +7355,62 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
                 "negative_multiplier": 0.25
             },
             
-            # 🔥 예산 설정
+            # 예산 관리
             "use_absolute_budget": True,
             "absolute_budget_strategy": "proportional",
             "absolute_budget": 600000,
-            "initial_total_asset": 0,
+            "initial_total_asset": 3277400.0,
             "budget_loss_tolerance": 0.2,
             
-            # 🔥 NEW: 시장 추세 필터 설정
+            # 시장 추세 필터 설정
             "use_market_trend_filter": True,
             "trend_filter_strict_mode": False,
             "trend_filter_settings": {
-                "bearish_market_penalty": -25,          # 하락장 페널티 (중간 강도)
-                "bullish_market_bonus": 10,             # 상승장 보너스
-                "mixed_market_penalty": -15,            # 혼조장 페널티
-                "individual_trend_weight": 0.7,         # 개별 종목 추세 가중치
-                "market_trend_weight": 0.3,             # 시장 추세 가중치
-                "trend_confirmation_days": 5,           # 추세 확인 일수
-                "min_trend_strength": 0.02,             # 최소 추세 강도 (2%)
-                "trend_cache_minutes": 30,              # 시장 추세 캐시 시간
-                "bearish_strict_block": False,          # 하락장 완전 차단 여부
+                "bearish_market_penalty": -25,
+                "bullish_market_bonus": 10,
+                "mixed_market_penalty": -15,
+                "individual_trend_weight": 0.7,
+                "market_trend_weight": 0.3,
+                "trend_confirmation_days": 5,
+                "min_trend_strength": 0.02,
+                "trend_cache_minutes": 30,
+                "bearish_strict_block": False,
                 "emergency_exceptions": {
-                    "extreme_oversold_rsi": 15,         # 극도 과매도 예외 기준
-                    "strong_news_threshold": 80,        # 강한 호재 뉴스 예외 기준
-                    "bb_breakthrough_margin": -0.05,    # 볼밴 하단 돌파 예외 기준
-                    "volume_surge_threshold": 2.0       # 거래량 급증 예외 기준
+                    "extreme_oversold_rsi": 15,
+                    "strong_news_threshold": 80,
+                    "bb_breakthrough_margin": -0.05,
+                    "volume_surge_threshold": 2.0
                 }
             },
             
-            # 🔥 NEW: 성과 추적 설정
             "trend_performance_tracking": {
-                "track_by_market_condition": True,      # 시장 상황별 성과 추적
-                "save_trend_decisions": True,           # 추세 결정 기록 저장
-                "performance_review_days": 30           # 성과 리뷰 기간
+                "track_by_market_condition": True,
+                "save_trend_decisions": True,
+                "performance_review_days": 30
             },
             
-            # 🎯 분봉 타이밍 관련 알림 설정
+            # 알림 설정
             "alert_intraday_wait": True,
             "alert_intraday_entry": True,
-            "alert_candidate_summary": True,
-            
-            # 기타 설정
-            "last_sector_update": datetime.datetime.now().strftime('%Y%m%d'),
-            "bot_name": "TargetStockBot",
-            "use_discord_alert": True,
-            "check_interval_minutes": 30
+            "alert_candidate_summary": True
         }
 
         # 파일 저장
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, ensure_ascii=False, indent=4)
 
-        logger.info(f"🎯 완전한 후보종목 풀 설정 파일 생성 완료: {config_path}")
-        logger.info(f"주요 설정:")
+        logger.info(f"완전한 후보종목 풀 설정 파일 생성 완료: {config_path}")
+        logger.info(f"주요 개선사항:")
+        logger.info(f"  - 분봉 기준점수 대폭 완화: 20/25 → 5점")
+        logger.info(f"  - 분봉 타이밍 기본값 비활성화 (안정성 우선)")
+        logger.info(f"  - 대기 시간 단축: 2시간 → 1시간")
+        logger.info(f"  - 체크 간격 완화: 10초 → 30초")
+        logger.info(f"  - 선택 기준점수 완화: 45 → 40점")
         logger.info(f"  - 후보종목 풀: {len(candidate_stocks)}개")
         active_count = sum(1 for stock in candidate_stocks.values() if stock.get('enabled', True))
         logger.info(f"  - 활성 후보종목: {active_count}개")
         logger.info(f"  - 목표 보유 종목: {config['target_holding_count']}개")
-        logger.info(f"  - 선택 방식: {config['candidate_selection_method']}")
-        logger.info(f"  - 선택 최소 점수: {config['min_selection_score']}점")
         logger.info(f"  - 예산: {config['absolute_budget']:,}원")
-        logger.info(f"  - 시장 추세 필터: {'ON' if config['use_market_trend_filter'] else 'OFF'}")
-        logger.info(f"  - 분봉 타이밍: {'ON' if config['use_intraday_timing'] else 'OFF'}")
-        logger.info(f"  - 뉴스 분석: {'ON' if config['use_news_analysis'] else 'OFF'}")
-        logger.info(f"  - 하락장 페널티: {config['trend_filter_settings']['bearish_market_penalty']}점")
-        logger.info(f"  - 상승장 보너스: {config['trend_filter_settings']['bullish_market_bonus']}점")
         
         # 적응형 전략 파일 초기화
         try:
