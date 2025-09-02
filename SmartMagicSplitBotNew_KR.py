@@ -4468,90 +4468,174 @@ class SmartMagicSplit:
                         sell_reason = time_reason
                         sell_ratio = 0.6  # 60% 매도 (1주라서 0주)
                         logger.info(f"⏰ {stock_code} {position_num}차 시간 기반 매도: 60% 매도")
-                
-                # 🔥 매도 실행 (기존 로직 유지)
+
+                # 🔥🔥🔥 실제 매도 실행 (누락된 핵심 부분) 🔥🔥🔥
                 if should_sell:
-                    # 🔥 핵심: 1주 보유시 0주 계산 문제 해결
-                    if current_amount == 1 and sell_ratio < 1.0:
-                        # 부분매도가 0주로 계산되는 경우 처리
-                        calculated_amount = int(current_amount * sell_ratio)
-                        if calculated_amount == 0:
-                            # 🎯 상한제나 트레일링 스탑은 강제 전량매도
-                            if cap_sell or trailing_sell:
-                                sell_amount = 1
-                                logger.info(f"🔧 {stock_code} {position_num}차 1주 강제매도: {sell_reason}")
+                    try:
+                        # 매도량 계산
+                        if sell_ratio < 1.0:  # 부분 매도
+                            if current_amount == 1:
+                                # 1주인 경우 부분매도는 불가능하므로 스킵하거나 1주 전량매도
+                                if sell_ratio >= 0.5:  # 50% 이상이면 1주 매도
+                                    sell_amount = 1
+                                    logger.info(f"🔧 {stock_code} {position_num}차 1주 전량매도 (부분매도 불가)")
+                                else:
+                                    logger.debug(f"⏭️ {stock_code} {position_num}차 부분매도 스킵: 1주×{sell_ratio:.1%}=0주")
+                                    continue
                             else:
-                                # 일반 부분매도는 스킵 (기존 로직 유지)
-                                logger.debug(f"⏭️ {stock_code} {position_num}차 부분매도 스킵: 1주×{sell_ratio:.1%}=0주")
-                                continue
-                        else:
-                            sell_amount = calculated_amount
-                    else:
-                        sell_amount = max(1, int(current_amount * sell_ratio))
-                    
-                    # 매도량이 보유량보다 크면 조정
-                    if sell_amount > holdings['amount']:
-                        sell_amount = holdings['amount']
-                    
-                    # 매도 주문 실행 (기존 함수 사용)
-                    result, error = self.handle_sell(stock_code, sell_amount, current_price)
-                    
-                    if result:
-                        # 🎉 매도 성공 처리 (기존 로직)
-                        magic_data['CurrentAmt'] = current_amount - sell_amount
+                                sell_amount = max(1, int(current_amount * sell_ratio))
+                        else:  # 전량 매도
+                            sell_amount = current_amount
                         
-                        if magic_data['CurrentAmt'] <= 0:
-                            magic_data['IsBuy'] = False
-                            # 전량 매도 시 최고점 리셋
-                            magic_data[max_profit_key] = 0
+                        # 실제 매도 주문 실행
+                        logger.info(f"🚀 {stock_code} {position_num}차 매도 실행: {sell_amount}주 ({sell_reason})")
                         
-                        # 매도 이력 기록
-                        if 'SellHistory' not in magic_data:
-                            magic_data['SellHistory'] = []
+                        result, error = self.handle_sell(stock_code, sell_amount, current_price)
                         
-                        # 실현 손익 계산
-                        realized_pnl = (current_price - entry_price) * sell_amount
-                        magic_data['SellHistory'].append({
-                            "date": datetime.now().strftime("%Y-%m-%d"),
-                            "time": datetime.now().strftime("%H:%M:%S"),
-                            "amount": sell_amount,
-                            "price": current_price,
-                            "profit": realized_pnl,
-                            "return_pct": current_return,
-                            "sell_ratio": sell_ratio,
-                            "reason": sell_reason,
-                            "max_profit": max_profit_achieved
-                        })
-                        
-                        # 누적 실현 손익 업데이트
-                        self.update_realized_pnl(stock_code, realized_pnl)
-                        
-                        # 🎯 개선된 성공 메시지
-                        sell_type = "전량" if sell_ratio >= 1.0 else "부분"
-                        msg = f"✅ {stock_code} {position_num}차 {sell_type} 매도 완료!\n"
-                        msg += f"💰 {sell_amount}주 @ {current_price:,.0f}원\n"
-                        msg += f"📊 수익률: {current_return:+.2f}%\n"
-                        msg += f"💵 실현손익: {realized_pnl:+,.0f}원\n"
-                        msg += f"🎯 사유: {sell_reason}\n"
-                        
-                        if max_profit_achieved > current_return:
-                            msg += f"📈 최고점: {max_profit_achieved:.1f}%\n"
-                        
-                        # 🔥 개선사항 표시
-                        if cap_sell:
-                            msg += f"🎯 수익상한제 적용\n"
-                        elif trailing_sell:
-                            msg += f"🔄 안전 트레일링 스탑 적용\n"
+                        if result:
+                            # 매도 성공 처리
+                            magic_data['CurrentAmt'] = current_amount - sell_amount
                             
-                        logger.info(msg)
+                            if magic_data['CurrentAmt'] <= 0:
+                                magic_data['IsBuy'] = False
+                                # 전량 매도 시 최고점 리셋
+                                if max_profit_key in magic_data:
+                                    magic_data[max_profit_key] = 0
+                            
+                            # 매도 이력 기록
+                            if 'SellHistory' not in magic_data:
+                                magic_data['SellHistory'] = []
+                            
+                            # 실현 손익 계산
+                            realized_pnl = (current_price - entry_price) * sell_amount
+                            magic_data['SellHistory'].append({
+                                "date": datetime.now().strftime("%Y-%m-%d"),
+                                "time": datetime.now().strftime("%H:%M:%S"),
+                                "amount": sell_amount,
+                                "price": current_price,
+                                "return_pct": current_return,
+                                "reason": sell_reason,
+                                "realized_pnl": realized_pnl
+                            })
+                            
+                            # 실현손익 업데이트
+                            self.update_realized_pnl(stock_code, realized_pnl)
+                            
+                            # 데이터 저장
+                            self.save_split_data()
+                            
+                            # 성공 로깅
+                            logger.info(f"✅ {stock_code} {position_num}차 매도 완료!")
+                            logger.info(f"   매도량: {sell_amount}주 @ {current_price:,.0f}원")
+                            logger.info(f"   수익률: {current_return:.2f}%")
+                            logger.info(f"   실현손익: {realized_pnl:+,.0f}원")
+                            logger.info(f"   사유: {sell_reason}")
+                            
+                            sells_executed = True
+                            
+                            # Discord 알림
+                            if config.config.get("use_discord_alert", True):
+                                profit_emoji = "💰" if realized_pnl > 0 else "📉"
+                                discord_msg = f"{profit_emoji} **한화오션 수익확정**\n"
+                                discord_msg += f"• {position_num}차: {sell_amount}주 매도\n"
+                                discord_msg += f"• 매도가: {current_price:,}원\n"
+                                discord_msg += f"• 수익률: {current_return:+.2f}%\n"
+                                discord_msg += f"• 실현손익: {realized_pnl:+,}원\n"
+                                discord_msg += f"• 사유: {sell_reason}"
+                                discord_alert.SendMessage(discord_msg)
+                                
+                        else:
+                            logger.error(f"❌ {stock_code} {position_num}차 매도 실패: {error}")
+                            logger.error(f"   매도 시도: {sell_amount}주 @ {current_price:,.0f}원")
+                            logger.error(f"   실패 사유: {sell_reason}")
+                            
+                    except Exception as sell_error:
+                        logger.error(f"❌ {stock_code} {position_num}차 매도 처리 중 오류: {str(sell_error)}")
+
+
+                # 🔥 매도 실행 (기존 로직 유지)
+                # if should_sell:
+                #     # 🔥 핵심: 1주 보유시 0주 계산 문제 해결
+                #     if current_amount == 1 and sell_ratio < 1.0:
+                #         # 부분매도가 0주로 계산되는 경우 처리
+                #         calculated_amount = int(current_amount * sell_ratio)
+                #         if calculated_amount == 0:
+                #             # 🎯 상한제나 트레일링 스탑은 강제 전량매도
+                #             if cap_sell or trailing_sell:
+                #                 sell_amount = 1
+                #                 logger.info(f"🔧 {stock_code} {position_num}차 1주 강제매도: {sell_reason}")
+                #             else:
+                #                 # 일반 부분매도는 스킵 (기존 로직 유지)
+                #                 logger.debug(f"⏭️ {stock_code} {position_num}차 부분매도 스킵: 1주×{sell_ratio:.1%}=0주")
+                #                 continue
+                #         else:
+                #             sell_amount = calculated_amount
+                #     else:
+                #         sell_amount = max(1, int(current_amount * sell_ratio))
+                    
+                #     # 매도량이 보유량보다 크면 조정
+                #     if sell_amount > holdings['amount']:
+                #         sell_amount = holdings['amount']
+                    
+                #     # 매도 주문 실행 (기존 함수 사용)
+                #     result, error = self.handle_sell(stock_code, sell_amount, current_price)
+                    
+                #     if result:
+                #         # 🎉 매도 성공 처리 (기존 로직)
+                #         magic_data['CurrentAmt'] = current_amount - sell_amount
                         
-                        if config.config.get("use_discord_alert", True):
-                            discord_alert.SendMessage(msg)
+                #         if magic_data['CurrentAmt'] <= 0:
+                #             magic_data['IsBuy'] = False
+                #             # 전량 매도 시 최고점 리셋
+                #             magic_data[max_profit_key] = 0
                         
-                        sells_executed = True
+                #         # 매도 이력 기록
+                #         if 'SellHistory' not in magic_data:
+                #             magic_data['SellHistory'] = []
                         
-                    else:
-                        logger.error(f"❌ {stock_code} {position_num}차 매도 실패: {error}")
+                #         # 실현 손익 계산
+                #         realized_pnl = (current_price - entry_price) * sell_amount
+                #         magic_data['SellHistory'].append({
+                #             "date": datetime.now().strftime("%Y-%m-%d"),
+                #             "time": datetime.now().strftime("%H:%M:%S"),
+                #             "amount": sell_amount,
+                #             "price": current_price,
+                #             "profit": realized_pnl,
+                #             "return_pct": current_return,
+                #             "sell_ratio": sell_ratio,
+                #             "reason": sell_reason,
+                #             "max_profit": max_profit_achieved
+                #         })
+                        
+                #         # 누적 실현 손익 업데이트
+                #         self.update_realized_pnl(stock_code, realized_pnl)
+                        
+                #         # 🎯 개선된 성공 메시지
+                #         sell_type = "전량" if sell_ratio >= 1.0 else "부분"
+                #         msg = f"✅ {stock_code} {position_num}차 {sell_type} 매도 완료!\n"
+                #         msg += f"💰 {sell_amount}주 @ {current_price:,.0f}원\n"
+                #         msg += f"📊 수익률: {current_return:+.2f}%\n"
+                #         msg += f"💵 실현손익: {realized_pnl:+,.0f}원\n"
+                #         msg += f"🎯 사유: {sell_reason}\n"
+                        
+                #         if max_profit_achieved > current_return:
+                #             msg += f"📈 최고점: {max_profit_achieved:.1f}%\n"
+                        
+                #         # 🔥 개선사항 표시
+                #         if cap_sell:
+                #             msg += f"🎯 수익상한제 적용\n"
+                #         elif trailing_sell:
+                #             msg += f"🔄 안전 트레일링 스탑 적용\n"
+                            
+                #         logger.info(msg)
+                        
+                #         if config.config.get("use_discord_alert", True):
+                #             discord_alert.SendMessage(msg)
+                        
+                #         sells_executed = True
+                        
+                #     else:
+                #         logger.error(f"❌ {stock_code} {position_num}차 매도 실패: {error}")
         
         return sells_executed
 
