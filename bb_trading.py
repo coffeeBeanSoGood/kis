@@ -37,6 +37,11 @@ from bs4 import BeautifulSoup
 
 from pending_order_manager import PendingOrderManager, enhance_trading_state
 
+from foreign_institution_analyzer import (
+    enhance_buy_signal_with_foreign_institution,
+    enhance_sell_signal_with_foreign_institution
+)
+
 # ================================== 섹터별 대표 종목 데이터베이스 ==================================
 
 SECTOR_REPRESENTATIVE_STOCKS = {
@@ -5872,9 +5877,12 @@ def scan_target_stocks(trading_state):
                 
                 logger.info(f"✅ [{stock_code}] 매수 신호 분석 시작")
                 
-                # 매수 신호 분석
-                buy_analysis = analyze_buy_signal(stock_data, target_config, market_trend)
-                
+                # 1. 기존 매수 신호 분석 (그대로 유지)
+                base_buy_analysis = analyze_buy_signal(stock_data, target_config, market_trend)
+
+                # 2. 외국인/기관 매매동향으로 강화 (새로 추가)
+                buy_analysis = enhance_buy_signal_with_foreign_institution(base_buy_analysis, stock_code)
+
                 # 기술적 분석 결과 저장
                 technical_results[stock_code] = {
                     'stock_data': stock_data,
@@ -6023,6 +6031,11 @@ def scan_target_stocks(trading_state):
             
             # 최종 매수 신호 판단
             if buy_analysis['is_buy_signal']:
+                # 🔥 외국인/기관 정보 로깅 추가
+                fi_info = buy_analysis.get('fi_analysis', {})
+                if fi_info and fi_info.get('signals'):
+                    logger.info(f"📊 {stock_name} 외국인/기관 동향: {', '.join(fi_info['signals'][:2])}")
+
                 buy_opportunities.append({
                     'stock_code': stock_code,
                     'stock_name': stock_name,
@@ -6033,11 +6046,19 @@ def scan_target_stocks(trading_state):
                     'analysis': buy_analysis['analysis'],
                     'target_config': target_config,
                     'signal_strength': buy_analysis.get('signal_strength', 'NORMAL'),
-                    'news_impact': buy_analysis.get('news_impact')
+                    'news_impact': buy_analysis.get('news_impact'),
+                    'fi_analysis': fi_info  # 🔥 외국인/기관 분석 정보 추가
                 })
                 
                 logger.info(f"✅ 매수 기회 발견: {stock_name}({stock_code})")
                 logger.info(f"   점수: {buy_analysis['score']}/{buy_analysis['min_score']}점")
+
+                # 🔥 기존 신호 출력에 외국인/기관 정보 추가
+                base_score = buy_analysis.get('base_score', buy_analysis['score'])
+                fi_bonus = buy_analysis.get('fi_bonus', 0)
+                if fi_bonus != 0:
+                    logger.info(f"   기본: {base_score}점, 외국인/기관: {fi_bonus:+}점")
+
                 for signal in buy_analysis['signals'][:3]:
                     logger.info(f"   - {signal}")
         
@@ -6516,14 +6537,29 @@ def process_positions(trading_state):
                 
                 # 🔥 통합 매도 신호 분석 (분할매도 + 전량매도)
                 logger.info(f"🔍 {stock_name} 매도 신호 분석 시작...")
-                # sell_analysis = analyze_sell_signal(stock_data, position, target_config)
-                sell_analysis = analyze_sell_signal_with_surge_adaptive(stock_data, position, target_config)
+
+               # 1. 기존 매도 신호 분석 (그대로 유지)
+                base_sell_analysis = analyze_sell_signal_with_surge_adaptive(stock_data, position, target_config)
+                
+                # # sell_analysis = analyze_sell_signal(stock_data, position, target_config)
+                # sell_analysis = analyze_sell_signal_with_surge_adaptive(stock_data, position, target_config)
+
+                # 2. 외국인/기관 매매동향으로 강화 (새로 추가)
+                sell_analysis = enhance_sell_signal_with_foreign_institution(
+                    base_sell_analysis, stock_code, current_price, entry_price
+                )
                 
                 logger.info(f"📊 매도 신호 분석 결과:")
                 logger.info(f"   매도 신호: {sell_analysis['is_sell_signal']}")
                 logger.info(f"   매도 유형: {sell_analysis.get('sell_type', 'None')}")
                 logger.info(f"   매도 이유: {sell_analysis.get('reason', 'None')}")
-                
+
+                # 🔥 외국인/기관 정보 로깅 추가
+                fi_info = sell_analysis.get('fi_analysis', {})
+                if fi_info and fi_info.get('signals'):
+                    logger.info(f"📊 외국인/기관 동향: {', '.join(fi_info['signals'][:2])}")
+                    logger.info(f"   신호 방향: {fi_info.get('direction', 'neutral')} ({fi_info.get('signal_strength', 'NONE')})")
+
                 if sell_analysis['is_sell_signal']:
                     sell_type = sell_analysis.get('sell_type', 'unknown')
                     sell_quantity = sell_analysis.get('sell_quantity', current_amount)
@@ -6612,6 +6648,11 @@ def process_positions(trading_state):
                             msg += f"시장상황: {market_condition}\n"
                             msg += f"매도전략: {strategy_type}\n"
                             msg += f"매도사유: {sell_analysis['reason']}"
+
+                            # 🔥 여기에 추가 - 분할매도 알림용
+                            fi_info = sell_analysis.get('fi_analysis', {})
+                            if fi_info and fi_info.get('signals'):
+                                msg += f"\n📊 매매동향: {', '.join(fi_info['signals'][:2])}"                            
                             
                             # 분할매도 이력 추가 정보
                             total_partial_count = position['partial_sell_count']
@@ -6693,6 +6734,13 @@ def process_positions(trading_state):
                                 
                                 for signal in crash_signals:
                                     msg += f"• {signal}\n"
+
+                                # 🔥 여기에 추가 - 수익보존 매도 알림용
+                                fi_info = sell_analysis.get('fi_analysis', {})
+                                if fi_info and fi_info.get('signals'):
+                                    msg += f"\n📊 외국인/기관 동향:\n"
+                                    for signal in fi_info['signals'][:2]:
+                                        msg += f"• {signal}\n"
                                 
                                 # 섹터 상세 정보 추가
                                 if matched_sector != 'Unknown':
@@ -6720,6 +6768,11 @@ def process_positions(trading_state):
                                 msg += f"매도방식: {sell_method}\n"
                                 msg += f"매도사유: {sell_analysis['reason']}\n"
                                 msg += f"재매수 방지: {cooldown_hours}시간"
+
+                            # 🔥 여기에 추가 - 일반 전량매도 알림용
+                            fi_info = sell_analysis.get('fi_analysis', {})
+                            if fi_info and fi_info.get('signals'):
+                                msg += f"\n📊 매매동향: {', '.join(fi_info['signals'][:2])}"                                
                             
                             # 분할매도 이력이 있었다면 추가 정보
                             partial_count = position.get('partial_sell_count', 0)
