@@ -3132,8 +3132,40 @@ def GetVolumeRank(market_code="J", vol_type="20171", top_n=30, max_price=150000)
         logger.error(f"거래량 순위 조회 중 오류: {str(e)}")
         return []
 
-
-
+def GetInvestorDailyByCode(stock_code, from_date, to_date):
+    """pykrx를 사용한 투자자별 일별 매매동향 조회"""
+    try:
+        df = stock.get_market_trading_value_by_date(
+            fromdate=from_date,
+            todate=to_date,
+            ticker=stock_code
+        )
+        
+        if df.empty:
+            return None
+        
+        # 현재가 조회
+        current_price = GetCurrentPrice(stock_code)
+        if current_price <= 0:
+            current_price = 50000  # 기본값
+        
+        result = []
+        for date, row in df.iterrows():
+            date_str = date.strftime('%Y%m%d')
+            foreign_won = row['외국인합계']
+            institution_won = row['기관합계']
+            
+            result.append({
+                'stck_bsop_date': date_str,
+                'frgn_ntby_qty': int(foreign_won / current_price),
+                'orgn_ntby_qty': int(institution_won / current_price)
+            })
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"GetInvestorDailyByCode 오류: {str(e)}")
+        return None
 
 #계좌 잔고를 가지고 온다!
 #Balance = GetBalance()
