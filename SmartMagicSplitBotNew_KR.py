@@ -75,12 +75,21 @@ try:
 except:
     logger.warning("API 헬퍼 모듈에 로거를 전달할 수 없습니다.")
 
-################################### 통합된 설정 관리 시스템 ##################################
+############################### 외국인-기관 매매흐름 라이브러리 ##############################
+try:
+    from foreign_institution_analyzer import trading_trend_analyzer
+    FI_ANALYZER_AVAILABLE = True
+    logger.info("✅ 외국인/기관 매매동향 분석기 로드 완료")
+except ImportError as e:
+    FI_ANALYZER_AVAILABLE = False
+    logger.warning(f"⚠️ 외국인/기관 분석기 로드 실패: {str(e)}")
+
 
 # 🔥 API 초기화 (가장 먼저!)
 Common.SetChangeMode()
 logger.info("✅ API 초기화 완료 - 모든 KIS API 사용 가능")
 
+################################### 통합된 설정 관리 시스템 ##################################
 class SmartSplitConfig:
     """스마트 스플릿 설정 관리 클래스 - 개선된 버전"""
     
@@ -5204,7 +5213,7 @@ class SmartMagicSplit:
                 
                 # 🔥 5. 시장 상황별 추가 제한 (기존 핵심 로직 + 하락 보호 통합)
                 market_timing = getattr(self, '_current_market_timing', self.detect_market_timing())
-                
+
                 # 🚨 하락 보호 상태에서는 시장 제한 완화
                 if protection_level not in ['downtrend', 'strong_downtrend']:
                     # 정상 상태에서만 기존 제한 적용
@@ -5223,7 +5232,31 @@ class SmartMagicSplit:
                     protection_msg = f" [하락보호: 매수량 {position_multiplier*100:.0f}%]"
                 if protection_level != 'normal':
                     protection_msg += f" [보호수준: {protection_level}]"
-                
+
+                # 🔥🔥🔥 외국인/기관 매매동향 체크 (새로 추가) 🔥🔥🔥
+                if FI_ANALYZER_AVAILABLE:
+                    try:
+                        fi_analysis = trading_trend_analyzer.calculate_combined_trading_signal(stock_code)
+                        
+                        # 외국인/기관 강한 매도 시 매수 차단
+                        if (fi_analysis['direction'] == 'bearish' and 
+                            fi_analysis['signal_strength'] in ['STRONG', 'MODERATE']):
+                            
+                            # 차수별 차등 적용
+                            if position_num <= 2:  # 1-2차는 엄격
+                                return False, f"🚫 외국인/기관 {fi_analysis['signal_strength'].lower()} 매도로 {position_num}차 진입 보류"
+                            elif position_num <= 3 and fi_analysis['signal_strength'] == 'STRONG':
+                                return False, f"🚫 외국인/기관 강한 매도로 3차 진입 보류"
+                            # 4-5차는 가격 메리트로 진입 허용
+                        
+                        # 외국인/기관 강한 매수 시 추가 로깅
+                        elif (fi_analysis['direction'] == 'bullish' and 
+                            fi_analysis['signal_strength'] in ['STRONG', 'MODERATE']):
+                            logger.info(f"💰 {stock_name} {position_num}차: 외국인/기관 {fi_analysis['signal_strength'].lower()} 매수흐름 감지")
+                            
+                    except Exception as fi_error:
+                        logger.warning(f"⚠️ 외국인/기관 분석 오류 ({stock_code}): {str(fi_error)}")
+
                 return True, f"{position_num}차 최적화 진입(순차 검증 통과, RSI {indicators['rsi']:.1f}, 시장: {market_timing}){protection_msg}"
             
         except Exception as e:
