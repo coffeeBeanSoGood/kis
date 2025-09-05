@@ -5096,7 +5096,7 @@ class SmartMagicSplit:
             logger.info("🔄 일일 손절 카운터 리셋")
 
     def should_buy_enhanced(self, stock_code, position_num, indicators, magic_data_list, stock_info):
-        """🔥 하락 보호가 통합된 최적화된 매수 조건 - 기존 로직 + 개선사항 + 하락 보호"""
+        """🔥 하락 보호가 통합된 최적화된 매수 조건 - 기존 로직 + 개선사항 + 하락 보호 + 외국인/기관 분석"""
         try:
             target_stocks = config.target_stocks
             stock_name = target_stocks.get(stock_code, {}).get('name', stock_code)
@@ -5141,6 +5141,34 @@ class SmartMagicSplit:
             if position_multiplier < 1.0:
                 logger.info(f"💰 {stock_name} 하락 보호 매수량 조정: {position_multiplier*100:.0f}% 적용 예정")
             
+            # 🔥🔥🔥 외국인/기관 매매동향 체크 (모든 차수에 적용!) 🔥🔥🔥
+            if FI_ANALYZER_AVAILABLE:
+                try:
+                    fi_analysis = trading_trend_analyzer.calculate_combined_trading_signal(stock_code)
+                    
+                    # 외국인/기관 강한 매도 시 매수 차단
+                    if (fi_analysis['direction'] == 'bearish' and 
+                        fi_analysis['signal_strength'] in ['STRONG', 'MODERATE']):
+                        
+                        # 차수별 차등 적용
+                        if position_num <= 2:  # 1-2차는 엄격
+                            return False, f"🚫 외국인/기관 {fi_analysis['signal_strength'].lower()} 매도로 {position_num}차 진입 보류"
+                        elif position_num <= 3 and fi_analysis['signal_strength'] == 'STRONG':
+                            return False, f"🚫 외국인/기관 강한 매도로 3차 진입 보류"
+                        # 4-5차는 가격 메리트로 진입 허용
+                    
+                    # 외국인/기관 강한 매수 시 추가 로깅
+                    elif (fi_analysis['direction'] == 'bullish' and 
+                        fi_analysis['signal_strength'] in ['STRONG', 'MODERATE']):
+                        logger.info(f"💰 {stock_name} {position_num}차: 외국인/기관 {fi_analysis['signal_strength'].lower()} 매수흐름 감지")
+                    
+                    # 중립일 때도 로깅 (디버깅용)
+                    else:
+                        logger.debug(f"🔄 {stock_name} {position_num}차: 외국인/기관 중립({fi_analysis['direction']}, {fi_analysis['signal_strength']})")
+                        
+                except Exception as fi_error:
+                    logger.warning(f"⚠️ 외국인/기관 분석 오류 ({stock_code}): {str(fi_error)}")
+            
             # 🔥🔥🔥 기존 매수 조건 로직 (기존 코드 유지) 🔥🔥🔥
             
             # 🔥 1. 기본 안전 조건 체크 (기존 로직 유지)
@@ -5152,22 +5180,11 @@ class SmartMagicSplit:
                 return False, f"RSI 범위 벗어남({indicators['rsi']:.1f})"
             
             # 🔥 3. 종목별 차별화된 조건 (기존 개선사항)
-            # rsi_limits = {
-            #     "042660": 75,  # 한화오션: 높은 변동성으로 완화
-            #     "034020": 65,  # 두산에너빌리티: 안정적이므로 보수적
-            #     "005930": 72   # 🆕 삼성전자: 블루칩 안정성 (적정 완화)
-            # }
             rsi_limits = {
                 "042660": 75,  # 한화오션: 유지
                 "034020": 75,  # ⭐ 두산에너빌리티: 조정 구간 활용 (65→75)
                 "005930": 72   # 삼성전자: 유지
             }
-
-            # pullback_requirements = {
-            #     "042660": 3.0,  # 한화오션: 높은 조정 요구
-            #     "034020": 2.0,  # 두산에너빌리티: 낮은 조정 요구  
-            #     "005930": 1.8   # 🆕 삼성전자: 낮은 조정 요구 (안정성)
-            # }
 
             pullback_requirements = {
                 "042660": 3.0,  # 한화오션: 유지
@@ -5232,30 +5249,6 @@ class SmartMagicSplit:
                     protection_msg = f" [하락보호: 매수량 {position_multiplier*100:.0f}%]"
                 if protection_level != 'normal':
                     protection_msg += f" [보호수준: {protection_level}]"
-
-                # 🔥🔥🔥 외국인/기관 매매동향 체크 (새로 추가) 🔥🔥🔥
-                if FI_ANALYZER_AVAILABLE:
-                    try:
-                        fi_analysis = trading_trend_analyzer.calculate_combined_trading_signal(stock_code)
-                        
-                        # 외국인/기관 강한 매도 시 매수 차단
-                        if (fi_analysis['direction'] == 'bearish' and 
-                            fi_analysis['signal_strength'] in ['STRONG', 'MODERATE']):
-                            
-                            # 차수별 차등 적용
-                            if position_num <= 2:  # 1-2차는 엄격
-                                return False, f"🚫 외국인/기관 {fi_analysis['signal_strength'].lower()} 매도로 {position_num}차 진입 보류"
-                            elif position_num <= 3 and fi_analysis['signal_strength'] == 'STRONG':
-                                return False, f"🚫 외국인/기관 강한 매도로 3차 진입 보류"
-                            # 4-5차는 가격 메리트로 진입 허용
-                        
-                        # 외국인/기관 강한 매수 시 추가 로깅
-                        elif (fi_analysis['direction'] == 'bullish' and 
-                            fi_analysis['signal_strength'] in ['STRONG', 'MODERATE']):
-                            logger.info(f"💰 {stock_name} {position_num}차: 외국인/기관 {fi_analysis['signal_strength'].lower()} 매수흐름 감지")
-                            
-                    except Exception as fi_error:
-                        logger.warning(f"⚠️ 외국인/기관 분석 오류 ({stock_code}): {str(fi_error)}")
 
                 return True, f"{position_num}차 최적화 진입(순차 검증 통과, RSI {indicators['rsi']:.1f}, 시장: {market_timing}){protection_msg}"
             
