@@ -4367,6 +4367,17 @@ class SmartMagicSplit:
         """🚀 개선된 매도 로직 - 상한제 + 트레일링 스탑 통합"""
         
         current_price = indicators['current_price']
+
+        # 🔥 버그 방지 안전장치 (추가)
+        for magic_data in magic_data_list:
+            if magic_data['IsBuy'] and magic_data.get('CurrentAmt', 0) > 0:
+                entry_price = magic_data['EntryPrice']
+                current_return = (current_price - entry_price) / entry_price * 100
+                
+                if current_return <= 0:
+                    logger.debug(f"🔍 {stock_code} 손실상태({current_return:.1f}%) - 수익매도 차단")
+                    return False
+
         stock_config = config.target_stocks[stock_code]
         sells_executed = False
         
