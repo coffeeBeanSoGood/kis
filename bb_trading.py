@@ -99,7 +99,12 @@ SECTOR_REPRESENTATIVE_STOCKS = {
         'core_stocks': ['267250', '010060', '008560', '003380', '042670'],
         'names': ['HD현대중공업', '두산밥캣', '삼양사', '현대중공업', '유니슨'],
         'keywords': ['기계', '산업기계', '중장비', '건설기계', '공작기계']
-    }
+    }, 
+    '로봇': {
+        'core_stocks': ['058610', '466100', '030530', '108490', '475400', '348340','056080','277810','454910'],
+        'names': ['에스피지', '클로봇', '원익홀딩스', '로보티즈', '씨메스', '뉴로메카','유진로봇','레인보우로보틱스','두산로보틱스'],
+        'keywords': ['로봇', '자동화', '인공지능', 'AI', '자동화시설', '로보틱스', '지능형로봇', '서비스로봇']
+    }   
 }
 
 
@@ -7318,10 +7323,11 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
     try:
         logger.info("후보종목 풀 방식 설정 파일 생성 시작...")
         
-        # 후보종목 풀 확장 (기존 4개 + 추가 4개)
+        # 후보종목 풀 확장
         sample_codes = [
             "272210", "034020", "010140", "007660",  # 기존: 한화시스템, 두산에너빌리티, 삼성중공업, 이수페타시스
-            "017960", "033500", "051600", "000720"   # 추가: 한국카본, 동성화인텍, 한전KPS, 현대건설
+            "017960", "033500", "051600", "000720",   # 추가: 한국카본, 동성화인텍, 한전KPS, 현대건설
+            "030530", "058610", "466100"  # 원익홀딩스, 애스피지, 클로봇
         ]
 
         # 특성별 파라미터 수정 (분봉 타이밍 개선 반영)
@@ -7424,7 +7430,10 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
             "017960": {"name": "한국카본", "sector": "화학", "characteristic": "growth", "enabled": True},
             "033500": {"name": "동성화인텍", "sector": "화학", "characteristic": "growth", "enabled": False},
             "051600": {"name": "한전KPS", "sector": "건설", "characteristic": "balanced", "enabled": False},
-            "000720": {"name": "현대건설", "sector": "건설", "characteristic": "balanced", "enabled": False}
+            "000720": {"name": "현대건설", "sector": "건설", "characteristic": "balanced", "enabled": False},
+            "030530": {"name": "원익홀딩스", "sector": "로봇", "characteristic": "growth", "enabled": True},
+            "058610": {"name": "에스피지", "sector": "로봇", "characteristic": "growth", "enabled": True},
+            "466100": {"name": "클로봇", "sector": "로봇", "characteristic": "growth", "enabled": True}
         }
 
         # 후보종목 설정 생성
