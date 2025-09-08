@@ -104,7 +104,12 @@ SECTOR_REPRESENTATIVE_STOCKS = {
         'core_stocks': ['058610', '466100', '030530', '108490', '475400', '348340','056080','277810','454910'],
         'names': ['에스피지', '클로봇', '원익홀딩스', '로보티즈', '씨메스', '뉴로메카','유진로봇','레인보우로보틱스','두산로보틱스'],
         'keywords': ['로봇', '자동화', '인공지능', 'AI', '자동화시설', '로보틱스', '지능형로봇', '서비스로봇']
-    }   
+    },
+    '반도체장비': {
+        'core_stocks': ['030530', '131970', '322000', '084370', '093320', '095610'],
+        'names': ['원익홀딩스', '테스', '파이오링크', '이노테크', '와이엠텍', '테스나'],
+        'keywords': ['반도체장비', '반도체제조', '웨이퍼', '식각', '증착', '검사장비', '반도체공정']
+    }       
 }
 
 
@@ -550,7 +555,8 @@ def select_target_stocks_from_candidates(buy_opportunities):
         for opp in buy_opportunities:
             individual_min_score = opp.get('min_score', trading_config.min_selection_score)
             
-            if opp['score'] >= individual_min_score:
+            # if opp['score'] >= individual_min_score:
+            if opp['score'] > 0 and opp['score'] >= individual_min_score:
                 qualified_opportunities.append(opp)
                 logger.info(f"✅ {opp['stock_name']}: {opp['score']}≥{individual_min_score}점")
             else:
@@ -6035,7 +6041,11 @@ def scan_target_stocks(trading_state):
                 buy_analysis['is_buy_signal'] = buy_analysis['score'] >= buy_analysis['min_score']
             
             # 최종 매수 신호 판단
-            if buy_analysis['is_buy_signal']:
+            # if buy_analysis['is_buy_signal']:
+            if (buy_analysis['is_buy_signal'] and 
+                buy_analysis.get('signal_strength') != 'REJECTED' and
+                buy_analysis.get('score', 0) > 0):
+
                 # 🔥 외국인/기관 정보 로깅 추가
                 fi_info = buy_analysis.get('fi_analysis', {})
                 if fi_info and fi_info.get('signals'):
@@ -6066,6 +6076,18 @@ def scan_target_stocks(trading_state):
 
                 for signal in buy_analysis['signals'][:3]:
                     logger.info(f"   - {signal}")
+
+            else:
+                # 🎯 차단된 종목 명확히 로깅
+                if buy_analysis.get('signal_strength') == 'REJECTED':
+                    logger.warning(f"🚫 {stock_name}: 극한조건으로 매수 차단됨 (점수: {buy_analysis.get('score', 0)}/{buy_analysis.get('min_score', 0)}점)")
+                    # 차단 신호들을 출력
+                    for signal in buy_analysis.get('signals', [])[:2]:
+                        logger.warning(f"   - {signal}")
+                elif buy_analysis.get('score', 0) <= 0:
+                    logger.warning(f"❌ {stock_name}: 점수 부족 ({buy_analysis.get('score', 0)}점)")
+                else:
+                    logger.info(f"⏳ {stock_name}: 매수 신호 부족 ({buy_analysis.get('score', 0)}/{buy_analysis.get('min_score', 0)}점)")
         
         # 점수 순으로 정렬
         # 🔥 4단계: 후보종목 풀 방식에서는 최적 종목 선택
@@ -7431,7 +7453,7 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
             "033500": {"name": "동성화인텍", "sector": "화학", "characteristic": "growth", "enabled": False},
             "051600": {"name": "한전KPS", "sector": "건설", "characteristic": "balanced", "enabled": False},
             "000720": {"name": "현대건설", "sector": "건설", "characteristic": "balanced", "enabled": False},
-            "030530": {"name": "원익홀딩스", "sector": "로봇", "characteristic": "growth", "enabled": True},
+            "030530": {"name": "원익홀딩스", "sector": "반도체장비&로봇", "characteristic": "growth", "enabled": True},
             "058610": {"name": "에스피지", "sector": "로봇", "characteristic": "growth", "enabled": True},
             "466100": {"name": "클로봇", "sector": "로봇", "characteristic": "growth", "enabled": True}
         }
