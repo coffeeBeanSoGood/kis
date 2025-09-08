@@ -5892,7 +5892,9 @@ def scan_target_stocks(trading_state):
                 base_buy_analysis = analyze_buy_signal(stock_data, target_config, market_trend)
 
                 # 2. 외국인/기관 매매동향으로 강화 (새로 추가)
+                logger.info(f"🔍 [{stock_code}] 외국인/기관 분석 시작 - base_score: {base_buy_analysis.get('score', 0)}")
                 buy_analysis = enhance_buy_signal_with_foreign_institution(base_buy_analysis, stock_code)
+                logger.info(f"🔍 [{stock_code}] 외국인/기관 분석 완료 - final_score: {buy_analysis.get('score', 0)}")
 
                 # 기술적 분석 결과 저장
                 technical_results[stock_code] = {
