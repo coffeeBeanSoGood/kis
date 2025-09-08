@@ -6091,10 +6091,8 @@ def scan_target_stocks(trading_state):
 
 def update_trailing_stop(position, current_price, target_config):
     """
-    개선된 트레일링 스탑 업데이트 
-    - 수익 구간별 차등 적용
-    - 분할매도 중 특별 보호
-    - 중간 수익 구간(2-4%) 보호 강화 ⭐ 핵심 개선점
+    개선된 적응형 트레일링 스탑 - 수익률에 따라 점진적으로 간격 축소
+    수익이 높을수록 더 타이트하게 보호
     """
     try:
         entry_price = position.get('entry_price', 0)
@@ -6104,7 +6102,7 @@ def update_trailing_stop(position, current_price, target_config):
             logger.warning(f"매수가 정보가 없어 트레일링 스탑 업데이트 실패: {stock_code}")
             return position
         
-        # 🔥 1단계: 고점 업데이트 (기존 로직 유지)
+        # 🔥 1단계: 고점 업데이트
         if 'high_price' not in position or current_price > position['high_price']:
             position['high_price'] = current_price
             logger.info(f"🔼 {stock_code} 고점 업데이트: {current_price:,.0f}원")
@@ -6112,106 +6110,102 @@ def update_trailing_stop(position, current_price, target_config):
         high_price = position['high_price']
         current_profit_rate = (current_price - entry_price) / entry_price
         
-        # 🆕 분할매도 상태 확인
+        # 분할매도 상태 확인
         partial_sell_count = position.get('partial_sell_count', 0)
         is_partial_mode = partial_sell_count > 0
         
-        # 🔥 2단계: 수익 구간별 + 분할매도 상태별 트레일링 비율 결정
-        if is_partial_mode:
-            # 분할매도 중: 더 보수적인 트레일링 (이미 수익 확정했으니 나머지도 보호)
-            if current_profit_rate >= 0.07:  # 7% 이상
-                trailing_ratio = 0.025  # 2.5% (기존보다 타이트)
-            elif current_profit_rate >= 0.03:  # 3% 이상
-                trailing_ratio = 0.03   # 3%
-            else:
-                trailing_ratio = 0.035  # 3.5%
-            mode_desc = "분할매도중"
-        else:
-            # 일반 상황: 수익 구간별 차등
-            if current_profit_rate >= 0.07:  # 7% 이상
-                trailing_ratio = 0.03   # 3%
-            elif current_profit_rate >= 0.03:  # 3-7%
-                trailing_ratio = 0.035  # 3.5%
-            elif current_profit_rate >= 0.01:  # 1-3%
-                trailing_ratio = 0.04   # 4%
-            else:
-                trailing_ratio = 0.05   # 5% (더 관대)
-            mode_desc = "일반"
+        # 🔥 2단계: 수익률 구간별 극세분화 + 점진적 간격 축소
+        if current_profit_rate >= 0.25:      # 25% 이상: 극타이트 (1.5%)
+            trailing_ratio = 0.015
+            mode = "극고수익-초타이트"
+        elif current_profit_rate >= 0.20:    # 20-25%: 매우 타이트 (2%)
+            trailing_ratio = 0.02
+            mode = "매우고수익-초타이트"
+        elif current_profit_rate >= 0.15:    # 15-20%: 타이트 (2.5%)
+            trailing_ratio = 0.025
+            mode = "고수익-타이트"
+        elif current_profit_rate >= 0.10:    # 10-15%: 중간 타이트 (3%)
+            trailing_ratio = 0.03
+            mode = "중고수익-중타이트"
+        elif current_profit_rate >= 0.07:    # 7-10%: 적당히 타이트 (3.5%)
+            trailing_ratio = 0.035
+            mode = "적당수익-적당타이트"
+        elif current_profit_rate >= 0.05:    # 5-7%: 조금 타이트 (4%)
+            trailing_ratio = 0.04
+            mode = "중간수익-보통"
+        elif current_profit_rate >= 0.03:    # 3-5%: 보통 (4.5%)
+            trailing_ratio = 0.045
+            mode = "소수익-보통"
+        elif current_profit_rate >= 0.015:   # 1.5-3%: 관대 (5%)
+            trailing_ratio = 0.05
+            mode = "최소수익-관대"
+        else:                                 # 1.5% 미만: 매우 관대 (6%)
+            trailing_ratio = 0.06
+            mode = "손익분기-매우관대"
         
-        # 🔥 3단계: 트레일링 스탑 계산
+        # 🔥 3단계: 분할매도 상태 시 추가 보정 (이미 수익 확정했으니 더 보수적)
+        if is_partial_mode:
+            trailing_ratio *= 0.8  # 20% 더 타이트하게
+            mode += "-분할매도중"
+        
+        # 🔥 4단계: 기본 트레일링 스탑 계산
         basic_trailing_stop = high_price * (1 - trailing_ratio)
         
-        # 🎯 매수가 기준 최소 보호선 설정
+        # 🎯 5단계: 수익 상태별 트레일링 전략
         min_protection_ratio = target_config.get('min_protection_ratio', 0.03)
         entry_protection_stop = entry_price * (1 - min_protection_ratio)
         
-        # 🔥 4단계: 수익 상태별 트레일링 스탑 결정 ⭐ 핵심 개선!
-        if current_profit_rate >= 0.04:  # 4% 이상 수익시 (기존 로직 유지)
-            # 수익 상태: 고점 기준 트레일링 스탑 사용 (단, 매수가 이상 보장)
+        if current_profit_rate >= 0.04:  # 4% 이상: 수익보호 모드
+            # 고점 기준 트레일링 (단, 매수가 이상 보장)
             safe_trailing_stop = max(basic_trailing_stop, entry_price * 1.005)
             position['trailing_stop'] = safe_trailing_stop
-            position['trailing_mode'] = 'PROFIT_PROTECTION'
+            position['trailing_mode'] = 'ENHANCED_PROFIT_PROTECTION'
             
-            logger.info(f"🟢 {mode_desc} 수익보호 트레일링: {safe_trailing_stop:,.0f}원 "
-                       f"(고점: {high_price:,.0f}원, 수익률: {current_profit_rate*100:.1f}%, 비율: {trailing_ratio*100:.1f}%)")
+            # 🆕 추가: 초고수익 시 즉시 일부 매도 신호
+            if current_profit_rate >= 0.15 and not is_partial_mode:
+                position['suggest_partial_sell'] = True
+                logger.info(f"💡 {stock_code} 초고수익 달성 - 분할매도 권장!")
             
-        elif current_profit_rate >= 0.015:  # ⭐ 1.5% 이상 (기존 2%에서 낮춤)
-            # ⭐ 핵심 개선: 중간 수익에서도 고점 추적 적용
-            if high_price > entry_price * 1.02:  # 고점이 매수가 대비 2% 이상인 경우만
-                # 고점 기준 트레일링 적용 (단, 손실 전환 방지)
-                conservative_trailing_stop = max(basic_trailing_stop, entry_price * 1.002)  # 최소 0.2% 수익 보장
+        elif current_profit_rate >= 0.015:  # 1.5-4%: 보수적 보호
+            if high_price > entry_price * 1.02:  # 고점이 매수가 대비 2% 이상
+                conservative_trailing_stop = max(basic_trailing_stop, entry_price * 1.002)
                 position['trailing_stop'] = conservative_trailing_stop
-                position['trailing_mode'] = 'ENHANCED_CONSERVATIVE_PROTECTION'  # 새로운 모드
-                
-                logger.info(f"🟡 {mode_desc} 강화된 보수적 보호: {conservative_trailing_stop:,.0f}원 "
-                           f"(고점추적+손실방지, 수익률: {current_profit_rate*100:.1f}%, 비율: {trailing_ratio*100:.1f}%)")
+                position['trailing_mode'] = 'ENHANCED_CONSERVATIVE_PROTECTION'
             else:
-                # 고점이 낮으면 기존 방식 (매수가 기준)
                 position['trailing_stop'] = max(entry_protection_stop, entry_price * 0.999)
-                position['trailing_mode'] = 'CONSERVATIVE_PROTECTION'
+                position['trailing_mode'] = 'BASIC_PROTECTION'
                 
-                logger.info(f"🟡 {mode_desc} 일반 보수적 보호: {position['trailing_stop']:,.0f}원 "
-                           f"(매수가 기준, 수익률: {current_profit_rate*100:.1f}%)")
-            
-        elif current_profit_rate >= -0.015:  # ⭐ -1.5% ~ +1.5% 구간 (기존 -2%에서 개선)
-            # 손익 분기점: 더 타이트한 손절 적용
+        elif current_profit_rate >= -0.015:  # -1.5% ~ +1.5%: 손익분기
             tight_stop = entry_price * (1 - min_protection_ratio)
             position['trailing_stop'] = tight_stop
-            position['trailing_mode'] = 'TIGHT_BREAKEVEN_PROTECTION'  # 새로운 모드명
+            position['trailing_mode'] = 'BREAKEVEN_PROTECTION'
             
-            logger.info(f"⚪ {mode_desc} 타이트 손익분기: {tight_stop:,.0f}원 "
-                       f"(강화된 손절, 수익률: {current_profit_rate*100:.1f}%)")
-            
-        else:  # -1.5% 미만 손실
-            # 손실 상태: 빠른 손절 적용
-            loss_protection_stop = entry_price * (1 - min_protection_ratio * 1.1)  # 약간 더 관대
+        else:  # -1.5% 미만: 손실 보호
+            loss_protection_stop = entry_price * (1 - min_protection_ratio * 1.1)
             position['trailing_stop'] = loss_protection_stop
-            position['trailing_mode'] = 'LOSS_PROTECTION_ONLY'
-            
-            logger.info(f"🔴 {mode_desc} 손실 보호: {loss_protection_stop:,.0f}원 "
-                       f"(손실최소화, 수익률: {current_profit_rate*100:.1f}%)")
+            position['trailing_mode'] = 'LOSS_PROTECTION'
         
-        # 🔥 5단계: 안전성 검증 (기존 로직 유지)
+        # 🔥 6단계: 안전성 검증
         final_trailing_stop = position['trailing_stop']
         
         # 트레일링 스탑이 현재가보다 높으면 조정
         if final_trailing_stop > current_price:
-            logger.warning(f"⚠️ 트레일링 스탑이 현재가보다 높음 - 조정")
             position['trailing_stop'] = min(final_trailing_stop, current_price * 0.998)
         
         # 과도한 손실 방지 (10% 이상 손실 방지)
         max_loss_stop = entry_price * 0.90
         if position['trailing_stop'] < max_loss_stop:
-            logger.warning(f"⚠️ 과도한 손실 방지 - 트레일링 스탑 조정")
             position['trailing_stop'] = max_loss_stop
-            
-        # 🔥 6단계: 상세 로깅
-        logger.info(f"📊 트레일링 스탑 업데이트 완료:")
+        
+        # 🔥 7단계: 상세 로깅
+        trailing_gap = (current_price - position['trailing_stop']) / current_price * 100
+        
+        logger.info(f"📊 개선된 트레일링 스탑 ({mode}):")
         logger.info(f"   종목: {stock_code}")
-        logger.info(f"   매수가: {entry_price:,.0f}원")
         logger.info(f"   현재가: {current_price:,.0f}원")
         logger.info(f"   고점: {high_price:,.0f}원")
         logger.info(f"   트레일링 스탑: {position['trailing_stop']:,.0f}원")
+        logger.info(f"   트레일링 간격: {trailing_gap:.2f}% (비율: {trailing_ratio*100:.1f}%)")
         logger.info(f"   보호 모드: {position.get('trailing_mode', 'UNKNOWN')}")
         logger.info(f"   현재 수익률: {current_profit_rate*100:.2f}%")
         if is_partial_mode:
@@ -6220,7 +6214,7 @@ def update_trailing_stop(position, current_price, target_config):
         return position
         
     except Exception as e:
-        logger.error(f"트레일링 스탑 업데이트 중 에러: {str(e)}")
+        logger.error(f"개선된 트레일링 스탑 업데이트 중 에러: {str(e)}")
         return position
 
 def check_delayed_executions(trading_state):
