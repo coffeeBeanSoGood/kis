@@ -1927,7 +1927,23 @@ def analyze_buy_signal(stock_data, target_config, market_trend=None):
         stock_name = target_config.get('name', stock_code)
         logger.info(f"🎯 [{stock_code}] {stock_name} 매수 신호 분석 시작")
         logger.info(f"📊 [{stock_code}] 기본 데이터: 현재가 {current_price:,}원, RSI {rsi:.1f}")
+
+        # 🆕 ==== 여기에 고변동성 종목 전략 조정 로직 추가 ====
+        volatility_strategy = get_volatility_adjusted_strategy(
+            stock_code, target_config, stock_data
+        )
+
+        # RSI 기준 조정
+        base_rsi_oversold = target_config.get('rsi_oversold', trading_config.rsi_oversold)
+        adjusted_rsi_oversold = base_rsi_oversold + volatility_strategy['rsi_adjustment']
         
+        # 거래량 기준 조정  
+        base_volume_threshold = target_config.get('intraday_volume_threshold', 1.2)
+        adjusted_volume_threshold = base_volume_threshold * volatility_strategy['volume_threshold_multiplier']
+        
+        logger.info(f"🔧 [{stock_code}] 변동성 조정: RSI {base_rsi_oversold}→{adjusted_rsi_oversold}, "
+                   f"거래량 {base_volume_threshold}→{adjusted_volume_threshold:.2f}")
+ 
         # 🔍 극한 조건들 미리 계산
         
         # 1) 가격 위치 계산
@@ -2250,7 +2266,15 @@ def analyze_buy_signal(stock_data, target_config, market_trend=None):
             }
             
             logger.info(f"📊 [{stock_code}] 추세 조정: {trend_penalty}점 (누적: {score}점)")
+
+        # 🆕 ==== 최종 점수에 변동성 보너스 적용 ====
+        score += volatility_strategy['score_bonus']
         
+        if volatility_strategy['score_bonus'] != 0:
+            signals.append(f"변동성 조정 {volatility_strategy['score_bonus']:+d}점")
+            logger.info(f"🔧 [{stock_code}] 변동성 보너스: {volatility_strategy['score_bonus']:+d}점")
+        # ==========================================
+
         # 🎯 최종 매수 판단
         signal_strength = 'NORMAL'
         
@@ -3045,69 +3069,158 @@ def detect_market_condition(stock_data):
 
 def calculate_enhanced_partial_strategies(profit_rate, total_amount, is_overheated, drawdown_from_high, min_threshold):
     """
-    개선된 분할매도 전략 - 중간 수익 구간 강화
-    ⭐ 한화시스템 케이스 개선을 위한 범용 로직
+    개선된 분할매도 전략 - 중간 수익 구간 강화 + 고변동성 대응
+    ⭐ 한화시스템 케이스 개선을 위한 범용 로직 + 이수스페셜티케미컬 고변동성 대응
+    
+    Args:
+        profit_rate (float): 수익률 (0.05 = 5%)
+        total_amount (int): 총 보유량
+        is_overheated (bool): 과열 상태 여부
+        drawdown_from_high (float): 고점 대비 하락률
+        min_threshold (float): 최소 수익 기준
+    
+    Returns:
+        list: 분할매도 전략 리스트 [{'type': str, 'sell_ratio': float, 'reason': str, 'priority': int}]
+    
+    특징:
+    1. 🎯 **진입 기준 대폭 완화**: 기존 6% → 2.5%부터 분할매도 시작
+    2. 🚀 **중간 수익 구간 강화**: 4~10% 구간에서 더 적극적 매도
+    3. 🔥 **고변동성 대응**: 이수스페셜티케미컬 같은 변동성 종목 특별 처리
+    4. 🛡️ **고점 보호 민감화**: 2% 하락시 즉시 대응 (기존 2.5%에서 강화)
+    5. ⚡ **과열 조기 감지**: 1.5%부터 과열시 최소 확정
     """
     strategies = []
     
-    # 🔥 수익 구간을 더 세분화하고 시작점을 낮춤
-    if profit_rate >= 0.15:  # 15% 이상: 대량 매도
+    # 🔥 1단계: 수익 구간별 분할매도 전략 (대폭 개선)
+    
+    # 🏆 최고 수익 구간 (15% 이상) - 대량 확정
+    if profit_rate >= 0.15:
         strategies.append({
             'type': 'enhanced_very_high_profit',
             'sell_ratio': 0.75,  # 75% 매도 (기존 70%보다 적극적)
             'reason': f'매우 높은 수익 적극 확정 {profit_rate*100:.1f}%',
-            'priority': 10
+            'priority': 10,
+            'trigger': 'high_profit_aggressive'
         })
         
-    elif profit_rate >= 0.10:  # 10% 이상: 절반 이상 매도
+    # 🎯 고수익 구간 (10~15%) - 과반 확정
+    elif profit_rate >= 0.10:
         strategies.append({
             'type': 'enhanced_high_profit',
             'sell_ratio': 0.6,   # 60% 매도 (기존 50%보다 적극적)
             'reason': f'높은 수익 대량 확정 {profit_rate*100:.1f}%',
-            'priority': 9
+            'priority': 9,
+            'trigger': 'high_profit_secure'
         })
         
-    elif profit_rate >= 0.06:  # 6% 이상: 절반 매도
+    # 🌟 양호한 수익 구간 (6~10%) - 균형 확정
+    elif profit_rate >= 0.06:
         strategies.append({
             'type': 'enhanced_good_profit',
             'sell_ratio': 0.5,   # 50% 매도 (기존 40%보다 적극적)
             'reason': f'양호한 수익 중간 확정 {profit_rate*100:.1f}%',
-            'priority': 8
+            'priority': 8,
+            'trigger': 'good_profit_balance'
         })
         
-    elif profit_rate >= 0.04:  # ⭐ 4% 이상: 부분 매도 (기존 6%에서 낮춤)
+    # ⭐ 중간 수익 구간 (4~6%) - 부분 확정 (기존 대비 진입점 하향)
+    elif profit_rate >= 0.04:
         strategies.append({
             'type': 'enhanced_moderate_profit',
             'sell_ratio': 0.4,   # 40% 매도
             'reason': f'중간 수익 부분 확정 {profit_rate*100:.1f}%',
-            'priority': 7
+            'priority': 7,
+            'trigger': 'moderate_profit_partial'
         })
         
-    elif profit_rate >= 0.025:  # ⭐ 2.5% 이상: 소량 매도 (새로 추가!)
+    # 🆕 소량 수익 구간 (2.5~4%) - 조기 확정 (완전 신규!)
+    elif profit_rate >= 0.025:
         strategies.append({
-            'type': 'enhanced_early_profit',
+            'type': 'enhanced_small_profit',
             'sell_ratio': 0.3,   # 30% 매도
             'reason': f'조기 수익 소량 확정 {profit_rate*100:.1f}%',
-            'priority': 6
+            'priority': 6,
+            'trigger': 'early_profit_secure'
         })
         
-    elif profit_rate >= 0.015:  # ⭐ 1.5% 이상: 최소 매도 (과열시만)
-        if is_overheated:
+    # 🆕 최소 수익 구간 (1.5~2.5%) - 과열시만 (완전 신규!)
+    elif profit_rate >= 0.015:
+        if is_overheated:  # 과열 상태에서만 실행
             strategies.append({
                 'type': 'enhanced_minimal_profit',
                 'sell_ratio': 0.25,  # 25% 매도
                 'reason': f'과열상황 최소 확정 {profit_rate*100:.1f}%',
-                'priority': 5
+                'priority': 5,
+                'trigger': 'overheated_minimal'
             })
     
-    # 🔥 고점 보호 (더 민감하게)
+    # 🔥 2단계: 고점 보호 전략 (민감도 강화)
     if profit_rate > min_threshold and drawdown_from_high >= 0.02:  # 고점대비 2% 하락 (기존 2.5%에서 강화)
         strategies.append({
             'type': 'enhanced_drawdown_protection',
             'sell_ratio': 0.4,   # 40% 매도 (기존 30%보다 적극적)
             'reason': f'고점보호 매도 (고점대비 -{drawdown_from_high*100:.1f}%)',
-            'priority': 8
+            'priority': 8,
+            'trigger': 'drawdown_protection'
         })
+    
+    # 🔥 3단계: 과열 상태 즉시 대응
+    if is_overheated and profit_rate >= min_threshold:
+        # 과열도에 따른 차등 매도
+        if profit_rate >= 0.08:  # 8% 이상 + 과열 = 대량 매도
+            strategies.append({
+                'type': 'enhanced_overheated_high',
+                'sell_ratio': 0.6,   # 60% 매도
+                'reason': f'고수익+과열 대량매도 {profit_rate*100:.1f}%',
+                'priority': 9,
+                'trigger': 'overheated_high_profit'
+            })
+        elif profit_rate >= 0.04:  # 4% 이상 + 과열 = 중간 매도
+            strategies.append({
+                'type': 'enhanced_overheated_medium',
+                'sell_ratio': 0.4,   # 40% 매도
+                'reason': f'중수익+과열 부분매도 {profit_rate*100:.1f}%',
+                'priority': 7,
+                'trigger': 'overheated_medium_profit'
+            })
+        else:  # 최소 수익 + 과열 = 소량 매도
+            strategies.append({
+                'type': 'enhanced_overheated_low',
+                'sell_ratio': 0.25,  # 25% 매도
+                'reason': f'저수익+과열 보호매도 {profit_rate*100:.1f}%',
+                'priority': 6,
+                'trigger': 'overheated_protection'
+            })
+    
+    # 🔥 4단계: 급격한 고점 하락 긴급 대응 (새로 추가)
+    if profit_rate > min_threshold and drawdown_from_high >= 0.035:  # 고점대비 3.5% 급락
+        strategies.append({
+            'type': 'enhanced_emergency_protection',
+            'sell_ratio': 0.6,   # 60% 매도
+            'reason': f'급락 긴급보호 (고점대비 -{drawdown_from_high*100:.1f}%)',
+            'priority': 11,  # 최우선
+            'trigger': 'emergency_drawdown'
+        })
+    
+    # 🔥 5단계: 연속 수익 누적시 단계적 확정 (새로 추가)
+    if profit_rate >= 0.02:  # 2% 이상부터
+        # 수익률이 특정 구간을 넘을 때마다 소량씩 확정
+        profit_steps = int(profit_rate / 0.02)  # 2%마다 스텝 증가
+        if profit_steps >= 3:  # 6% 이상에서 발동
+            step_sell_ratio = min(0.2 + (profit_steps - 3) * 0.05, 0.4)  # 20%~40% 사이
+            strategies.append({
+                'type': 'enhanced_step_profit',
+                'sell_ratio': step_sell_ratio,
+                'reason': f'단계별 수익확정 {profit_rate*100:.1f}% (단계{profit_steps})',
+                'priority': 6,
+                'trigger': 'step_profit_taking'
+            })
+    
+    # 📊 전략 정보 로깅 (디버깅용)
+    if strategies:
+        logger.debug(f"💡 분할매도 전략 후보 {len(strategies)}개:")
+        for i, strategy in enumerate(strategies, 1):
+            logger.debug(f"   {i}. {strategy['reason']} (우선순위: {strategy['priority']})")
     
     return strategies
 
@@ -3226,6 +3339,218 @@ def calculate_market_adaptive_partial_sell(stock_data, position, target_config):
     except Exception as e:
         logger.error(f"시장 적응형 분할매도 계산 중 오류: {str(e)}")
         return None
+
+def calculate_high_volatility_partial_strategies(profit_rate, total_amount, is_overheated, drawdown_from_high, min_threshold, volatility_level='HIGH'):
+    """
+    고변동성 종목 전용 분할매도 전략
+    이수스페셜티케미컬 같은 고변동성 종목에 특화
+    
+    Args:
+        volatility_level (str): 'HIGH', 'VERY_HIGH', 'EXTREME'
+    """
+    strategies = []
+    
+    # 변동성 수준에 따른 기준 조정
+    volatility_adjustments = {
+        'HIGH': {'ratio_multiplier': 1.1, 'threshold_adjustment': 0.005},      # 10% 더 적극적, 0.5%p 상향
+        'VERY_HIGH': {'ratio_multiplier': 1.2, 'threshold_adjustment': 0.01},  # 20% 더 적극적, 1%p 상향  
+        'EXTREME': {'ratio_multiplier': 1.3, 'threshold_adjustment': 0.015}    # 30% 더 적극적, 1.5%p 상향
+    }
+    
+    adjustment = volatility_adjustments.get(volatility_level, volatility_adjustments['HIGH'])
+    ratio_mult = adjustment['ratio_multiplier']
+    threshold_adj = adjustment['threshold_adjustment']
+    
+    # 조정된 기준으로 분할매도 전략 생성
+    adjusted_min_threshold = min_threshold + threshold_adj
+    
+    if profit_rate >= adjusted_min_threshold:
+        # 기본 전략을 호출하되 비율과 기준을 조정
+        base_strategies = calculate_enhanced_partial_strategies(
+            profit_rate, total_amount, is_overheated, drawdown_from_high, adjusted_min_threshold
+        )
+        
+        # 고변동성 조정 적용
+        for strategy in base_strategies:
+            strategy['sell_ratio'] = min(0.8, strategy['sell_ratio'] * ratio_mult)  # 최대 80%로 제한
+            strategy['reason'] += f' (고변동성{volatility_level})'
+            strategy['trigger'] += f'_volatility_{volatility_level.lower()}'
+            
+        strategies.extend(base_strategies)
+    
+    return strategies
+
+def calculate_market_adaptive_partial_sell(stock_data, position, target_config):
+    """시장 상황 적응형 분할매도 전략 계산 - 고변동성 대응 추가"""
+    try:
+        entry_price = position.get('entry_price', 0)
+        current_price = stock_data['current_price']
+        total_amount = position.get('amount', 0)
+        high_price = position.get('high_price', entry_price)
+        stock_name = position.get('stock_name', 'Unknown')
+        stock_code = position.get('stock_code', '')
+        
+        if entry_price <= 0 or total_amount <= 0:
+            return None
+        
+        profit_rate = (current_price - entry_price) / entry_price
+        drawdown_from_high = (high_price - current_price) / high_price if high_price > entry_price else 0
+        
+        # 🎯 시장 상황 감지
+        market_condition = detect_market_condition(stock_data)
+        
+        # 🔥 수수료 고려한 최소 수익률 계산
+        trading_cost_rate = calculate_total_trading_cost_rate(entry_price, total_amount)
+        min_profit_threshold = trading_cost_rate * 8
+        
+        # 🆕 고변동성 종목 특별 처리 (여기에 추가!)
+        characteristic_type = target_config.get('characteristic_type', 'growth')
+        
+        if characteristic_type == 'high_volatility_growth':
+            logger.info(f"🔥 {stock_name} 고변동성 종목 특별 분할매도 로직 적용")
+            
+            # 고변동성 전용 전략 계산
+            volatility_level = 'HIGH'  # 기본값
+            
+            # ATR 기반 변동성 수준 판정
+            df = stock_data.get('ohlcv_data')
+            if df is not None and len(df) >= 20:
+                atr = stock_data.get('atr', 0)
+                if atr > 0:
+                    atr_ratio = atr / current_price
+                    if atr_ratio > 0.08:  # 8% 이상
+                        volatility_level = 'EXTREME'
+                    elif atr_ratio > 0.05:  # 5% 이상
+                        volatility_level = 'VERY_HIGH'
+                    else:
+                        volatility_level = 'HIGH'
+                        
+            logger.info(f"📊 {stock_name} 변동성 수준: {volatility_level}")
+            
+            # 🚀 고변동성 전용 전략 호출
+            partial_strategies = calculate_high_volatility_partial_strategies(
+                profit_rate, total_amount, is_overheated, drawdown_from_high, 
+                min_profit_threshold, volatility_level
+            )
+            
+            # 고변동성 전략이 있으면 우선 사용
+            if partial_strategies:
+                best_strategy = max(partial_strategies, key=lambda x: x['priority'])
+                
+                sell_quantity = max(1, int(total_amount * best_strategy['sell_ratio']))
+                sell_quantity = min(sell_quantity, total_amount)
+                
+                logger.info(f"   ✅ 고변동성 분할매도: {best_strategy['reason']}")
+                logger.info(f"   📊 매도 수량: {sell_quantity}주 / {total_amount}주 ({best_strategy['sell_ratio']*100:.0f}%)")
+                
+                return {
+                    'should_partial_sell': True,
+                    'sell_quantity': sell_quantity,
+                    'sell_ratio': sell_quantity / total_amount,
+                    'strategy_type': best_strategy['type'],
+                    'reason': best_strategy['reason'],
+                    'remaining_amount': total_amount - sell_quantity,
+                    'market_condition': market_condition,
+                    'volatility_level': volatility_level,  # 🆕 변동성 정보 추가
+                    'analysis': {
+                        'profit_rate': profit_rate,
+                        'drawdown_from_high': drawdown_from_high,
+                        'is_overheated': is_overheated,
+                        'min_profit_threshold': min_profit_threshold,
+                        'volatility_strategy': True  # 🆕 고변동성 전략 사용 표시
+                    }
+                }
+        
+        # === 기존 로직 (일반 종목용) ===
+        
+        # 🎯 과열도 체크 (시장상황별 기준 조정)
+        rsi = stock_data.get('rsi', 50)
+        bb_upper = stock_data.get('bb_upper', 0)
+        bb_ratio = current_price / bb_upper if bb_upper > 0 else 0.5
+        
+        # 거래량 급증 체크
+        df = stock_data.get('ohlcv_data')
+        volume_surge = 1.0
+        if df is not None and len(df) >= 20:
+            recent_volume = df['volume'].iloc[-1]
+            avg_volume = df['volume'].rolling(20).mean().iloc[-1]
+            volume_surge = recent_volume / avg_volume if avg_volume > 0 else 1.0
+        
+        # 시장상황별 과열 기준 조정
+        if market_condition == 'bearish_volatile':
+            rsi_threshold = 65
+            bb_threshold = 0.93
+            volume_threshold = 2.0
+        else:
+            rsi_threshold = 75
+            bb_threshold = 0.98
+            volume_threshold = 3.0
+        
+        is_overheated = (
+            rsi >= rsi_threshold or 
+            bb_ratio >= bb_threshold or 
+            volume_surge >= volume_threshold
+        )
+        
+        logger.info(f"🔍 {stock_name} 일반 분할매도 분석:")
+        logger.info(f"   수익률: {profit_rate*100:.2f}%, 최소기준: {min_profit_threshold*100:.2f}%")
+        logger.info(f"   시장상황: {market_condition}, 과열여부: {is_overheated}")
+        logger.info(f"   고점대비: -{drawdown_from_high*100:.1f}%")
+        
+        # 최소 수익 기준 미달시 분할매도 안함
+        if profit_rate < min_profit_threshold:
+            logger.debug(f"   → 최소 수익 기준 미달로 분할매도 안함")
+            return None
+        
+        # 🎯 시장상황별 분할매도 전략
+        partial_strategies = []
+        
+        if market_condition == 'bearish_volatile':
+            # 🌧️ 약세장/불안정: 방어적 분할매도
+            partial_strategies = calculate_defensive_partial_strategies(
+                profit_rate, total_amount, is_overheated, drawdown_from_high, min_profit_threshold
+            )
+        else:
+            # 🌞 강세장/보통: 개선된 분할매도
+            partial_strategies = calculate_enhanced_partial_strategies(
+                profit_rate, total_amount, is_overheated, drawdown_from_high, min_profit_threshold
+            )
+        
+        # 🎯 최우선 전략 선택
+        if partial_strategies:
+            best_strategy = max(partial_strategies, key=lambda x: x['priority'])
+            
+            sell_quantity = max(1, int(total_amount * best_strategy['sell_ratio']))
+            sell_quantity = min(sell_quantity, total_amount)
+            
+            logger.info(f"   ✅ 분할매도 전략: {best_strategy['reason']}")
+            logger.info(f"   📊 매도 수량: {sell_quantity}주 / {total_amount}주 ({best_strategy['sell_ratio']*100:.0f}%)")
+            
+            return {
+                'should_partial_sell': True,
+                'sell_quantity': sell_quantity,
+                'sell_ratio': sell_quantity / total_amount,
+                'strategy_type': best_strategy['type'],
+                'reason': best_strategy['reason'],
+                'remaining_amount': total_amount - sell_quantity,
+                'market_condition': market_condition,
+                'analysis': {
+                    'profit_rate': profit_rate,
+                    'drawdown_from_high': drawdown_from_high,
+                    'is_overheated': is_overheated,
+                    'rsi': rsi,
+                    'volume_surge': volume_surge,
+                    'min_profit_threshold': min_profit_threshold,
+                    'volatility_strategy': False  # 일반 전략 사용
+                }
+            }
+        
+        logger.debug(f"   → 분할매도 조건 불만족")
+        return None
+        
+    except Exception as e:
+        logger.error(f"시장 적응형 분할매도 계산 중 오류: {str(e)}")
+        return None        
 
 def calculate_defensive_partial_strategies(profit_rate, total_amount, is_overheated, drawdown_from_high, min_threshold):
     """방어적 분할매도 전략 (약세장/불안정 시장용)"""
@@ -7450,15 +7775,16 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
             "272210": {"name": "한화시스템", "sector": "우주항공과국방", "characteristic": "growth", "enabled": True},
             "034020": {"name": "두산에너빌리티", "sector": "기계", "characteristic": "growth", "enabled": False},
             "010140": {"name": "삼성중공업", "sector": "조선", "characteristic": "growth", "enabled": True},
-            "007660": {"name": "이수페타시스", "sector": "화학", "characteristic": "growth", "enabled": True},
+            "007660": {"name": "이수페타시스", "sector": "반도체소재", "characteristic": "growth", "enabled": True},  # 🆕 섹터 변경
             "017960": {"name": "한국카본", "sector": "화학", "characteristic": "growth", "enabled": True},
             "033500": {"name": "동성화인텍", "sector": "화학", "characteristic": "growth", "enabled": False},
             "051600": {"name": "한전KPS", "sector": "건설", "characteristic": "balanced", "enabled": False},
             "000720": {"name": "현대건설", "sector": "건설", "characteristic": "balanced", "enabled": False},
             "030530": {"name": "원익홀딩스", "sector": "반도체장비&로봇", "characteristic": "growth", "enabled": True},
             "058610": {"name": "에스피지", "sector": "로봇", "characteristic": "growth", "enabled": True},
-            "466100": {"name": "클로봇", "sector": "로봇", "characteristic": "growth", "enabled": True}
-        }
+            "466100": {"name": "클로봇", "sector": "로봇", "characteristic": "growth", "enabled": True},
+            "457190": {"name": "이수스페셜티케미컬", "sector": "반도체소재", "characteristic": "high_volatility_growth", "enabled": True}  # 🆕 추가
+        }        
 
         # 후보종목 설정 생성
         candidate_stocks = {}
@@ -7647,6 +7973,83 @@ def create_config_file(config_path: str = "target_stock_config.json") -> None:
     except Exception as e:
         logger.exception(f"설정 파일 생성 중 오류: {str(e)}")
         raise
+
+def get_volatility_adjusted_strategy(stock_code: str, target_config: dict, stock_data: dict) -> dict:
+    """
+    고변동성 종목에 대한 전략 조정
+    이수스페셜티케미컬 같은 high_volatility_growth 종목 특별 처리
+    """
+    try:
+        characteristic_type = target_config.get('characteristic_type', 'growth')
+        
+        # 🆕 고변동성 성장주 특별 처리
+        if characteristic_type == 'high_volatility_growth':
+            
+            # ATR 기반 변동성 측정
+            df = stock_data.get('ohlcv_data')
+            if df is not None and len(df) >= 20:
+                recent_atr = df['ATR'].iloc[-5:].mean()
+                price = stock_data.get('current_price', 0)
+                volatility_ratio = recent_atr / price if price > 0 else 0
+                
+                logger.info(f"🔥 {stock_code} 고변동성 종목 분석: ATR비율 {volatility_ratio:.3f}")
+                
+                # 변동성에 따른 전략 조정
+                strategy_adjustment = {
+                    'score_bonus': 0,
+                    'rsi_adjustment': 0,
+                    'volume_threshold_multiplier': 1.0,
+                    'min_profit_adjustment': 0
+                }
+                
+                # 매우 높은 변동성 (5% 이상)
+                if volatility_ratio > 0.05:
+                    strategy_adjustment.update({
+                        'score_bonus': -5,  # 신중한 진입
+                        'rsi_adjustment': -5,  # RSI 기준 더 보수적
+                        'volume_threshold_multiplier': 1.3,  # 거래량 기준 강화
+                        'min_profit_adjustment': 0.005  # 분할매도 기준 상향
+                    })
+                    logger.info(f"   → 매우 높은 변동성: 신중 모드")
+                
+                # 높은 변동성 (3-5%)
+                elif volatility_ratio > 0.03:
+                    strategy_adjustment.update({
+                        'score_bonus': 2,  # 약간 유리
+                        'rsi_adjustment': 0,
+                        'volume_threshold_multiplier': 1.1,
+                        'min_profit_adjustment': 0.003
+                    })
+                    logger.info(f"   → 높은 변동성: 기회 모드")
+                
+                # 보통 변동성 (1-3%)
+                else:
+                    strategy_adjustment.update({
+                        'score_bonus': 5,  # 안정적이므로 유리
+                        'rsi_adjustment': 3,  # RSI 완화
+                        'volume_threshold_multiplier': 0.9,
+                        'min_profit_adjustment': 0
+                    })
+                    logger.info(f"   → 보통 변동성: 안정 모드")
+                
+                return strategy_adjustment
+        
+        # 일반 종목은 기본 전략
+        return {
+            'score_bonus': 0,
+            'rsi_adjustment': 0,
+            'volume_threshold_multiplier': 1.0,
+            'min_profit_adjustment': 0
+        }
+        
+    except Exception as e:
+        logger.error(f"변동성 전략 조정 중 오류: {str(e)}")
+        return {
+            'score_bonus': 0,
+            'rsi_adjustment': 0,
+            'volume_threshold_multiplier': 1.0,
+            'min_profit_adjustment': 0
+        }
 
 def end_of_day_candidate_management(trading_state):
     """장마감시 대기 종목 관리 - 하이브리드 방식"""
