@@ -4555,14 +4555,29 @@ class SmartMagicSplit:
                             
                             # Discord 알림
                             if config.config.get("use_discord_alert", True):
+                                # 🔥 설정파일에서 종목명 가져오기
+                                stock_config = config.target_stocks.get(stock_code, {})
+                                stock_name = stock_config.get('name', f"종목{stock_code}")
+                                
                                 profit_emoji = "💰" if realized_pnl > 0 else "📉"
-                                discord_msg = f"{profit_emoji} **한화오션 수익확정**\n"
+                                sell_type = "수익확정" if realized_pnl > 0 else "손절"
+                                discord_msg = f"{profit_emoji} **{stock_name} {sell_type}**\n"  # ✅ 동적!
                                 discord_msg += f"• {position_num}차: {sell_amount}주 매도\n"
                                 discord_msg += f"• 매도가: {current_price:,}원\n"
                                 discord_msg += f"• 수익률: {current_return:+.2f}%\n"
                                 discord_msg += f"• 실현손익: {realized_pnl:+,}원\n"
                                 discord_msg += f"• 사유: {sell_reason}"
                                 discord_alert.SendMessage(discord_msg)
+                                
+                            # if config.config.get("use_discord_alert", True):
+                            #     profit_emoji = "💰" if realized_pnl > 0 else "📉"
+                            #     discord_msg = f"{profit_emoji} **한화오션 수익확정**\n"
+                            #     discord_msg += f"• {position_num}차: {sell_amount}주 매도\n"
+                            #     discord_msg += f"• 매도가: {current_price:,}원\n"
+                            #     discord_msg += f"• 수익률: {current_return:+.2f}%\n"
+                            #     discord_msg += f"• 실현손익: {realized_pnl:+,}원\n"
+                            #     discord_msg += f"• 사유: {sell_reason}"
+                            #     discord_alert.SendMessage(discord_msg)
                                 
                         else:
                             logger.error(f"❌ {stock_code} {position_num}차 매도 실패: {error}")
