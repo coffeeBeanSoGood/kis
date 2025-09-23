@@ -2,1185 +2,1016 @@
 # -*- coding: utf-8 -*-
 
 """
-🥇 금투자 백테스팅 시스템 (GoldBacktesting_KR.py)
-- 스마트 골드 트레이딩 봇의 실제 로직을 과거 데이터로 검증
-- 5차수 분할매매 전략 성과 분석
-- 다양한 시나리오 테스트 및 최적화
+🥇 금 ETF 포트폴리오 백테스팅 시스템
+완전한 SmartMagicSplit 로직 구현
 """
 
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
 from datetime import datetime, timedelta
-import json
-import os
 import warnings
+import os
+import time
 warnings.filterwarnings('ignore')
 
-# 기존 모듈 임포트
-import KIS_Common as Common
-import KIS_API_Helper_KR as KisKR
-from SmartGoldTradingBot_KR import SmartGoldTrading, GoldTradingConfig
-
 # 한글 폰트 설정
-plt.rcParams['font.family'] = ['Malgun Gothic', 'DejaVu Sans']
+plt.rcParams['font.family'] = ['Malgun Gothic', 'Arial Unicode MS', 'Apple Gothic']
 plt.rcParams['axes.unicode_minus'] = False
 
-################################### 📊 백테스팅 엔진 클래스 ##################################
+# KIS API 사용 시도
+try:
+    import KIS_Common as Common
+    import KIS_API_Helper_KR as KisKR
+    
+    try:
+        if hasattr(Common, 'GetToken'):
+            token = Common.GetToken(Common.GetNowDist())
+            KIS_API_AVAILABLE = bool(token)
+            print("✅ KIS API 사용 가능" if KIS_API_AVAILABLE else "⚠️ KIS API 토큰 없음")
+        else:
+            KIS_API_AVAILABLE = False
+            print("⚠️ KIS API 함수 없음")
+    except:
+        KIS_API_AVAILABLE = False
+        print("⚠️ KIS API 초기화 실패")
+        
+except ImportError:
+    KIS_API_AVAILABLE = False
+    print("⚠️ KIS API 모듈 없음 - 모의 데이터 사용")
 
-class GoldBacktestingEngine:
-    def __init__(self, config_path=None):
-        """백테스팅 엔진 초기화"""
-        self.config = GoldTradingConfig()
-        if config_path:
-            self.config.config_path = config_path
-            self.config.load_config()
+class GoldETFBacktester:
+    def __init__(self, initial_capital=600000, days_back=365):
+        self.initial_capital = initial_capital
+        self.days_back = days_back
+        self.end_date = datetime.now()
+        self.start_date = self.end_date - timedelta(days=days_back)
         
-        # 백테스팅 전용 설정
-        self.commission_rate = self.config.config.get('commission_rate', 0.00015)
-        self.slippage_rate = 0.001  # 슬리피지 0.1%
-        
-        # 결과 저장용
-        self.backtest_results = {}
-        self.trade_history = []
-        self.daily_portfolio = []
-        
-        print("🥇 금투자 백테스팅 엔진 초기화 완료")
-
-    def load_historical_data(self, product_codes, start_date, end_date):
-        """과거 데이터 로드"""
-        print(f"📈 과거 데이터 로딩: {start_date} ~ {end_date}")
-        
-        historical_data = {}
-        
-        for product_code in product_codes:
-            try:
-                print(f"   📊 {product_code} 데이터 로딩...")
-                
-                # 실제 차트 데이터 조회 (더 긴 기간)
-                df = Common.GetOhlcv("KR", product_code, 1000)
-                
-                if df is None or len(df) == 0:
-                    print(f"   ❌ {product_code} 데이터 없음")
-                    continue
-                
-                # 날짜 범위 필터링
-                df.index = pd.to_datetime(df.index)
-                mask = (df.index >= start_date) & (df.index <= end_date)
-                df = df[mask]
-                
-                if len(df) < 50:
-                    print(f"   ⚠️ {product_code} 데이터 부족 ({len(df)}일)")
-                    continue
-                
-                # 기술적 지표 계산
-                df = self.calculate_technical_indicators(df)
-                
-                historical_data[product_code] = df
-                print(f"   ✅ {product_code} 데이터 로드 완료 ({len(df)}일)")
-                
-            except Exception as e:
-                print(f"   ❌ {product_code} 데이터 로딩 실패: {str(e)}")
-        
-        return historical_data
-
-    def calculate_technical_indicators(self, df):
-        """기술적 지표 계산 (실제 봇과 동일)"""
-        # 이동평균선
-        df['ma_10'] = df['close'].rolling(window=10).mean()
-        df['ma_50'] = df['close'].rolling(window=50).mean()
-        df['ma_200'] = df['close'].rolling(window=200).mean()
-        
-        # RSI (21일)
-        delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=21).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=21).mean()
-        rs = gain / loss
-        df['rsi'] = 100 - (100 / (1 + rs))
-        
-        # ATR (20일)
-        high_low = df['high'] - df['low']
-        high_close = np.abs(df['high'] - df['close'].shift())
-        low_close = np.abs(df['low'] - df['close'].shift())
-        true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-        df['atr'] = true_range.rolling(window=20).mean()
-        
-        # 52주 고저점
-        df['high_52w'] = df['high'].rolling(252).max()
-        df['low_52w'] = df['low'].rolling(252).min()
-        
-        # 트렌드 스코어
-        df['trend_score'] = 0
-        current_price = df['close']
-        
-        for i in range(len(df)):
-            if i < 200:  # 데이터 부족시 건너뛰기
-                continue
-                
-            price = current_price.iloc[i]
-            ma_10 = df['ma_10'].iloc[i]
-            ma_50 = df['ma_50'].iloc[i]
-            ma_200 = df['ma_200'].iloc[i]
-            
-            if pd.isna(ma_10) or pd.isna(ma_50) or pd.isna(ma_200):
-                continue
-                
-            if price > ma_10 > ma_50 > ma_200:
-                df.loc[df.index[i], 'trend_score'] = 3
-            elif price > ma_10 > ma_50:
-                df.loc[df.index[i], 'trend_score'] = 2
-            elif price > ma_10:
-                df.loc[df.index[i], 'trend_score'] = 1
-            elif price < ma_10 < ma_50 < ma_200:
-                df.loc[df.index[i], 'trend_score'] = -3
-            elif price < ma_10 < ma_50:
-                df.loc[df.index[i], 'trend_score'] = -2
-            elif price < ma_10:
-                df.loc[df.index[i], 'trend_score'] = -1
-        
-        return df
-
-    def simulate_market_conditions(self, current_date, df):
-        """시장 상황 시뮬레이션"""
-        try:
-            # 과거 시점의 시장 상황을 시뮬레이션
-            conditions = {
-                'dollar_strength': 'neutral',
-                'inflation_pressure': 'low', 
-                'geopolitical_risk': 'low',
-                'stock_market_stress': 'low',
-                'safe_haven_demand': 'normal',
-                'overall_signal': 'hold'
+        # 포트폴리오 설정 (금 상승장 최적화)
+        self.portfolio = {
+            '132030': {
+                'name': 'KODEX 골드선물(H)',
+                'weight': 0.35,
+                'hold_profit_target': 20,      # 10 → 20 (금 강세 대비)
+                'quick_profit_target': 8,      # 5 → 8 상향
+                'reentry_cooldown_hours': 2,   # 6 → 2 단축 (기회 놓침 방지)
+                'rsi_upper_bound': 80,         # 65 → 80 (과매수 완화)
+                'stop_loss_thresholds': [-0.15, -0.20, -0.25, -0.25, -0.25],  # 손절선 완화
+                'trend_multiplier': 1.5        # 🆕 상승 추세 시 목표 배수
+            },
+            '319640': {
+                'name': 'TIGER 골드선물',
+                'weight': 0.35,
+                'hold_profit_target': 20,      # 10 → 20 (금 강세 대비)
+                'quick_profit_target': 8,      # 5 → 8 상향
+                'reentry_cooldown_hours': 2,   # 6 → 2 단축
+                'rsi_upper_bound': 80,         # 65 → 80 (과매수 완화)
+                'stop_loss_thresholds': [-0.15, -0.20, -0.25, -0.25, -0.25],  # 손절선 완화
+                'trend_multiplier': 1.5        # 🆕 상승 추세 시 목표 배수
+            },
+            '411060': {
+                'name': 'ACE KRX 금현물',
+                'weight': 0.30,
+                'hold_profit_target': 15,      # 8 → 15 (금 강세 대비)
+                'quick_profit_target': 6,      # 4 → 6 상향
+                'reentry_cooldown_hours': 2,   # 8 → 2 단축
+                'rsi_upper_bound': 80,         # 75 → 80 (과매수 완화)
+                'stop_loss_thresholds': [-0.12, -0.18, -0.22, -0.22, -0.22],  # 손절선 완화 (현물은 보수적)
+                'trend_multiplier': 1.3        # 🆕 상승 추세 시 목표 배수 (현물은 보수적)
             }
-            
-            # 변동성 기반 시장 스트레스 계산
-            if len(df) >= 20:
-                recent_data = df.tail(20)
-                volatility = recent_data['close'].pct_change().std() * 100
-                
-                if volatility > 3.0:
-                    conditions['stock_market_stress'] = 'high'
-                    conditions['safe_haven_demand'] = 'high'
-                elif volatility > 2.0:
-                    conditions['stock_market_stress'] = 'moderate'
-                    conditions['safe_haven_demand'] = 'moderate'
-            
-            # 달러 강도 시뮬레이션 (단순화)
-            import random
-            random.seed(int(current_date.timestamp()))  # 일관된 결과를 위한 시드
-            dollar_rand = random.random()
-            
-            if dollar_rand > 0.7:
-                conditions['dollar_strength'] = 'strong'
-            elif dollar_rand < 0.3:
-                conditions['dollar_strength'] = 'weak'
-            
-            # 종합 신호 결정
-            buy_signals = 0
-            if conditions['dollar_strength'] == 'weak':
-                buy_signals += 2
-            if conditions['safe_haven_demand'] == 'high':
-                buy_signals += 2
-            if conditions['stock_market_stress'] == 'high':
-                buy_signals += 1
-            
-            if buy_signals >= 3:
-                conditions['overall_signal'] = 'strong_buy'
-            elif buy_signals >= 2:
-                conditions['overall_signal'] = 'buy'
-            elif buy_signals <= -2:
-                conditions['overall_signal'] = 'sell'
-            
-            return conditions
-            
-        except Exception as e:
-            print(f"❌ 시장 상황 시뮬레이션 실패: {str(e)}")
-            return {'overall_signal': 'hold'}
-
-    def simulate_buy_decision(self, product_code, position_num, current_data, 
-                            magic_data_list, market_conditions):
-        """매수 결정 시뮬레이션 (실제 봇 로직 활용)"""
-        try:
-            current_price = current_data['close']
-            rsi = current_data.get('rsi', 50)
-            trend_score = current_data.get('trend_score', 0)
-            
-            if pd.isna(rsi):
-                rsi = 50
-            if pd.isna(trend_score):
-                trend_score = 0
-            
-            # 1차수 매수 조건
-            if position_num == 1:
-                overall_signal = market_conditions.get('overall_signal', 'hold')
-                if overall_signal in ['strong_buy', 'buy']:
-                    return True, f"1차 진입: {overall_signal} 신호"
-                elif rsi < 40 and trend_score >= 0:
-                    return True, "1차 진입: RSI 과매도 + 중립 이상 트렌드"
-                elif trend_score >= 2:
-                    return True, "1차 진입: 강한 상승 트렌드"
-                else:
-                    return False, "1차 진입 조건 미충족"
-            
-            # 2차수 이상: 하락률 검증
-            if position_num > len(magic_data_list) or position_num < 2:
-                return False, "잘못된 포지션 번호"
-            
-            previous_position = magic_data_list[position_num - 2]
-            if not previous_position['IsBuy']:
-                return False, f"이전 {position_num-1}차수 미보유"
-            
-            # 동적 하락률 계산
-            required_drop, _ = self.calculate_drop_requirement(
-                position_num, market_conditions
-            )
-            
-            previous_price = previous_position['EntryPrice']
-            current_drop = (previous_price - current_price) / previous_price
-            
-            if current_drop < required_drop:
-                return False, f"{position_num}차 하락률 부족 ({current_drop*100:.1f}% < {required_drop*100:.1f}%)"
-            
-            # 추가 매수 조건
-            buy_reasons = []
-            
-            if rsi < 25:
-                buy_reasons.append(f"RSI 과매도({rsi:.1f})")
-            
-            if market_conditions.get('safe_haven_demand') == 'high':
-                buy_reasons.append("안전자산 수요 급증")
-            
-            if market_conditions.get('dollar_strength') == 'weak':
-                buy_reasons.append("달러 약세")
-            
-            if buy_reasons:
-                reason_text = f"{position_num}차 매수: {', '.join(buy_reasons)}"
-                return True, reason_text
-            
-            return False, f"{position_num}차 추가 조건 미충족"
-            
-        except Exception as e:
-            return False, f"매수 조건 판단 오류: {str(e)}"
-
-    def simulate_sell_decision(self, magic_data, current_data, market_conditions):
-        """매도 결정 시뮬레이션"""
-        try:
-            if not magic_data['IsBuy'] or magic_data['CurrentAmt'] <= 0:
-                return False, 0, "보유 포지션 없음"
-            
-            entry_price = magic_data['EntryPrice']
-            current_price = current_data['close']
-            current_return = (current_price - entry_price) / entry_price
-            position_num = magic_data['Number']
-            
-            # 손절 조건
-            stop_thresholds = {1: -0.20, 2: -0.25, 3: -0.30, 4: -0.30, 5: -0.30}
-            stop_threshold = stop_thresholds.get(position_num, -0.30)
-            
-            # 시장 상황별 손절선 조정
-            dollar_strength = market_conditions.get('dollar_strength', 'neutral')
-            if dollar_strength == 'strong':
-                stop_threshold -= 0.05  # 손절선 완화
-            elif dollar_strength == 'weak':
-                stop_threshold += 0.03  # 손절선 강화
-            
-            if current_return <= stop_threshold:
-                return True, 1.0, f"손절 실행 ({current_return*100:.1f}% <= {stop_threshold*100:.1f}%)"
-            
-            # 익절 조건
-            profit_targets = {1: 0.25, 2: 0.30, 3: 0.35, 4: 0.35, 5: 0.35}
-            profit_target = profit_targets.get(position_num, 0.35)
-            
-            if current_return >= profit_target:
-                return True, 0.5, f"부분 익절 ({current_return*100:.1f}% >= {profit_target*100:.1f}%)"
-            
-            # 트렌드 반전 매도
-            rsi = current_data.get('rsi', 50)
-            trend_score = current_data.get('trend_score', 0)
-            
-            if not pd.isna(rsi) and not pd.isna(trend_score):
-                if rsi > 80 and trend_score < 0:
-                    return True, 0.3, f"트렌드 반전 부분매도 (RSI:{rsi:.1f}, 트렌드:{trend_score})"
-                
-                if trend_score <= -2 and current_return > 0.1:
-                    return True, 0.5, "이동평균선 하향돌파 + 수익구간"
-            
-            return False, 0, "매도 조건 미충족"
-            
-        except Exception as e:
-            return False, 0, f"매도 조건 판단 오류: {str(e)}"
-
-    def calculate_drop_requirement(self, position_num, market_conditions):
-        """동적 하락률 계산 (실제 봇 로직)"""
-        base_drops = {2: 0.06, 3: 0.08, 4: 0.10, 5: 0.12}
-        base_drop = base_drops.get(position_num, 0.08)
-        final_drop = base_drop
-        
-        # 시장 상황별 조정
-        dollar_strength = market_conditions.get('dollar_strength', 'neutral')
-        if dollar_strength == 'strong':
-            final_drop -= 0.02
-        elif dollar_strength == 'weak':
-            final_drop += 0.01
-        
-        safe_haven_demand = market_conditions.get('safe_haven_demand', 'normal')
-        if safe_haven_demand == 'high':
-            final_drop -= 0.02
-        
-        # 안전 범위 제한
-        min_drop = base_drop * 0.3
-        max_drop = base_drop * 2.0
-        final_drop = max(min_drop, min(final_drop, max_drop))
-        
-        return final_drop, []
-
-    def run_backtest(self, product_codes, start_date, end_date, initial_budget=5000000):
-        """백테스팅 실행"""
-        print(f"\n🚀 백테스팅 시작: {start_date} ~ {end_date}")
-        print(f"💰 초기 자본: {initial_budget:,.0f}원")
-        print(f"📊 대상 종목: {product_codes}")
-        
-        # 과거 데이터 로드
-        historical_data = self.load_historical_data(product_codes, start_date, end_date)
-        
-        if not historical_data:
-            print("❌ 사용 가능한 과거 데이터가 없습니다.")
-            return None
-        
-        # 백테스팅 초기화
-        portfolio = {
-            'cash': initial_budget,
-            'total_value': initial_budget,
-            'positions': {}
         }
         
-        # 각 종목별 매매 데이터 초기화
-        for product_code in product_codes:
-            portfolio['positions'][product_code] = {
-                'magic_data_list': [],
-                'realized_pnl': 0
-            }
+        # 매매 파라미터 (금 상승장 최적화)
+        self.div_num = 5
+        self.base_drops = [0, 0.025, 0.030, 0.035, 0.040]  # 하락률 요구사항 완화 (진입 기회 확대)
+        self.rsi_period = 14
+        self.ma_short = 5
+        self.ma_mid = 20
+        self.ma_long = 60
+        
+        # 결과 저장
+        self.data = {}
+        self.trades = []
+        self.daily_portfolio_value = []
+        self.results = {}
+        
+    def calculate_rsi(self, prices, period=14):
+        """RSI 계산"""
+        if len(prices) < period + 1:
+            return [50] * len(prices)
+        
+        delta = np.diff(prices)
+        gain = np.where(delta > 0, delta, 0)
+        loss = np.where(delta < 0, -delta, 0)
+        
+        avg_gain = np.convolve(gain, np.ones(period)/period, mode='valid')
+        avg_loss = np.convolve(loss, np.ones(period)/period, mode='valid')
+        
+        rsi_values = []
+        for i in range(len(avg_gain)):
+            if avg_loss[i] == 0:
+                rsi = 100
+            else:
+                rs = avg_gain[i] / avg_loss[i]
+                rsi = 100 - (100 / (1 + rs))
+            rsi_values.append(rsi)
+        
+        padding = [50] * (len(prices) - len(rsi_values))
+        return padding + rsi_values
+    
+    def calculate_sma(self, prices, period):
+        """단순이동평균 계산"""
+        if len(prices) < period:
+            return [np.mean(prices)] * len(prices)
+        
+        sma_values = []
+        for i in range(len(prices)):
+            if i < period - 1:
+                sma_values.append(np.mean(prices[:i+1]))
+            else:
+                sma_values.append(np.mean(prices[i-period+1:i+1]))
+        return sma_values
+    
+    def generate_mock_data(self, symbol, current_price=None):
+        """모의 데이터 생성"""
+        config = self.portfolio[symbol]
+        
+        # 거래일 생성 (주말 제외)
+        dates = pd.date_range(start=self.start_date, end=self.end_date, freq='D')
+        dates = [d for d in dates if d.weekday() < 5]
+        
+        if len(dates) == 0:
+            return None
+        
+        # 기본 가격 설정
+        if current_price:
+            base_price = current_price
+        elif symbol == '132030':
+            base_price = 15000
+        elif symbol == '319640':
+            base_price = 25000
+        else:
+            base_price = 18000
+        
+        # 변동성 설정
+        volatility = 0.015 if symbol != '411060' else 0.012
+        
+        # 시드 설정
+        np.random.seed(42 + int(symbol))
+        
+        # 가격 시뮬레이션
+        if current_price:
+            # 현재가 기반 역산
+            prices = [current_price]
+            for i in range(len(dates) - 1):
+                daily_change = np.random.normal(-0.0001, volatility)
+                new_price = prices[-1] * (1 + daily_change)
+                new_price = max(base_price * 0.8, min(base_price * 1.3, new_price))
+                prices.append(new_price)
+            prices.reverse()
+        else:
+            # 기본 시뮬레이션 (실제 금 강세 반영)
+            prices = [base_price]
+            for i in range(1, len(dates)):
+                # 🥇 금 강세장 트렌드 반영
+                trend = 0.002  # 연간 약 80% 상승 트렌드
+                cycle_factor = np.sin(i * 0.08) * 0.2  # 주기적 변동
+                random_factor = np.random.normal(0, volatility)
+                
+                daily_return = trend + cycle_factor * volatility + random_factor
+                new_price = prices[-1] * (1 + daily_return)
+                
+                # 실제 차트 반영한 가격 범위
+                min_price = base_price * 0.6   # 더 넓은 하방
+                max_price = base_price * 2.2   # 대폭 상향 (실제 +90% 반영)
+                new_price = max(min_price, min(max_price, new_price))
+                
+                prices.append(new_price)
+        
+        # OHLCV 데이터 생성
+        ohlcv_data = []
+        for date, close in zip(dates, prices):
+            daily_vol = volatility * 0.5
+            high = close * (1 + np.random.uniform(0, daily_vol))
+            low = close * (1 - np.random.uniform(0, daily_vol))
+            open_price = (high + low) / 2 + np.random.normal(0, close * 0.002)
+            volume = np.random.randint(50000, 200000)
             
-            # 5차수 초기화
-            for i in range(5):
-                portfolio['positions'][product_code]['magic_data_list'].append({
-                    'Number': i + 1,
-                    'EntryPrice': 0,
-                    'EntryAmt': 0,
-                    'CurrentAmt': 0,
-                    'EntryDate': '',
-                    'IsBuy': False,
-                    'PositionRatio': [0.15, 0.20, 0.25, 0.20, 0.20][i]
-                })
+            ohlcv_data.append({
+                'Date': date,
+                'Open': open_price,
+                'High': high,
+                'Low': low,
+                'Close': close,
+                'Volume': volume
+            })
         
-        # 공통 날짜 인덱스 생성
-        all_dates = set()
-        for df in historical_data.values():
-            all_dates.update(df.index)
+        # DataFrame 생성
+        df = pd.DataFrame(ohlcv_data)
+        df['Date'] = pd.to_datetime(df['Date'])
+        df.set_index('Date', inplace=True)
         
-        trading_dates = sorted(list(all_dates))
-        print(f"📅 백테스팅 기간: {len(trading_dates)}일")
+        # 기술적 지표 계산
+        df['RSI'] = self.calculate_rsi(df['Close'].values, self.rsi_period)
+        df['MA5'] = self.calculate_sma(df['Close'].values, self.ma_short)
+        df['MA20'] = self.calculate_sma(df['Close'].values, self.ma_mid)
+        df['MA60'] = self.calculate_sma(df['Close'].values, self.ma_long)
+        df['Volatility'] = df['Close'].pct_change().rolling(20).std() * 100
+        df['Volatility'] = df['Volatility'].fillna(volatility * 100)
         
-        # 일별 백테스팅 실행
-        for i, current_date in enumerate(trading_dates):
+        return df
+    
+    def fetch_data(self):
+        """데이터 수집"""
+        print("🚀 금 ETF 데이터 수집 시작...")
+        
+        for symbol, config in self.portfolio.items():
+            print(f"  - {config['name']} ({symbol}) 데이터 수집...")
+            
+            current_price = None
+            
+            # KIS API로 현재가 시도
+            if KIS_API_AVAILABLE:
+                try:
+                    current_price = KisKR.GetCurrentPrice(symbol)
+                    if current_price and current_price > 0:
+                        print(f"    ✅ 현재가 확인: {current_price:,.0f}원")
+                    else:
+                        current_price = None
+                except:
+                    current_price = None
+            
+            # 모의 데이터 생성
             try:
-                # 진행률 표시
-                if i % 50 == 0 or i == len(trading_dates) - 1:
-                    progress = (i + 1) / len(trading_dates) * 100
-                    print(f"   🔄 진행률: {progress:.1f}% ({current_date.strftime('%Y-%m-%d')})")
-                
-                # 해당 날짜의 시장 상황 분석
-                market_conditions = self.simulate_market_conditions(current_date, None)
-                
-                # 각 종목별 매매 처리
-                for product_code in product_codes:
-                    if current_date not in historical_data[product_code].index:
-                        continue
-                    
-                    current_data = historical_data[product_code].loc[current_date]
-                    magic_data_list = portfolio['positions'][product_code]['magic_data_list']
-                    
-                    # 매도 처리 (우선)
-                    for magic_data in magic_data_list:
-                        if magic_data['IsBuy'] and magic_data['CurrentAmt'] > 0:
-                            should_sell, sell_ratio, sell_reason = self.simulate_sell_decision(
-                                magic_data, current_data, market_conditions
-                            )
-                            
-                            if should_sell and sell_ratio > 0:
-                                self.execute_backtest_sell(
-                                    portfolio, product_code, magic_data, 
-                                    current_data, sell_ratio, sell_reason, current_date
-                                )
-                    
-                    # 매수 처리
-                    for position_num in range(1, 6):
-                        magic_data = magic_data_list[position_num - 1]
-                        
-                        if not magic_data['IsBuy']:
-                            should_buy, buy_reason = self.simulate_buy_decision(
-                                product_code, position_num, current_data,
-                                magic_data_list, market_conditions
-                            )
-                            
-                            if should_buy:
-                                self.execute_backtest_buy(
-                                    portfolio, product_code, magic_data,
-                                    current_data, buy_reason, current_date
-                                )
-                                break  # 한 번에 하나씩만 매수
-                
-                # 일일 포트폴리오 가치 계산
-                daily_value = self.calculate_portfolio_value(
-                    portfolio, historical_data, current_date
-                )
-                
-                self.daily_portfolio.append({
-                    'date': current_date,
-                    'total_value': daily_value,
-                    'cash': portfolio['cash'],
-                    'return_pct': (daily_value - initial_budget) / initial_budget * 100
-                })
-                
+                mock_data = self.generate_mock_data(symbol, current_price)
+                if mock_data is not None:
+                    self.data[symbol] = mock_data
+                    price_type = "현재가 기반" if current_price else "기본"
+                    print(f"    ✅ {price_type} 모의 데이터 생성 완료 ({len(mock_data)}일)")
+                    print(f"    📊 가격 범위: {mock_data['Close'].min():.0f}원 ~ {mock_data['Close'].max():.0f}원")
+                else:
+                    print(f"    ❌ 모의 데이터 생성 실패")
             except Exception as e:
-                print(f"❌ {current_date} 처리 중 오류: {str(e)}")
+                print(f"    ❌ 데이터 생성 오류: {str(e)}")
+            
+            time.sleep(0.3)  # API 제한 고려
         
-        # 백테스팅 결과 분석
-        results = self.analyze_backtest_results(portfolio, initial_budget, trading_dates)
-        self.backtest_results = results
+        success = len(self.data) > 0
+        if success:
+            print(f"✅ 총 {len(self.data)}개 종목 데이터 수집 완료")
+        else:
+            print("❌ 데이터 수집 실패")
         
-        print(f"\n✅ 백테스팅 완료!")
-        print(f"📊 총 수익률: {results['total_return_pct']:.2f}%")
-        print(f"📈 연환산 수익률: {results['annual_return_pct']:.2f}%")
-        print(f"📉 최대 낙폭: {results['max_drawdown_pct']:.2f}%")
-        print(f"💹 총 매매 횟수: {len(self.trade_history)}회")
+        return success
+    
+    def calculate_technical_indicators(self, symbol, date):
+        """기술적 지표 기반 매매 신호 계산 (금 상승장 최적화)"""
+        if symbol not in self.data:
+            return {'can_buy': False, 'can_sell': False, 'strength': 0, 'trend_strength': 0}
         
-        return results
-
-    def execute_backtest_buy(self, portfolio, product_code, magic_data, 
-                           current_data, reason, current_date):
-        """백테스트 매수 실행"""
-        try:
-            current_price = current_data['close']
-            position_ratio = magic_data['PositionRatio']
-            
-            # 종목별 배정 예산 계산 (균등 분할)
-            gold_products = self.config.config.get('gold_products', {})
-            num_products = len([p for p in gold_products.values() if p.get('recommended', False)])
-            if num_products == 0:
-                num_products = 1
-            
-            product_budget = portfolio['cash'] * (1.0 / num_products)
-            invest_amount = product_budget * position_ratio
-            
-            # 매수 가능 수량 계산
-            buy_amount = int(invest_amount / current_price)
-            actual_cost = buy_amount * current_price
-            
-            # 수수료 계산
-            commission = actual_cost * self.commission_rate
-            slippage = actual_cost * self.slippage_rate
-            total_cost = actual_cost + commission + slippage
-            
-            if buy_amount > 0 and portfolio['cash'] >= total_cost:
-                # 매수 실행
-                magic_data['IsBuy'] = True
-                magic_data['EntryPrice'] = current_price
-                magic_data['EntryAmt'] = buy_amount
-                magic_data['CurrentAmt'] = buy_amount
-                magic_data['EntryDate'] = current_date.strftime('%Y-%m-%d')
-                
-                portfolio['cash'] -= total_cost
-                
-                # 거래 이력 저장
-                self.trade_history.append({
-                    'date': current_date,
-                    'product_code': product_code,
-                    'action': 'BUY',
-                    'position': magic_data['Number'],
-                    'price': current_price,
-                    'amount': buy_amount,
-                    'cost': actual_cost,
-                    'commission': commission,
-                    'slippage': slippage,
-                    'reason': reason
-                })
-                
-                return True
-            
-        except Exception as e:
-            print(f"❌ 백테스트 매수 실행 오류: {str(e)}")
+        df = self.data[symbol]
+        if date not in df.index:
+            # 가장 가까운 날짜 찾기
+            available_dates = df.index
+            closest_date = min(available_dates, key=lambda x: abs((x - date).days))
+            if abs((closest_date - date).days) > 7:
+                return {'can_buy': False, 'can_sell': False, 'strength': 0, 'trend_strength': 0}
+            date = closest_date
         
-        return False
-
-    def execute_backtest_sell(self, portfolio, product_code, magic_data,
-                            current_data, sell_ratio, reason, current_date):
-        """백테스트 매도 실행"""
-        try:
-            current_price = current_data['close']
-            sell_amount = int(magic_data['CurrentAmt'] * sell_ratio)
-            
-            if sell_amount > 0:
-                # 매도 수익 계산
-                revenue = sell_amount * current_price
-                commission = revenue * self.commission_rate
-                slippage = revenue * self.slippage_rate
-                net_revenue = revenue - commission - slippage
-                
-                # 손익 계산
-                entry_cost = sell_amount * magic_data['EntryPrice']
-                profit = net_revenue - entry_cost
-                return_pct = profit / entry_cost * 100
-                
-                # 포지션 업데이트
-                magic_data['CurrentAmt'] -= sell_amount
-                if magic_data['CurrentAmt'] <= 0:
-                    magic_data['IsBuy'] = False
-                    magic_data['CurrentAmt'] = 0
-                
-                portfolio['cash'] += net_revenue
-                portfolio['positions'][product_code]['realized_pnl'] += profit
-                
-                # 거래 이력 저장
-                self.trade_history.append({
-                    'date': current_date,
-                    'product_code': product_code,
-                    'action': 'SELL',
-                    'position': magic_data['Number'],
-                    'price': current_price,
-                    'amount': sell_amount,
-                    'revenue': revenue,
-                    'commission': commission,
-                    'slippage': slippage,
-                    'profit': profit,
-                    'return_pct': return_pct,
-                    'reason': reason
-                })
-                
-                return True
-                
-        except Exception as e:
-            print(f"❌ 백테스트 매도 실행 오류: {str(e)}")
+        row = df.loc[date]
+        config = self.portfolio[symbol]
         
-        return False
-
-    def calculate_portfolio_value(self, portfolio, historical_data, current_date):
-        """포트폴리오 총 가치 계산"""
-        total_value = portfolio['cash']
+        # RSI 및 이동평균
+        rsi = row['RSI'] if not pd.isna(row['RSI']) else 50
+        ma5 = row['MA5']
+        ma20 = row['MA20']
+        ma60 = row['MA60']
+        
+        if pd.isna(ma5) or pd.isna(ma20) or pd.isna(ma60):
+            return {'can_buy': False, 'can_sell': False, 'strength': 50, 'trend_strength': 0}
+        
+        # 🆕 상승 추세 강도 계산
+        trend_strength = 0
+        price_vs_ma60 = row['Close'] / ma60
+        if ma5 > ma20 > ma60:
+            trend_strength = min(100, (price_vs_ma60 - 1) * 100)  # MA60 대비 상승률
+        
+        # 🔥 개선된 매수 신호 (상승장 최적화)
+        can_buy = (
+            rsi < config['rsi_upper_bound'] and          # RSI 상한선 (80으로 상향)
+            ma5 > ma20 and                               # 단기 상승 추세
+            row['Close'] > ma60 and                      # 🆕 장기 상승 추세 필수
+            price_vs_ma60 < 1.5                         # 🆕 과도한 고점 방지
+        )
+        
+        # 🔥 개선된 기술적 매도 신호 (상승장에서 덜 민감)
+        can_sell_technical = (
+            rsi > 85 or                                  # 85 이상에서만 과매수 (기존 80)
+            (ma5 < ma20 and row['Close'] < ma60)         # 🆕 장기 추세 이탈 시에만
+        )
+        
+        # 🆕 강화된 신호 강도 계산
+        strength = 50
+        
+        # RSI 기반 조정
+        if rsi < 30:
+            strength += 25    # 과매도 보너스 증가
+        elif rsi < 50:
+            strength += 10    # 중립 구간 보너스
+        elif rsi > 80:
+            strength -= 10    # 과매수 패널티 완화 (기존 -15)
+        
+        # 추세 기반 보너스
+        if ma5 > ma20 > ma60:
+            strength += 20    # 상승 추세 보너스 증가 (기존 15)
+            if trend_strength > 10:  # 강한 상승 추세 시 추가 보너스
+                strength += 10
+        elif ma5 < ma20 < ma60:
+            strength -= 15    # 하락 추세 패널티
+        
+        return {
+            'can_buy': can_buy,
+            'can_sell_technical': can_sell_technical,
+            'strength': max(0, min(100, strength)),
+            'rsi': rsi,
+            'trend_strength': trend_strength,
+            'price_vs_ma60': price_vs_ma60
+        }
+    
+    def check_drop_requirement(self, symbol, date, position_level):
+        """차수별 하락률 요구사항 체크"""
+        if position_level <= 1:
+            return True
+        
+        if symbol not in self.data:
+            return False
+        
+        df = self.data[symbol]
+        available_dates = df.index
+        closest_date = min(available_dates, key=lambda x: abs((x - date).days))
+        
+        if abs((closest_date - date).days) > 7:
+            return False
+        
+        required_drop = self.base_drops[position_level - 1]
+        if required_drop <= 0:
+            return True
         
         try:
-            for product_code, position_data in portfolio['positions'].items():
-                if current_date not in historical_data[product_code].index:
+            end_idx = df.index.get_loc(closest_date)
+            start_idx = max(0, end_idx - 5)
+            recent_data = df.iloc[start_idx:end_idx + 1]
+            
+            if len(recent_data) == 0:
+                return False
+            
+            recent_high = recent_data['High'].max()
+            current_price = df.loc[closest_date, 'Close']
+            actual_drop = (recent_high - current_price) / recent_high
+            
+            return actual_drop >= required_drop
+        except:
+            return False
+    
+    def run_backtest(self):
+        """백테스팅 실행"""
+        print("🚀 금 ETF 포트폴리오 백테스팅 시작...")
+        
+        if not self.data:
+            print("❌ 데이터가 없습니다.")
+            return False
+        
+        # 모든 날짜 수집
+        all_dates = set()
+        for df in self.data.values():
+            all_dates.update(df.index)
+        all_dates = sorted(list(all_dates))
+        
+        if not all_dates:
+            print("❌ 유효한 날짜 데이터가 없습니다.")
+            return False
+        
+        # 포트폴리오 상태 초기화
+        cash = self.initial_capital
+        positions = {}
+        last_sell_time = {}
+        
+        for symbol in self.portfolio.keys():
+            positions[symbol] = []
+            last_sell_time[symbol] = None
+        
+        print(f"📅 {len(all_dates)}일간 백테스팅 실행...")
+        
+        for i, date in enumerate(all_dates):
+            if i % 50 == 0:
+                progress = i / len(all_dates) * 100
+                print(f"  진행률: {progress:.1f}% ({date.strftime('%Y-%m-%d')})")
+            
+            # 각 종목별 처리
+            for symbol, config in self.portfolio.items():
+                if symbol not in self.data or date not in self.data[symbol].index:
                     continue
                 
-                current_price = historical_data[product_code].loc[current_date, 'close']
+                current_price = self.data[symbol].loc[date, 'Close']
+                allocated_budget = self.initial_capital * config['weight']
                 
-                for magic_data in position_data['magic_data_list']:
-                    if magic_data['IsBuy'] and magic_data['CurrentAmt'] > 0:
-                        position_value = magic_data['CurrentAmt'] * current_price
-                        total_value += position_value
+                # 기술적 지표 계산
+                indicators = self.calculate_technical_indicators(symbol, date)
+                
+                # 매도 로직 (금 상승장 최적화)
+                positions_to_remove = []
+                for pos_idx, position in enumerate(positions[symbol]):
+                    entry_price = position['entry_price']
+                    profit_pct = (current_price - entry_price) / entry_price * 100
+                    
+                    # 손절 체크 (완화된 손절선 적용)
+                    stop_loss_threshold = config['stop_loss_thresholds'][position['level'] - 1] * 100
+                    should_stop_loss = profit_pct <= stop_loss_threshold
+                    
+                    # 🆕 상승 추세 시 목표 수익률 동적 조정
+                    base_profit_target = config['hold_profit_target']
+                    quick_profit_target = config['quick_profit_target']
+                    
+                    # 강한 상승 추세에서는 목표 수익률 확대
+                    if indicators.get('trend_strength', 0) > 15:  # 강한 상승 추세
+                        trend_multiplier = config.get('trend_multiplier', 1.0)
+                        base_profit_target *= trend_multiplier
+                        quick_profit_target *= trend_multiplier
+                    
+                    # 🔥 개선된 수익 실현 체크
+                    should_take_profit = (
+                        profit_pct >= base_profit_target or
+                        (profit_pct >= quick_profit_target and indicators['can_sell_technical'])
+                    )
+                    
+                    # 매도 실행
+                    if should_stop_loss or should_take_profit:
+                        sell_value = position['shares'] * current_price
+                        cash += sell_value
+                        
+                        # 거래 기록
+                        self.trades.append({
+                            'date': date,
+                            'symbol': symbol,
+                            'name': config['name'],
+                            'action': 'SELL',
+                            'level': position['level'],
+                            'shares': position['shares'],
+                            'price': current_price,
+                            'value': sell_value,
+                            'profit_pct': profit_pct,
+                            'reason': 'STOP_LOSS' if should_stop_loss else 'PROFIT_TAKING',
+                            'hold_days': (date - position['entry_date']).days,
+                            'trend_strength': indicators.get('trend_strength', 0),  # 🆕 추세 강도 기록
+                            'target_used': base_profit_target  # 🆕 실제 사용된 목표 기록
+                        })
+                        
+                        positions_to_remove.append(pos_idx)
+                        last_sell_time[symbol] = date
+                
+                # 매도된 포지션 제거
+                for pos_idx in reversed(positions_to_remove):
+                    positions[symbol].pop(pos_idx)
+                
+                # 매수 로직
+                if indicators['can_buy']:
+                    # 쿨다운 체크
+                    if last_sell_time[symbol]:
+                        hours_since_sell = (date - last_sell_time[symbol]).total_seconds() / 3600
+                        if hours_since_sell < config['reentry_cooldown_hours']:
+                            continue
+                    
+                    # 다음 매수할 차수 결정
+                    current_levels = [pos['level'] for pos in positions[symbol]]
+                    next_level = 1
+                    
+                    if current_levels:
+                        for level in range(1, 6):
+                            if level not in current_levels:
+                                if level == 1 or (level - 1) in current_levels:
+                                    next_level = level
+                                    break
+                        else:
+                            continue
+                    
+                    # 하락률 요구사항 체크
+                    if not self.check_drop_requirement(symbol, date, next_level):
+                        continue
+                    
+                    # 매수 실행
+                    position_budget = allocated_budget / self.div_num
+                    if cash >= position_budget and position_budget > current_price:
+                        shares = int(position_budget / current_price)
+                        if shares > 0:
+                            actual_cost = shares * current_price
+                            cash -= actual_cost
+                            
+                            # 포지션 추가
+                            positions[symbol].append({
+                                'level': next_level,
+                                'shares': shares,
+                                'entry_price': current_price,
+                                'entry_date': date
+                            })
+                            
+                            # 거래 기록
+                            self.trades.append({
+                                'date': date,
+                                'symbol': symbol,
+                                'name': config['name'],
+                                'action': 'BUY',
+                                'level': next_level,
+                                'shares': shares,
+                                'price': current_price,
+                                'value': actual_cost,
+                                'profit_pct': 0,
+                                'reason': f'LEVEL_{next_level}_ENTRY',
+                                'hold_days': 0
+                            })
+            
+            # 일일 포트폴리오 가치 계산
+            total_position_value = 0
+            for symbol, symbol_positions in positions.items():
+                if symbol in self.data and date in self.data[symbol].index:
+                    current_price = self.data[symbol].loc[date, 'Close']
+                    for position in symbol_positions:
+                        total_position_value += position['shares'] * current_price
+            
+            portfolio_value = cash + total_position_value
+            self.daily_portfolio_value.append({
+                'date': date,
+                'cash': cash,
+                'positions': total_position_value,
+                'total': portfolio_value,
+                'return_pct': (portfolio_value - self.initial_capital) / self.initial_capital * 100
+            })
         
-        except Exception as e:
-            print(f"❌ 포트폴리오 가치 계산 오류: {str(e)}")
+        print("✅ 백테스팅 완료!")
+        self.analyze_results()
+        return True
+    
+    def analyze_results(self):
+        """결과 분석"""
+        print("\n📊 백테스팅 결과 분석...")
         
-        return total_value
-
-    def analyze_backtest_results(self, portfolio, initial_budget, trading_dates):
-        """백테스팅 결과 분석"""
-        try:
-            if not self.daily_portfolio:
-                return {}
-            
-            # 기본 통계
-            final_value = self.daily_portfolio[-1]['total_value']
-            total_return_pct = (final_value - initial_budget) / initial_budget * 100
-            
-            # 기간 계산
-            start_date = trading_dates[0]
-            end_date = trading_dates[-1]
-            total_days = (end_date - start_date).days
-            years = total_days / 365.25
-            
-            # 연환산 수익률
-            annual_return_pct = ((final_value / initial_budget) ** (1/years) - 1) * 100 if years > 0 else 0
-            
-            # 일별 수익률 계산
-            daily_returns = []
-            values = [d['total_value'] for d in self.daily_portfolio]
-            
-            for i in range(1, len(values)):
-                daily_return = (values[i] - values[i-1]) / values[i-1]
+        if not self.daily_portfolio_value:
+            print("❌ 백테스팅 데이터가 없습니다.")
+            return
+        
+        # 기본 통계
+        final_value = self.daily_portfolio_value[-1]['total']
+        total_return = (final_value - self.initial_capital) / self.initial_capital * 100
+        
+        # 일별 수익률 계산
+        daily_returns = []
+        for i in range(1, len(self.daily_portfolio_value)):
+            prev_value = self.daily_portfolio_value[i-1]['total']
+            curr_value = self.daily_portfolio_value[i]['total']
+            if prev_value > 0:
+                daily_return = (curr_value - prev_value) / prev_value
                 daily_returns.append(daily_return)
-            
-            daily_returns = np.array(daily_returns)
-            
-            # 최대 낙폭 (MDD) 계산
-            peak = initial_budget
-            max_drawdown = 0
-            
-            for value in values:
-                if value > peak:
-                    peak = value
-                drawdown = (peak - value) / peak
+        
+        if not daily_returns:
+            print("❌ 수익률 데이터 부족")
+            return
+        
+        daily_returns = np.array(daily_returns)
+        
+        # 리스크 지표 계산
+        trading_days = len(daily_returns)
+        annualized_factor = 252 / trading_days if trading_days > 0 else 1
+        
+        volatility = np.std(daily_returns) * np.sqrt(252) * 100 if len(daily_returns) > 1 else 0
+        mean_return = np.mean(daily_returns)
+        sharpe_ratio = mean_return / np.std(daily_returns) * np.sqrt(252) if np.std(daily_returns) > 0 else 0
+        
+        # 최대 낙폭 계산
+        peak = self.initial_capital
+        max_drawdown = 0
+        for day in self.daily_portfolio_value:
+            if day['total'] > peak:
+                peak = day['total']
+            if peak > 0:
+                drawdown = (peak - day['total']) / peak
                 if drawdown > max_drawdown:
                     max_drawdown = drawdown
+        
+        # 거래 분석
+        if self.trades:
+            trades_df = pd.DataFrame(self.trades)
+            buy_trades = trades_df[trades_df['action'] == 'BUY']
+            sell_trades = trades_df[trades_df['action'] == 'SELL']
             
-            max_drawdown_pct = max_drawdown * 100
+            winning_trades = sell_trades[sell_trades['profit_pct'] > 0] if len(sell_trades) > 0 else pd.DataFrame()
+            losing_trades = sell_trades[sell_trades['profit_pct'] < 0] if len(sell_trades) > 0 else pd.DataFrame()
             
-            # 샤프 비율 (무위험 수익률 3% 가정)
-            risk_free_rate = 0.03
-            if len(daily_returns) > 0 and daily_returns.std() > 0:
-                excess_return = annual_return_pct / 100 - risk_free_rate
-                volatility = daily_returns.std() * np.sqrt(252)  # 연환산 변동성
-                sharpe_ratio = excess_return / volatility
-            else:
-                sharpe_ratio = 0
-                volatility = 0
-            
-            # 매매 통계
-            buy_trades = [t for t in self.trade_history if t['action'] == 'BUY']
-            sell_trades = [t for t in self.trade_history if t['action'] == 'SELL']
-            
-            if sell_trades:
-                profitable_trades = [t for t in sell_trades if t['profit'] > 0]
-                win_rate = len(profitable_trades) / len(sell_trades) * 100
-                avg_profit = np.mean([t['profit'] for t in sell_trades])
-                avg_return = np.mean([t['return_pct'] for t in sell_trades])
-            else:
-                win_rate = 0
-                avg_profit = 0
-                avg_return = 0
-            
-            # 실현 손익
-            total_realized_pnl = sum([pos['realized_pnl'] for pos in portfolio['positions'].values()])
-            
-            # 결과 딕셔너리
-            results = {
-                'start_date': start_date.strftime('%Y-%m-%d'),
-                'end_date': end_date.strftime('%Y-%m-%d'),
-                'trading_days': len(trading_dates),
-                'total_days': total_days,
-                'years': years,
-                
-                'initial_budget': initial_budget,
-                'final_value': final_value,
-                'total_return': final_value - initial_budget,
-                'total_return_pct': total_return_pct,
-                'annual_return_pct': annual_return_pct,
-                'volatility': volatility * 100,
-                
-                'max_drawdown': max_drawdown,
-                'max_drawdown_pct': max_drawdown_pct,
-                'sharpe_ratio': sharpe_ratio,
-                
-                'total_trades': len(self.trade_history),
-                'buy_trades': len(buy_trades),
-                'sell_trades': len(sell_trades),
-                'win_rate': win_rate,
-                'avg_profit': avg_profit,
-                'avg_return_pct': avg_return,
-                'total_realized_pnl': total_realized_pnl,
-                
-                'final_cash': portfolio['cash'],
-                'commission_paid': sum([t.get('commission', 0) for t in self.trade_history]),
-                'slippage_cost': sum([t.get('slippage', 0) for t in self.trade_history])
-            }
-            
-            return results
-            
-        except Exception as e:
-            print(f"❌ 결과 분석 중 오류: {str(e)}")
-            return {}
+            # 종목별 성과
+            symbol_performance = {}
+            for symbol, config in self.portfolio.items():
+                symbol_trades = sell_trades[sell_trades['symbol'] == symbol] if len(sell_trades) > 0 else pd.DataFrame()
+                if len(symbol_trades) > 0:
+                    total_profit = symbol_trades['profit_pct'].sum()
+                    win_rate = len(symbol_trades[symbol_trades['profit_pct'] > 0]) / len(symbol_trades) * 100
+                    avg_hold_days = symbol_trades['hold_days'].mean()
+                    symbol_performance[symbol] = {
+                        'name': config['name'],
+                        'total_profit': total_profit,
+                        'win_rate': win_rate,
+                        'avg_hold_days': avg_hold_days,
+                        'total_trades': len(symbol_trades)
+                    }
+        else:
+            buy_trades = pd.DataFrame()
+            sell_trades = pd.DataFrame()
+            winning_trades = pd.DataFrame()
+            losing_trades = pd.DataFrame()
+            symbol_performance = {}
+        
+        # 결과 저장
+        self.results = {
+            'period': f"{self.start_date.strftime('%Y-%m-%d')} ~ {self.end_date.strftime('%Y-%m-%d')}",
+            'initial_capital': self.initial_capital,
+            'final_value': final_value,
+            'total_return': total_return,
+            'annual_return': total_return * annualized_factor,
+            'volatility': volatility,
+            'sharpe_ratio': sharpe_ratio,
+            'max_drawdown': max_drawdown * 100,
+            'total_trades': len(self.trades),
+            'buy_trades': len(buy_trades),
+            'sell_trades': len(sell_trades),
+            'win_rate': len(winning_trades) / len(sell_trades) * 100 if len(sell_trades) > 0 else 0,
+            'avg_profit': winning_trades['profit_pct'].mean() if len(winning_trades) > 0 else 0,
+            'avg_loss': losing_trades['profit_pct'].mean() if len(losing_trades) > 0 else 0,
+            'avg_hold_days': sell_trades['hold_days'].mean() if len(sell_trades) > 0 else 0,
+            'symbol_performance': symbol_performance
+        }
+        
+        # 결과 출력
+        print(f"""
+🥇 금 ETF 포트폴리오 백테스팅 결과
+{'='*50}
+📅 기간: {self.results['period']}
+📊 거래일수: {trading_days}일
+💰 초기 자본: {self.initial_capital:,.0f}원
+💎 최종 자산: {final_value:,.0f}원
+📈 총 수익률: {total_return:.2f}%
+📊 연환산 수익률: {self.results['annual_return']:.2f}%
+⚡ 변동성: {volatility:.2f}%
+🎯 샤프 비율: {sharpe_ratio:.2f}
+📉 최대 낙폭: {max_drawdown*100:.2f}%
 
-    def generate_report(self, save_file=True):
-        """백테스팅 리포트 생성"""
-        if not self.backtest_results:
-            print("❌ 백테스팅 결과가 없습니다.")
+거래 통계:
+🔄 총 거래 횟수: {len(self.trades)}회
+📈 매수: {len(buy_trades)}회
+📉 매도: {len(sell_trades)}회
+🏆 승률: {self.results['win_rate']:.1f}%
+⏰ 평균 보유일: {self.results['avg_hold_days']:.1f}일
+💹 평균 수익: {self.results['avg_profit']:.2f}%
+💸 평균 손실: {self.results['avg_loss']:.2f}%""")
+        
+        if symbol_performance:
+            print("\n종목별 성과:")
+            for symbol, perf in symbol_performance.items():
+                print(f"""
+📊 {perf['name']} ({symbol}):
+   수익률: {perf['total_profit']:.2f}%
+   승률: {perf['win_rate']:.1f}%
+   거래횟수: {perf['total_trades']}회
+   평균보유: {perf['avg_hold_days']:.1f}일""")
+        
+        return self.results
+    
+    def plot_results(self):
+        """결과 시각화"""
+        if not self.daily_portfolio_value:
+            print("❌ 시각화할 데이터가 없습니다.")
             return
         
-        results = self.backtest_results
+        # 데이터 준비
+        df = pd.DataFrame(self.daily_portfolio_value)
+        df['date'] = pd.to_datetime(df['date'])
+        df.set_index('date', inplace=True)
         
-        report = f"""
-🥇 =================== 금투자 백테스팅 결과 리포트 ===================
-
-📅 백테스팅 기간: {results['start_date']} ~ {results['end_date']} ({results['trading_days']}일)
-💰 초기 자본: {results['initial_budget']:,.0f}원
-💎 최종 자산: {results['final_value']:,.0f}원
-
-📊 =================== 수익성 분석 ===================
-총 수익률:        {results['total_return_pct']:+.2f}% ({results['total_return']:+,.0f}원)
-연환산 수익률:    {results['annual_return_pct']:+.2f}%
-연환산 변동성:    {results['volatility']:.2f}%
-샤프 비율:       {results['sharpe_ratio']:.3f}
-
-📉 =================== 리스크 분석 ===================
-최대 낙폭(MDD):   {results['max_drawdown_pct']:.2f}%
-실현 손익:       {results['total_realized_pnl']:+,.0f}원
-
-💹 =================== 매매 통계 ===================
-총 매매 횟수:     {results['total_trades']}회 (매수: {results['buy_trades']}, 매도: {results['sell_trades']})
-승률:           {results['win_rate']:.1f}%
-평균 수익률:     {results['avg_return_pct']:+.2f}%
-평균 손익:       {results['avg_profit']:+,.0f}원
-
-💸 =================== 비용 분석 ===================
-수수료 총액:     {results['commission_paid']:,.0f}원
-슬리피지 비용:   {results['slippage_cost']:,.0f}원
-최종 현금:       {results['final_cash']:,.0f}원
-
-=================================================================
-"""
+        # 벤치마크 계산 (Buy & Hold)
+        benchmark_value = []
+        initial_prices = {}
         
-        print(report)
+        for symbol, config in self.portfolio.items():
+            if symbol in self.data and len(self.data[symbol]) > 0:
+                initial_prices[symbol] = self.data[symbol].iloc[0]['Close']
         
-        if save_file:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"GoldBacktest_Report_{timestamp}.txt"
+        for date in df.index:
+            total_value = 0
+            for symbol, config in self.portfolio.items():
+                if symbol in self.data and symbol in initial_prices:
+                    df_symbol = self.data[symbol]
+                    if date in df_symbol.index:
+                        current_price = df_symbol.loc[date, 'Close']
+                    else:
+                        closest_date = min(df_symbol.index, key=lambda x: abs((x - date).days))
+                        current_price = df_symbol.loc[closest_date, 'Close']
+                    
+                    initial_investment = self.initial_capital * config['weight']
+                    shares = initial_investment / initial_prices[symbol]
+                    current_value = shares * current_price
+                    total_value += current_value
             
-            try:
-                with open(filename, 'w', encoding='utf-8') as f:
-                    f.write(report)
-                print(f"📄 리포트가 저장되었습니다: {filename}")
-            except Exception as e:
-                print(f"❌ 리포트 저장 실패: {str(e)}")
+            benchmark_value.append(total_value if total_value > 0 else self.initial_capital)
         
-        return report
-
-    def plot_results(self, save_charts=True):
-        """백테스팅 결과 차트 생성"""
-        if not self.daily_portfolio:
-            print("❌ 차트를 그릴 데이터가 없습니다.")
+        df['benchmark'] = benchmark_value
+        df['benchmark_return'] = (df['benchmark'] - self.initial_capital) / self.initial_capital * 100
+        
+        # 시각화
+        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+        fig.suptitle('🥇 금 ETF 포트폴리오 백테스팅 결과', fontsize=16, fontweight='bold')
+        
+        # 1. 포트폴리오 가치 추이
+        axes[0, 0].plot(df.index, df['total'], label='SmartMagicSplit', linewidth=2, color='gold')
+        axes[0, 0].plot(df.index, df['benchmark'], label='Buy & Hold', linewidth=2, color='gray', alpha=0.7)
+        axes[0, 0].set_title('포트폴리오 가치 추이')
+        axes[0, 0].set_ylabel('포트폴리오 가치 (원)')
+        axes[0, 0].legend()
+        axes[0, 0].grid(True, alpha=0.3)
+        axes[0, 0].yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{x:,.0f}'))
+        
+        # 2. 누적 수익률
+        axes[0, 1].plot(df.index, df['return_pct'], label='SmartMagicSplit', linewidth=2, color='gold')
+        axes[0, 1].plot(df.index, df['benchmark_return'], label='Buy & Hold', linewidth=2, color='gray', alpha=0.7)
+        axes[0, 1].set_title('누적 수익률')
+        axes[0, 1].set_ylabel('수익률 (%)')
+        axes[0, 1].legend()
+        axes[0, 1].grid(True, alpha=0.3)
+        axes[0, 1].axhline(y=0, color='black', linestyle='-', alpha=0.3)
+        
+        # 3. 현금 vs 포지션 비율
+        axes[1, 0].fill_between(df.index, 0, df['cash'], alpha=0.7, label='현금', color='lightblue')
+        axes[1, 0].fill_between(df.index, df['cash'], df['total'], alpha=0.7, label='포지션', color='lightcoral')
+        axes[1, 0].set_title('자산 구성')
+        axes[1, 0].set_ylabel('금액 (원)')
+        axes[1, 0].legend()
+        axes[1, 0].grid(True, alpha=0.3)
+        axes[1, 0].yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{x:,.0f}'))
+        
+        # 4. 수익률 분포
+        if self.trades:
+            trades_df = pd.DataFrame(self.trades)
+            sell_trades = trades_df[trades_df['action'] == 'SELL']
+            if len(sell_trades) > 0:
+                axes[1, 1].hist(sell_trades['profit_pct'], bins=20, alpha=0.7, color='gold', edgecolor='black')
+                axes[1, 1].axvline(x=0, color='red', linestyle='--', alpha=0.7, label='손익분기점')
+                mean_profit = sell_trades['profit_pct'].mean()
+                axes[1, 1].axvline(x=mean_profit, color='blue', linestyle='-', alpha=0.7, label=f'평균: {mean_profit:.1f}%')
+                axes[1, 1].set_title('거래별 수익률 분포')
+                axes[1, 1].set_xlabel('수익률 (%)')
+                axes[1, 1].set_ylabel('빈도')
+                axes[1, 1].legend()
+                axes[1, 1].grid(True, alpha=0.3)
+            else:
+                axes[1, 1].text(0.5, 0.5, '매도 거래 없음', ha='center', va='center', transform=axes[1, 1].transAxes)
+                axes[1, 1].set_title('거래별 수익률 분포')
+        else:
+            axes[1, 1].text(0.5, 0.5, '거래 데이터 없음', ha='center', va='center', transform=axes[1, 1].transAxes)
+            axes[1, 1].set_title('거래별 수익률 분포')
+        
+        plt.tight_layout()
+        plt.savefig('gold_etf_backtest_results.png', dpi=300, bbox_inches='tight')
+        plt.show()
+        
+        # 추가 상세 차트
+        self.plot_detailed_analysis()
+    
+    def plot_detailed_analysis(self):
+        """상세 분석 차트"""
+        if not self.trades:
+            return
+        
+        trades_df = pd.DataFrame(self.trades)
+        trades_df['date'] = pd.to_datetime(trades_df['date'])
+        
+        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+        fig.suptitle('🥇 금 ETF 포트폴리오 상세 분석', fontsize=16, fontweight='bold')
+        
+        # 1. 종목별 수익률
+        sell_trades = trades_df[trades_df['action'] == 'SELL']
+        if len(sell_trades) > 0:
+            symbol_profits = sell_trades.groupby('name')['profit_pct'].agg(['mean', 'sum', 'count'])
+            
+            x_pos = range(len(symbol_profits))
+            axes[0, 0].bar(x_pos, symbol_profits['sum'], alpha=0.7, color=['gold', 'silver', 'orange'])
+            axes[0, 0].set_title('종목별 총 수익률')
+            axes[0, 0].set_ylabel('총 수익률 (%)')
+            axes[0, 0].set_xticks(x_pos)
+            axes[0, 0].set_xticklabels(symbol_profits.index, rotation=45, ha='right')
+            axes[0, 0].grid(True, alpha=0.3)
+            
+            # 수치 표시
+            for i, v in enumerate(symbol_profits['sum']):
+                axes[0, 0].text(i, v + 0.1, f'{v:.1f}%', ha='center', va='bottom')
+        
+        # 2. 차수별 성과
+        if len(sell_trades) > 0:
+            level_performance = sell_trades.groupby('level')['profit_pct'].agg(['mean', 'count'])
+            
+            axes[0, 1].bar(level_performance.index, level_performance['mean'], alpha=0.7, color='lightblue')
+            axes[0, 1].set_title('차수별 평균 수익률')
+            axes[0, 1].set_xlabel('차수')
+            axes[0, 1].set_ylabel('평균 수익률 (%)')
+            axes[0, 1].grid(True, alpha=0.3)
+            
+            # 거래 횟수 텍스트 추가
+            for level, row in level_performance.iterrows():
+                axes[0, 1].text(level, row['mean'] + 0.1, f'{int(row["count"])}회', ha='center', va='bottom', fontsize=9)
+        
+        # 3. 월별 수익률
+        daily_df = pd.DataFrame(self.daily_portfolio_value)
+        daily_df['date'] = pd.to_datetime(daily_df['date'])
+        daily_df.set_index('date', inplace=True)
+        
+        monthly_returns = daily_df['return_pct'].resample('M').last().pct_change() * 100
+        monthly_returns = monthly_returns.dropna()
+        
+        if len(monthly_returns) > 0:
+            colors = ['green' if x > 0 else 'red' for x in monthly_returns]
+            axes[1, 0].bar(range(len(monthly_returns)), monthly_returns, color=colors, alpha=0.7)
+            axes[1, 0].set_title('월별 수익률')
+            axes[1, 0].set_ylabel('월 수익률 (%)')
+            axes[1, 0].axhline(y=0, color='black', linestyle='-', alpha=0.3)
+            axes[1, 0].grid(True, alpha=0.3)
+            
+            # x축 라벨 (분기별)
+            step = max(1, len(monthly_returns) // 4)
+            axes[1, 0].set_xticks(range(0, len(monthly_returns), step))
+            axes[1, 0].set_xticklabels([monthly_returns.index[i].strftime('%Y-%m') for i in range(0, len(monthly_returns), step)], rotation=45)
+        
+        # 4. 보유기간별 수익률
+        if len(sell_trades) > 0:
+            # 보유기간 구간별 분석
+            hold_days = sell_trades['hold_days']
+            
+            # 보유기간 구간 설정
+            bins = [0, 7, 14, 30, 60, 90, float('inf')]
+            labels = ['1주미만', '1-2주', '2주-1개월', '1-2개월', '2-3개월', '3개월이상']
+            
+            sell_trades['hold_period'] = pd.cut(hold_days, bins=bins, labels=labels, right=False)
+            period_performance = sell_trades.groupby('hold_period')['profit_pct'].agg(['mean', 'count'])
+            
+            axes[1, 1].bar(range(len(period_performance)), period_performance['mean'], alpha=0.7, color='purple')
+            axes[1, 1].set_title('보유기간별 평균 수익률')
+            axes[1, 1].set_ylabel('평균 수익률 (%)')
+            axes[1, 1].set_xticks(range(len(period_performance)))
+            axes[1, 1].set_xticklabels(period_performance.index, rotation=45, ha='right')
+            axes[1, 1].grid(True, alpha=0.3)
+            
+            # 거래 횟수 표시
+            for i, (_, row) in enumerate(period_performance.iterrows()):
+                axes[1, 1].text(i, row['mean'] + 0.1, f'{int(row["count"])}회', ha='center', va='bottom', fontsize=9)
+        
+        plt.tight_layout()
+        plt.savefig('gold_etf_detailed_analysis.png', dpi=300, bbox_inches='tight')
+        plt.show()
+    
+    def export_trades(self, filename='gold_etf_trades.xlsx'):
+        """거래 내역 엑셀 내보내기"""
+        if not self.trades:
+            print("❌ 내보낼 거래 데이터가 없습니다.")
             return
         
         try:
-            # 데이터 준비
-            dates = [d['date'] for d in self.daily_portfolio]
-            values = [d['total_value'] for d in self.daily_portfolio]
-            returns = [d['return_pct'] for d in self.daily_portfolio]
+            trades_df = pd.DataFrame(self.trades)
             
-            # 벤치마크 데이터 (KODEX 골드선물 H - 132030)
-            benchmark_data = None
-            try:
-                start_date = dates[0].strftime('%Y-%m-%d')
-                end_date = dates[-1].strftime('%Y-%m-%d')
-                benchmark_df = Common.GetOhlcv("KR", "132030", 1000)
+            with pd.ExcelWriter(filename, engine='openpyxl') as writer:
+                # 전체 거래 내역
+                trades_df.to_excel(writer, sheet_name='전체거래내역', index=False)
                 
-                if benchmark_df is not None:
-                    benchmark_df.index = pd.to_datetime(benchmark_df.index)
-                    mask = (benchmark_df.index >= start_date) & (benchmark_df.index <= end_date)
-                    benchmark_df = benchmark_df[mask]
-                    
-                    if len(benchmark_df) > 0:
-                        initial_price = benchmark_df['close'].iloc[0]
-                        benchmark_returns = ((benchmark_df['close'] / initial_price) - 1) * 100
-                        benchmark_data = benchmark_returns
-            except:
-                pass
-            
-            # 차트 생성
-            fig, axes = plt.subplots(3, 2, figsize=(16, 12))
-            fig.suptitle('🥇 금투자 백테스팅 결과 분석', fontsize=16, fontweight='bold')
-            
-            # 1. 포트폴리오 가치 변화
-            ax1 = axes[0, 0]
-            ax1.plot(dates, values, color='gold', linewidth=2, label='포트폴리오 가치')
-            ax1.set_title('📈 포트폴리오 가치 변화')
-            ax1.set_ylabel('자산 가치 (원)')
-            ax1.grid(True, alpha=0.3)
-            ax1.legend()
-            
-            # y축 포맷팅
-            ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{x/1e6:.1f}M'))
-            
-            # 2. 누적 수익률 vs 벤치마크
-            ax2 = axes[0, 1]
-            ax2.plot(dates, returns, color='gold', linewidth=2, label='포트폴리오')
-            
-            if benchmark_data is not None and len(benchmark_data) > 0:
-                # 벤치마크 데이터와 날짜 매칭
-                bench_dates = benchmark_df.index
-                common_dates = [d for d in dates if d in bench_dates]
+                # 매도 거래만
+                sell_trades = trades_df[trades_df['action'] == 'SELL'].copy()
+                if len(sell_trades) > 0:
+                    sell_trades.to_excel(writer, sheet_name='매도거래내역', index=False)
                 
-                if common_dates:
-                    bench_values = [benchmark_data.loc[d] for d in common_dates if d in benchmark_data.index]
-                    if bench_values:
-                        ax2.plot(common_dates, bench_values, color='blue', linewidth=1, 
-                                alpha=0.7, label='KODEX 골드선물(H)')
-            
-            ax2.set_title('📊 누적 수익률 비교')
-            ax2.set_ylabel('수익률 (%)')
-            ax2.grid(True, alpha=0.3)
-            ax2.legend()
-            
-            # 3. 드로우다운
-            ax3 = axes[1, 0]
-            peak = values[0]
-            drawdowns = []
-            
-            for value in values:
-                if value > peak:
-                    peak = value
-                drawdown = (peak - value) / peak * 100
-                drawdowns.append(drawdown)
-            
-            ax3.fill_between(dates, 0, drawdowns, color='red', alpha=0.3)
-            ax3.plot(dates, drawdowns, color='red', linewidth=1)
-            ax3.set_title('📉 드로우다운')
-            ax3.set_ylabel('드로우다운 (%)')
-            ax3.grid(True, alpha=0.3)
-            ax3.invert_yaxis()
-            
-            # 4. 월별 수익률
-            ax4 = axes[1, 1]
-            monthly_returns = []
-            monthly_labels = []
-            
-            # 월별 데이터 계산
-            current_month = None
-            month_start_value = None
-            
-            for i, (date, value) in enumerate(zip(dates, values)):
-                month_key = date.strftime('%Y-%m')
+                # 종목별 요약
+                if len(sell_trades) > 0:
+                    summary = sell_trades.groupby(['symbol', 'name']).agg({
+                        'profit_pct': ['count', 'mean', 'sum', 'std'],
+                        'hold_days': 'mean',
+                        'value': 'sum'
+                    }).round(2)
+                    summary.columns = ['거래횟수', '평균수익률', '총수익률', '수익률변동성', '평균보유일', '총거래금액']
+                    summary.to_excel(writer, sheet_name='종목별요약')
                 
-                if current_month != month_key:
-                    if month_start_value is not None and current_month is not None:
-                        # 이전 달 수익률 계산
-                        month_return = (values[i-1] - month_start_value) / month_start_value * 100
-                        monthly_returns.append(month_return)
-                        monthly_labels.append(current_month)
-                    
-                    current_month = month_key
-                    month_start_value = value
+                # 성과 요약
+                results_df = pd.DataFrame([self.results])
+                results_df.to_excel(writer, sheet_name='성과요약', index=False)
             
-            # 마지막 달 처리
-            if month_start_value is not None:
-                month_return = (values[-1] - month_start_value) / month_start_value * 100
-                monthly_returns.append(month_return)
-                monthly_labels.append(current_month)
-            
-            if monthly_returns:
-                colors = ['green' if r >= 0 else 'red' for r in monthly_returns]
-                bars = ax4.bar(range(len(monthly_returns)), monthly_returns, color=colors, alpha=0.7)
-                ax4.set_title('📅 월별 수익률')
-                ax4.set_ylabel('월 수익률 (%)')
-                ax4.set_xticks(range(len(monthly_labels)))
-                ax4.set_xticklabels(monthly_labels, rotation=45)
-                ax4.grid(True, alpha=0.3)
-                ax4.axhline(y=0, color='black', linestyle='-', alpha=0.5)
-            
-            # 5. 매매 포인트 표시
-            ax5 = axes[2, 0]
-            ax5.plot(dates, returns, color='gold', linewidth=1, alpha=0.5, label='수익률')
-            
-            # 매수/매도 포인트 표시
-            buy_dates = [t['date'] for t in self.trade_history if t['action'] == 'BUY']
-            sell_dates = [t['date'] for t in self.trade_history if t['action'] == 'SELL']
-            
-            for buy_date in buy_dates:
-                if buy_date in dates:
-                    idx = dates.index(buy_date)
-                    ax5.scatter(buy_date, returns[idx], color='blue', marker='^', s=30, alpha=0.7)
-            
-            for sell_date in sell_dates:
-                if sell_date in dates:
-                    idx = dates.index(sell_date)
-                    ax5.scatter(sell_date, returns[idx], color='red', marker='v', s=30, alpha=0.7)
-            
-            ax5.set_title('💹 매매 포인트')
-            ax5.set_ylabel('수익률 (%)')
-            ax5.grid(True, alpha=0.3)
-            ax5.legend(['수익률', '매수', '매도'])
-            
-            # 6. 통계 요약
-            ax6 = axes[2, 1]
-            ax6.axis('off')
-            
-            stats_text = f"""
-📊 주요 통계
-
-총 수익률: {self.backtest_results.get('total_return_pct', 0):.2f}%
-연환산 수익률: {self.backtest_results.get('annual_return_pct', 0):.2f}%
-최대 낙폭: {self.backtest_results.get('max_drawdown_pct', 0):.2f}%
-샤프 비율: {self.backtest_results.get('sharpe_ratio', 0):.3f}
-
-매매 통계:
-총 매매: {self.backtest_results.get('total_trades', 0)}회
-승률: {self.backtest_results.get('win_rate', 0):.1f}%
-평균 수익률: {self.backtest_results.get('avg_return_pct', 0):.2f}%
-
-비용:
-수수료: {self.backtest_results.get('commission_paid', 0):,.0f}원
-슬리피지: {self.backtest_results.get('slippage_cost', 0):,.0f}원
-            """
-            
-            ax6.text(0.1, 0.9, stats_text, transform=ax6.transAxes, fontsize=10,
-                    verticalalignment='top', bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.8))
-            
-            # 레이아웃 조정
-            plt.tight_layout()
-            
-            if save_charts:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                filename = f"GoldBacktest_Charts_{timestamp}.png"
-                try:
-                    plt.savefig(filename, dpi=300, bbox_inches='tight')
-                    print(f"📊 차트가 저장되었습니다: {filename}")
-                except Exception as e:
-                    print(f"❌ 차트 저장 실패: {str(e)}")
-            
-            plt.show()
-            
+            print(f"✅ 거래 내역이 '{filename}' 파일로 저장되었습니다.")
         except Exception as e:
-            print(f"❌ 차트 생성 중 오류: {str(e)}")
+            print(f"❌ 파일 저장 중 오류: {str(e)}")
+    
+    def get_performance_summary(self):
+        """성과 요약 딕셔너리 반환"""
+        return self.results
 
-    def export_trade_history(self):
-        """거래 이력 엑셀 파일로 내보내기"""
-        if not self.trade_history:
-            print("❌ 거래 이력이 없습니다.")
-            return
-        
-        try:
-            # DataFrame 생성
-            df = pd.DataFrame(self.trade_history)
-            
-            # 날짜 포맷팅
-            df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
-            
-            # 컬럼 순서 정리
-            columns_order = ['date', 'product_code', 'action', 'position', 'price', 'amount']
-            
-            if 'profit' in df.columns:
-                columns_order.extend(['cost', 'revenue', 'profit', 'return_pct', 'commission', 'slippage', 'reason'])
-            else:
-                columns_order.extend(['cost', 'commission', 'slippage', 'reason'])
-            
-            # 존재하는 컬럼만 선택
-            available_columns = [col for col in columns_order if col in df.columns]
-            df = df[available_columns]
-            
-            # 컬럼명 한글화
-            column_mapping = {
-                'date': '일자',
-                'product_code': '종목코드', 
-                'action': '매매구분',
-                'position': '차수',
-                'price': '가격',
-                'amount': '수량',
-                'cost': '매수금액',
-                'revenue': '매도금액',
-                'profit': '손익',
-                'return_pct': '수익률(%)',
-                'commission': '수수료',
-                'slippage': '슬리피지',
-                'reason': '사유'
-            }
-            
-            df = df.rename(columns=column_mapping)
-            
-            # 파일 저장
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"GoldBacktest_TradeHistory_{timestamp}.xlsx"
-            
-            df.to_excel(filename, index=False, engine='openpyxl')
-            print(f"📁 거래 이력이 저장되었습니다: {filename}")
-            
-        except Exception as e:
-            print(f"❌ 거래 이력 내보내기 실패: {str(e)}")
 
-################################### 🎯 실행 함수들 ##################################
-
-def run_simple_backtest():
-    """간단한 백테스팅 실행"""
+def main():
+    """메인 실행 함수"""
+    print("🥇 금 ETF 포트폴리오 백테스팅 시스템")
+    print("="*50)
+    
+    # 백테스터 초기화
+    backtest = GoldETFBacktester(
+        initial_capital=600000,  # 60만원
+        days_back=365  # 1년간
+    )
+    
     try:
-        print("🚀 간단한 금투자 백테스팅 시작")
-        
-        # 백테스팅 엔진 생성
-        engine = GoldBacktestingEngine()
-        
-        # 기본 설정
-        product_codes = ["132030"]  # KODEX 골드선물(H)
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=365)  # 1년
-        initial_budget = 5000000  # 500만원
-        
-        print(f"📊 테스트 종목: {product_codes}")
-        print(f"📅 테스트 기간: {start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')}")
+        # 데이터 수집
+        if not backtest.fetch_data():
+            print("❌ 데이터 수집에 실패했습니다.")
+            return
         
         # 백테스팅 실행
-        results = engine.run_backtest(product_codes, start_date, end_date, initial_budget)
+        if not backtest.run_backtest():
+            print("❌ 백테스팅 실행에 실패했습니다.")
+            return
         
-        if results:
-            # 결과 출력
-            engine.generate_report()
+        # 결과 시각화
+        backtest.plot_results()
+        
+        # 거래 내역 저장
+        backtest.export_trades()
+        
+        # 성과 요약
+        results = backtest.get_performance_summary()
+        
+        print(f"\n🎯 핵심 성과 지표:")
+        print(f"📈 총 수익률: {results['total_return']:.2f}%")
+        print(f"📊 샤프 비율: {results['sharpe_ratio']:.2f}")
+        print(f"🏆 승률: {results['win_rate']:.1f}%")
+        print(f"📉 최대 낙폭: {results['max_drawdown']:.2f}%")
+        
+        # 전략 평가
+        print(f"\n💡 전략 평가:")
+        if results['total_return'] > 0:
+            print(f"✅ 수익 달성! SmartMagicSplit 전략이 효과적입니다.")
+        else:
+            print(f"⚠️ 손실 발생. 시장 상황이나 파라미터 조정이 필요할 수 있습니다.")
+        
+        if results['sharpe_ratio'] > 1.0:
+            print(f"✅ 우수한 위험 대비 수익률! (샤프 비율 > 1.0)")
+        elif results['sharpe_ratio'] > 0.5:
+            print(f"🔶 양호한 위험 대비 수익률 (샤프 비율 0.5-1.0)")
+        else:
+            print(f"⚠️ 위험 대비 수익률 개선 필요 (샤프 비율 < 0.5)")
+        
+        # 금 ETF 특성 분석
+        print(f"\n🥇 금 ETF 포트폴리오 특성:")
+        print(f"• 안전자산 특성으로 변동성 제한: {results['volatility']:.1f}%")
+        print(f"• 분산투자 효과: 환헤지 + 환노출 + 현물 조합")
+        print(f"• 하락 보호: 최대 낙폭 {results['max_drawdown']:.1f}%로 제한")
+        
+        # Buy & Hold와 비교
+        daily_df = pd.DataFrame(backtest.daily_portfolio_value)
+        if len(daily_df) > 0:
+            final_strategy_return = daily_df.iloc[-1]['return_pct']
+            final_benchmark_return = (daily_df.iloc[-1]['total'] / backtest.initial_capital - 1) * 100
             
-            # 차트 생성
-            engine.plot_results()
+            print(f"\n📊 전략 비교:")
+            print(f"• SmartMagicSplit: {final_strategy_return:.2f}%")
+            if 'benchmark_return' in daily_df.columns:
+                benchmark_final = daily_df.iloc[-1]['benchmark_return']
+                print(f"• Buy & Hold: {benchmark_final:.2f}%")
+                if final_strategy_return > benchmark_final:
+                    print(f"✅ SmartMagicSplit이 Buy & Hold보다 {final_strategy_return - benchmark_final:.2f}%p 우수!")
+                else:
+                    print(f"⚠️ Buy & Hold가 {benchmark_final - final_strategy_return:.2f}%p 더 좋음")
             
-            # 거래 이력 내보내기
-            engine.export_trade_history()
-        
-        return engine, results
-        
     except Exception as e:
-        print(f"❌ 백테스팅 실행 중 오류: {str(e)}")
-        return None, None
+        print(f"❌ 백테스팅 중 오류 발생: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
-def run_multi_period_backtest():
-    """다양한 기간 백테스팅"""
-    try:
-        print("🎯 다기간 금투자 백테스팅 시작")
-        
-        periods = [
-            ("1년", 365),
-            ("2년", 730), 
-            ("3년", 1095)
-        ]
-        
-        results_summary = []
-        
-        for period_name, days in periods:
-            print(f"\n🔍 {period_name} 백테스팅 시작...")
-            
-            engine = GoldBacktestingEngine()
-            
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=days)
-            product_codes = ["132030", "319640"]  # 2개 금 ETF
-            
-            results = engine.run_backtest(product_codes, start_date, end_date, 5000000)
-            
-            if results:
-                results_summary.append({
-                    'period': period_name,
-                    'total_return_pct': results['total_return_pct'],
-                    'annual_return_pct': results['annual_return_pct'],
-                    'max_drawdown_pct': results['max_drawdown_pct'],
-                    'sharpe_ratio': results['sharpe_ratio'],
-                    'win_rate': results['win_rate']
-                })
-        
-        # 기간별 결과 비교
-        print(f"\n📊 =================== 기간별 성과 비교 ===================")
-        print(f"{'기간':<10} {'총수익률':<10} {'연수익률':<10} {'MDD':<10} {'샤프':<10} {'승률':<10}")
-        print("-" * 65)
-        
-        for result in results_summary:
-            print(f"{result['period']:<10} "
-                  f"{result['total_return_pct']:>8.2f}% "
-                  f"{result['annual_return_pct']:>8.2f}% "
-                  f"{result['max_drawdown_pct']:>8.2f}% "
-                  f"{result['sharpe_ratio']:>8.3f} "
-                  f"{result['win_rate']:>8.1f}%")
-        
-        return results_summary
-        
-    except Exception as e:
-        print(f"❌ 다기간 백테스팅 중 오류: {str(e)}")
-        return []
-
-def run_parameter_optimization():
-    """파라미터 최적화 백테스팅"""
-    try:
-        print("⚡ 파라미터 최적화 백테스팅 시작")
-        
-        # 최적화할 파라미터들
-        rsi_periods = [14, 21, 28]
-        drop_multipliers = [0.8, 1.0, 1.2]  # 기본 하락률에 곱할 값
-        
-        best_result = None
-        best_params = None
-        optimization_results = []
-        
-        for rsi_period in rsi_periods:
-            for drop_mult in drop_multipliers:
-                print(f"\n🔧 테스트 중: RSI {rsi_period}일, 하락률 배수 {drop_mult}")
-                
-                # 설정 수정
-                engine = GoldBacktestingEngine()
-                engine.config.config['technical_indicators']['rsi_period'] = rsi_period
-                
-                # 하락률 조정
-                base_drops = engine.config.config['dynamic_drop_requirements']['base_drops']
-                for key in base_drops:
-                    base_drops[key] = base_drops[key] * drop_mult
-                
-                # 백테스팅 실행
-                end_date = datetime.now()
-                start_date = end_date - timedelta(days=730)  # 2년
-                
-                results = engine.run_backtest(["132030"], start_date, end_date, 5000000)
-                
-                if results:
-                    # 성과 점수 계산 (수익률 + 샤프비율 - MDD)
-                    score = results['annual_return_pct'] + results['sharpe_ratio'] * 10 - results['max_drawdown_pct']
-                    
-                    optimization_results.append({
-                        'rsi_period': rsi_period,
-                        'drop_multiplier': drop_mult,
-                        'annual_return': results['annual_return_pct'],
-                        'sharpe_ratio': results['sharpe_ratio'],
-                        'max_drawdown': results['max_drawdown_pct'],
-                        'score': score
-                    })
-                    
-                    if best_result is None or score > best_result['score']:
-                        best_result = optimization_results[-1]
-                        best_params = {'rsi_period': rsi_period, 'drop_multiplier': drop_mult}
-                    
-                    print(f"   📈 연수익률: {results['annual_return_pct']:.2f}%")
-                    print(f"   📊 샤프비율: {results['sharpe_ratio']:.3f}")
-                    print(f"   📉 MDD: {results['max_drawdown_pct']:.2f}%")
-                    print(f"   ⭐ 점수: {score:.2f}")
-        
-        # 최적화 결과 출력
-        print(f"\n🏆 =================== 최적화 결과 ===================")
-        print(f"최적 파라미터:")
-        print(f"  RSI 기간: {best_params['rsi_period']}일")
-        print(f"  하락률 배수: {best_params['drop_multiplier']}")
-        print(f"최적 성과:")
-        print(f"  연환산 수익률: {best_result['annual_return']:.2f}%")
-        print(f"  샤프 비율: {best_result['sharpe_ratio']:.3f}")
-        print(f"  최대 낙폭: {best_result['max_drawdown']:.2f}%")
-        print(f"  종합 점수: {best_result['score']:.2f}")
-        
-        return optimization_results, best_params
-        
-    except Exception as e:
-        print(f"❌ 파라미터 최적화 중 오류: {str(e)}")
-        return [], None
-
-def show_backtest_commands():
-    """백테스팅 명령어 안내"""
-    print("""
-🥇 ================ 금투자 백테스팅 명령어 ================
-1. run_simple_backtest()        - 기본 1년 백테스팅
-2. run_multi_period_backtest()  - 다기간(1,2,3년) 비교 백테스팅  
-3. run_parameter_optimization() - 파라미터 최적화 백테스팅
-4. show_backtest_commands()     - 이 도움말 출력
-
-🔧 커스텀 백테스팅:
-engine = GoldBacktestingEngine()
-results = engine.run_backtest(
-    product_codes=["132030", "319640"],
-    start_date=datetime(2022, 1, 1), 
-    end_date=datetime(2024, 12, 31),
-    initial_budget=10000000
-)
-engine.generate_report()
-engine.plot_results()
-engine.export_trade_history()
-========================================================
-""")
-
-################################### 🎯 메인 실행 부분 ##################################
 
 if __name__ == "__main__":
-    print("🥇 금투자 백테스팅 시스템 로드 완료!")
-    print("📋 show_backtest_commands() 를 입력하면 사용법을 볼 수 있습니다.")
-    print("🚀 빠른 시작: run_simple_backtest()")
-    
-    # 간단한 데모 실행 (옵션)
-    demo_run = input("\n데모 백테스팅을 실행하시겠습니까? (y/n): ")
-    if demo_run.lower() == 'y':
-        run_simple_backtest()
+    main()
+
+
+# 사용 예시:
+"""
+# 기본 실행
+python GoldBacktesting_KR.py
+
+# 사용자 정의 실행
+backtest = GoldETFBacktester(
+    initial_capital=1000000,  # 100만원
+    days_back=730  # 2년간
+)
+
+backtest.fetch_data()
+backtest.run_backtest()
+backtest.plot_results()
+
+# 결과 분석
+results = backtest.get_performance_summary()
+print(f"총 수익률: {results['total_return']:.2f}%")
+print(f"샤프 비율: {results['sharpe_ratio']:.2f}")
+"""
