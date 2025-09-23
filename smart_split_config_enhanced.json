@@ -1,0 +1,350 @@
+{
+    "use_absolute_budget": true,
+    "absolute_budget": 600000,
+    "absolute_budget_strategy": "proportional",
+    "initial_total_asset": 3261575.0,
+    "performance_multiplier_range": [
+        0.7,
+        1.4
+    ],
+    "budget_loss_tolerance": 0.2,
+    "safety_cash_ratio": 0.8,
+    "bot_name": "SmartMagicSplitBot_Enhanced",
+    "div_num": 5.0,
+    "enhanced_buy_control": {
+        "enable_adaptive_cooldown": true,
+        "enable_sequential_validation": true,
+        "enable_enhanced_order_tracking": true,
+        "enable_broker_sync": true,
+        "max_daily_buys_per_stock": 2,
+        "order_timeout_seconds": 60,
+        "sync_check_interval_minutes": 30
+    },
+    "dynamic_drop_requirements": {
+        "enable": true,
+        "base_drops": {
+            "2": 0.04,
+            "3": 0.048,
+            "4": 0.058,
+            "5": 0.07
+        },
+        "adjustment_factors": {
+            "rsi_oversold_bonus": -0.015,
+            "market_downtrend_bonus": -0.015,
+            "market_uptrend_bonus": -0.01,
+            "strong_uptrend_bonus": -0.015,
+            "volatility_bonus": -0.008,
+            "rsi_overbought_penalty": 0.005,
+            "market_uptrend_penalty": 0.005
+        }
+    },
+    "enhanced_stop_loss": {
+        "enable": true,
+        "description": "상승장 최적화 적응형 손절 시스템",
+        "adaptive_thresholds": {
+            "position_1": -0.12,
+            "position_2": -0.16,
+            "position_3_plus": -0.2
+        },
+        "volatility_adjustment": {
+            "high_volatility": -0.04,
+            "medium_volatility": -0.02,
+            "low_volatility": 0.0,
+            "threshold_high": 6.0,
+            "threshold_medium": 3.5
+        },
+        "time_based_rules": {
+            "enable": true,
+            "rules": {
+                "90_day_threshold": -0.12,
+                "180_day_threshold": -0.08,
+                "365_day_threshold": -0.05
+            }
+        },
+        "emergency_stop": {
+            "enable": true,
+            "total_portfolio_loss": -0.3,
+            "consecutive_stops": 4,
+            "daily_stop_limit": 2
+        },
+        "market_adjustment": {
+            "enable": true,
+            "kospi_based": true,
+            "adjustments": {
+                "strong_downtrend": -0.03,
+                "downtrend": -0.015,
+                "neutral": 0.0,
+                "uptrend": 0.015,
+                "strong_uptrend": 0.03
+            }
+        },
+        "stock_specific_overrides": {
+            "005930": {
+                "position_1": -0.08,
+                "position_2": -0.12,
+                "position_3_plus": -0.16
+            },
+            "007660": {
+                "position_1": -0.1,
+                "position_2": -0.14,
+                "position_3_plus": -0.18
+            },
+            "403870": {
+                "position_1": -0.1,
+                "position_2": -0.14,
+                "position_3_plus": -0.18
+            }
+        },
+        "execution_options": {
+            "partial_stop_loss": false,
+            "stop_loss_reason_logging": true,
+            "discord_alert": true,
+            "cooldown_after_stop": 24,
+            "data_backup_before_stop": true
+        }
+    },
+    "enhanced_downtrend_protection": {
+        "enable": true,
+        "description": "추세적 하락 대비 강화 시스템",
+        "trend_detection": {
+            "enable": true,
+            "kospi_ma_periods": [
+                5,
+                20,
+                60
+            ],
+            "decline_threshold": {
+                "mild_decline": -0.05,
+                "moderate_decline": -0.1,
+                "severe_decline": -0.15,
+                "crash": -0.2
+            },
+            "consecutive_red_days": {
+                "warning": 3,
+                "danger": 5,
+                "critical": 7
+            },
+            "volatility_threshold": {
+                "normal": 2.0,
+                "high": 3.0,
+                "extreme": 4.0
+            }
+        },
+        "progressive_defensive_actions": {
+            "mild_decline": {
+                "reduce_position_size": 0.8,
+                "tighten_stop_loss": 0.02,
+                "increase_cash_ratio": 0.85,
+                "disable_high_risk_buys": false,
+                "max_positions_per_stock": 5
+            },
+            "moderate_decline": {
+                "reduce_position_size": 0.6,
+                "tighten_stop_loss": 0.04,
+                "increase_cash_ratio": 0.9,
+                "disable_high_risk_buys": true,
+                "max_positions_per_stock": 3,
+                "emergency_partial_sell": 0.0
+            },
+            "severe_decline": {
+                "reduce_position_size": 0.4,
+                "tighten_stop_loss": 0.06,
+                "increase_cash_ratio": 0.95,
+                "disable_high_risk_buys": true,
+                "max_positions_per_stock": 2,
+                "emergency_partial_sell": 0.3
+            },
+            "crash": {
+                "suspend_all_buys": true,
+                "emergency_sell_ratio": 0.7,
+                "activate_bear_market_mode": true,
+                "increase_cash_ratio": 0.98
+            }
+        },
+        "bear_market_mode": {
+            "enable": true,
+            "activation_threshold": -0.2,
+            "deactivation_threshold": 0.1,
+            "settings": {
+                "suspend_new_positions": true,
+                "only_defensive_stocks": true,
+                "max_investment_ratio": 0.3,
+                "strict_stop_loss": true,
+                "daily_position_review": true
+            }
+        },
+        "volatility_spike_protection": {
+            "enable": true,
+            "daily_range_threshold": 0.05,
+            "actions": {
+                "reduce_leverage": true,
+                "increase_stop_loss": 0.03,
+                "defer_new_entries": 24
+            }
+        },
+        "recovery_detection": {
+            "enable": true,
+            "recovery_signals": {
+                "consecutive_green_days": 3,
+                "volume_confirmation": true,
+                "breadth_improvement": true
+            },
+            "gradual_reentry": {
+                "phase_1": 0.3,
+                "phase_2": 0.6,
+                "phase_3": 1.0
+            }
+        }
+    },
+    "commission_rate": 0.00015,
+    "tax_rate": 0.0023,
+    "special_tax_rate": 0.0015,
+    "rsi_period": 14,
+    "atr_period": 14,
+    "pullback_rate": 5,
+    "rsi_lower_bound": 30,
+    "rsi_upper_bound": 78,
+    "ma_short": 5,
+    "ma_mid": 20,
+    "ma_long": 60,
+    "target_stocks": {
+        "005930": {
+            "name": "삼성전자",
+            "weight": 0.333,
+            "stock_type": "blue_chip",
+            "period": 90,
+            "recent_period": 20,
+            "recent_weight": 0.6,
+            "hold_profit_target": 8,
+            "quick_profit_target": 4,
+            "base_profit_target": 12,
+            "safety_protection_ratio": 0.92,
+            "time_based_sell_days": 60,
+            "partial_sell_ratio": 0.5,
+            "min_holding": 0,
+            "reentry_cooldown_base_hours": 8,
+            "min_pullback_for_reentry": 1.8,
+            "volatility_cooldown_multiplier": 0.8,
+            "market_cooldown_adjustment": true,
+            "enable_sequential_validation": true,
+            "dynamic_drop_adjustment": true,
+            "uptrend_sell_ratio_multiplier": 0.8,
+            "high_profit_sell_reduction": true,
+            "rsi_upper_bound": 75
+        },
+        "007660": {
+            "name": "이수페타시스",
+            "weight": 0.333,
+            "stock_type": "high_volatility",
+            "period": 60,
+            "recent_period": 30,
+            "recent_weight": 0.7,
+            "hold_profit_target": 6,
+            "quick_profit_target": 4,
+            "base_profit_target": 10,
+            "safety_protection_ratio": 0.9,
+            "time_based_sell_days": 30,
+            "partial_sell_ratio": 0.3,
+            "min_holding": 0,
+            "reentry_cooldown_base_hours": 4,
+            "min_pullback_for_reentry": 3.0,
+            "volatility_cooldown_multiplier": 0.4,
+            "market_cooldown_adjustment": true,
+            "enable_sequential_validation": true,
+            "dynamic_drop_adjustment": true,
+            "uptrend_sell_ratio_multiplier": 0.5,
+            "high_profit_sell_reduction": true,
+            "rsi_upper_bound": 75
+        },
+        "403870": {
+            "name": "HPSP",
+            "weight": 0.334,
+            "stock_type": "high_volatility",
+            "period": 60,
+            "recent_period": 30,
+            "recent_weight": 0.7,
+            "hold_profit_target": 6,
+            "quick_profit_target": 4,
+            "base_profit_target": 10,
+            "safety_protection_ratio": 0.9,
+            "time_based_sell_days": 30,
+            "partial_sell_ratio": 0.3,
+            "min_holding": 0,
+            "reentry_cooldown_base_hours": 4,
+            "min_pullback_for_reentry": 3.0,
+            "volatility_cooldown_multiplier": 0.4,
+            "market_cooldown_adjustment": true,
+            "enable_sequential_validation": true,
+            "dynamic_drop_adjustment": true,
+            "uptrend_sell_ratio_multiplier": 0.5,
+            "high_profit_sell_reduction": true,
+            "rsi_upper_bound": 75
+        }
+    },
+    "performance_tracking": {
+        "start_date": "2025-09-05",
+        "best_performance": 0.016650851199190575,
+        "worst_performance": -0.004525421000590206,
+        "total_trades": 3,
+        "winning_trades": 3,
+        "total_realized_pnl": 8800.0,
+        "enhanced_metrics": {
+            "cooldown_prevented_buys": 0,
+            "sequential_blocked_buys": 57169,
+            "broker_sync_corrections": 0,
+            "average_hold_days": 0,
+            "partial_sell_count": 0,
+            "stop_loss_executions": 0,
+            "emergency_stops": 0,
+            "stop_loss_savings": 0.0,
+            "downtrend_protections_activated": 0,
+            "emergency_sells_executed": 0,
+            "bear_market_mode_activations": 0
+        }
+    },
+    "use_discord_alert": true,
+    "last_config_update": "2025-09-19T09:25:28.127450",
+    "_readme_enhanced": {
+        "버전": "Enhanced 6.0 - 하락 보호 시스템 완전 통합",
+        "주요_개선사항": {
+            "하락_보호_시스템": "🆕 추세적 하락 대비 4단계 점진적 보호 시스템",
+            "베어마켓_모드": "🆕 크래시 수준(-20%) 하락 시 자본 보존 모드",
+            "변동성_스파이크_보호": "🆕 급격한 변동성 증가 시 24시간 진입 연기",
+            "응급_매도_시스템": "🆕 심각한 하락 시 자동 부분/전체 매도",
+            "회복_감지_재진입": "🆕 시장 회복 감지 시 단계적 재진입",
+            "차트_분석_완전반영": "🆕 실시간 차트 데이터 기반 종목별 개별 최적화",
+            "진입_기회_극대화": "🆕 하락률 요구사항 완화 (4.0%/4.8%/5.8%/7.0%)",
+            "손절_시스템_혁신": "🆕 차트 특성 반영 손절선 완화 (-12%/-16%/-20%)",
+            "목표_수익률_현실화": "🆕 한화오션 6%, 두산에너빌리티 10%, 삼성전자 12%",
+            "적응형_쿨다운": "매도 후 즉시 재매수 방지 - 수익률/변동성/시장상황별 차등",
+            "순차_진입_검증": "이전 차수 보유 + 동적 하락률 달성 필수 확인",
+            "개선된_주문_추적": "실제 체결량 정확 계산 및 미체결 주문 자동 관리",
+            "브로커_데이터_동기화": "30분마다 브로커-내부 데이터 강제 일치"
+        },
+        "하락_보호_시스템": {
+            "4단계_점진적_보호": {
+                "1단계_경미한_하락": "5-10% 하락 시 매수량 20% 축소, 손절선 2%p 강화",
+                "2단계_중간_하락": "10-15% 하락 시 매수량 40% 축소, 4-5차수 중단",
+                "3단계_심각한_하락": "15-20% 하락 시 매수량 60% 축소, 30% 응급 매도",
+                "4단계_크래시": "20% 이상 하락 시 모든 매수 중단, 70% 응급 매도"
+            },
+            "베어마켓_모드": {
+                "활성화_조건": "코스피 20% 이상 하락",
+                "운영_방식": "신규 포지션 금지, 현금 70% 이상 보존",
+                "해제_조건": "10% 이상 반등 확인"
+            },
+            "변동성_스파이크_보호": {
+                "감지_조건": "일일 등락폭 5% 이상 또는 연속 5일 하락",
+                "대응_조치": "24시간 신규 진입 연기, 손절선 3%p 강화"
+            }
+        },
+        "예상_성과": {
+            "월_수익률": "기존 3-5% → 개선 후 5-8% 예상",
+            "승률_향상": "기존 65% → 개선 후 80% 예상",
+            "최대_낙폭_감소": "기존 -15% → 개선 후 -8% 예상 (하락 보호 적용시 -3%)",
+            "샤프_비율": "0.8 → 1.5 향상 예상 (하락 보호 포함)",
+            "연간_수익률": "30-40% → 50-70% 목표",
+            "베어마켓_생존율": "90% 이상 (2008, 2020 수준 폭락에도 생존)"
+        }
+    }
+}
