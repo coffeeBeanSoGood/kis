@@ -75,14 +75,14 @@ try:
 except:
     logger.warning("API 헬퍼 모듈에 로거를 전달할 수 없습니다.")
 
-############################### 외국인-기관 매매흐름 라이브러리 ##############################
-try:
-    from foreign_institution_analyzer import trading_trend_analyzer
-    FI_ANALYZER_AVAILABLE = True
-    logger.info("✅ 외국인/기관 매매동향 분석기 로드 완료")
-except ImportError as e:
-    FI_ANALYZER_AVAILABLE = False
-    logger.warning(f"⚠️ 외국인/기관 분석기 로드 실패: {str(e)}")
+# ############################### 외국인-기관 매매흐름 라이브러리 ##############################
+# try:
+#     from foreign_institution_analyzer import trading_trend_analyzer
+#     FI_ANALYZER_AVAILABLE = True
+#     logger.info("✅ 외국인/기관 매매동향 분석기 로드 완료")
+# except ImportError as e:
+#     FI_ANALYZER_AVAILABLE = False
+#     logger.warning(f"⚠️ 외국인/기관 분석기 로드 실패: {str(e)}")
 
 
 # 🔥 API 초기화 (가장 먼저!)
@@ -102,193 +102,243 @@ class SmartSplitConfig:
 # 백테스팅 결과: SmartMagicSplit 26.48% < Buy&Hold ~35% 문제 해결
 
     def get_default_config(self):
-        """🥇 백테스팅 결과 반영 - Buy&Hold 대비 성과 개선된 설정"""
+        """🥇 금투자 최적화 설정 - 일반 주식용 로직에서 금 ETF 특성 반영"""
         try:
-            # 🔥 백테스팅 문제점 해결: 목표수익률 상향 + 매매 빈도 감소
+            # 🔥 금투자 최적화 - 주식용 설정을 금 특성에 맞게 수정
             stock_type_templates = {
-                "gold_etf_hedged": {  # 🆕 환헤지 금 ETF 전용
-                    "hold_profit_target": 35,           # 🚀 수정: 20 → 35% (Buy&Hold 대비 경쟁력)
-                    "quick_profit_target": 15,          # 🚀 수정: 8 → 15% (상향)  
-                    "loss_cut": [-0.15, -0.20, -0.25, -0.25, -0.25],  # 백테스팅 검증된 손절선 유지
-                    "safety_protection_ratio": 0.85,    # 0.88 → 0.85 (더 공격적)
-                    "time_based_sell_days": 90,         # 🚀 수정: 45 → 90일 (더 오래 보유)
-                    "partial_sell_ratio": 0.30,         # 🚀 수정: 0.40 → 0.30 (더 적게 매도)
+                "gold_etf_hedged": {  # 🆕 환헤지 금 ETF 전용 (KODEX 골드선물(H))
+                    "hold_profit_target": 12,           # 🚀 35% → 12% (금은 안전자산, 현실적 목표)
+                    "quick_profit_target": 6,           # 🚀 15% → 6% (빠른 수익 실현)  
+                    "loss_cut": [-0.08, -0.12, -0.15, -0.18, -0.20],  # 🚀 손절선 완화 (금은 회복력 좋음)
+                    "safety_protection_ratio": 0.88,    # 0.85 → 0.88 (금은 안정성 우선)
+                    "time_based_sell_days": 180,        # 🚀 90일 → 180일 (금은 장기투자 유리)
+                    "partial_sell_ratio": 0.50,         # 🚀 0.30 → 0.50 (절반만 매도로 장기보유)
                     "min_holding": 0,
-                    "reentry_cooldown_base_hours": 0.5, # 🚀 수정: 2 → 0.5시간 (빠른 재진입)
-                    "min_pullback_for_reentry": 0.8,    # 🚀 수정: 1.5 → 0.8% (더 쉬운 재진입)
-                    "volatility_cooldown_multiplier": 0.5, # 0.7 → 0.5 (쿨다운 더 단축)
+                    "reentry_cooldown_base_hours": 2,   # 🚀 0.5시간 → 2시간 (금은 급등락 적음)
+                    "min_pullback_for_reentry": 1.5,    # 🚀 0.8% → 1.5% (더 확실한 조정 대기)
+                    "volatility_cooldown_multiplier": 0.8, # 금 특화 변동성 고려
                     "market_cooldown_adjustment": True,
                     "enable_sequential_validation": True,
                     "dynamic_drop_adjustment": True,
-                    "uptrend_sell_ratio_multiplier": 0.5,  # 🚀 수정: 0.7 → 0.5 (상승장에서 더 적게 매도)
+                    "uptrend_sell_ratio_multiplier": 0.6,  # 🚀 0.5 → 0.6 (상승장에서 적당히 매도)
                     "high_profit_sell_reduction": True,
-                    "rsi_upper_bound": 85               # 🚀 수정: 80 → 85 (더 많은 진입 기회)
+                    "rsi_upper_bound": 90,              # 🚀 85 → 90 (금은 과매수 지속 가능)
+                    "volatility_threshold": 0.8,        # 🆕 금 특화: 낮은 변동성 기준
+                    "safe_haven_factor": True           # 🆕 안전자산 부스터
                 },
-                "gold_etf_unhedged": {  # 🆕 환노출 금 ETF 전용 (환헤지와 동일하게 수정)
-                    "hold_profit_target": 35,           # 🚀 수정: 20 → 35%
-                    "quick_profit_target": 15,          # 🚀 수정: 8 → 15%
-                    "loss_cut": [-0.15, -0.20, -0.25, -0.25, -0.25],  # 백테스팅 검증된 손절선
-                    "safety_protection_ratio": 0.85,    # 더 공격적
-                    "time_based_sell_days": 90,         # 🚀 수정: 45 → 90일
-                    "partial_sell_ratio": 0.30,         # 🚀 수정: 0.40 → 0.30
+                "gold_etf_unhedged": {  # 🆕 환노출 금 ETF 전용 (TIGER 골드선물)
+                    "hold_profit_target": 15,           # 🚀 35% → 15% (환리스크 보상으로 약간 높게)
+                    "quick_profit_target": 8,           # 🚀 15% → 8%
+                    "loss_cut": [-0.10, -0.15, -0.18, -0.20, -0.22],  # 환리스크로 손절 좀더 빨리
+                    "safety_protection_ratio": 0.85,    # 환리스크 있어서 좀더 공격적
+                    "time_based_sell_days": 150,        # 180일 → 150일 (환율 변동성)
+                    "partial_sell_ratio": 0.60,         # 0.50 → 0.60 (환위험으로 더 많이 매도)
                     "min_holding": 0,
-                    "reentry_cooldown_base_hours": 0.5, # 🚀 수정: 2 → 0.5시간
-                    "min_pullback_for_reentry": 0.8,    # 🚀 수정: 1.5 → 0.8%
-                    "volatility_cooldown_multiplier": 0.5,
+                    "reentry_cooldown_base_hours": 1,   # 2시간 → 1시간 (환율 변동 활용)
+                    "min_pullback_for_reentry": 2.0,    # 1.5% → 2.0% (환율 리스크 고려)
+                    "volatility_cooldown_multiplier": 0.7,
                     "market_cooldown_adjustment": True,
                     "enable_sequential_validation": True,
                     "dynamic_drop_adjustment": True,
-                    "uptrend_sell_ratio_multiplier": 0.5,  # 🚀 수정: 0.7 → 0.5
+                    "uptrend_sell_ratio_multiplier": 0.7,  # 환리스크로 조금 더 매도
                     "high_profit_sell_reduction": True,
-                    "rsi_upper_bound": 85               # 🚀 수정: 80 → 85
+                    "rsi_upper_bound": 88,              # 90 → 88 (환율 변동성 고려)
+                    "volatility_threshold": 1.2,        # 환율 변동으로 더 높은 변동성
+                    "currency_hedge": False             # 🆕 환노출 표시
                 },
-                "gold_physical": {  # 🆕 금 현물 ETF 전용 (백테스팅 결과 반영 대폭 수정)
-                    "hold_profit_target": 30,           # 🚀 수정: 15 → 30% (대폭 상향)
-                    "quick_profit_target": 12,          # 🚀 수정: 6 → 12%
-                    "loss_cut": [-0.12, -0.18, -0.22, -0.22, -0.22],  # 백테스팅 일치
-                    "safety_protection_ratio": 0.88,    # 현물 안정성 유지
-                    "time_based_sell_days": 120,        # 🚀 수정: 60 → 120일 (더 오래 보유)
-                    "partial_sell_ratio": 0.25,         # 🚀 수정: 0.35 → 0.25 (더 적게 매도)
+                "gold_physical": {  # 🆕 금현물 ETF 전용 (ACE KRX 금현물)
+                    "hold_profit_target": 10,           # 🚀 30% → 10% (현물은 가장 보수적)
+                    "quick_profit_target": 5,           # 🚀 12% → 5%
+                    "loss_cut": [-0.06, -0.10, -0.13, -0.15, -0.17],  # 현물은 가장 보수적
+                    "safety_protection_ratio": 0.92,    # 현물 안정성 최우선
+                    "time_based_sell_days": 365,        # 🚀 120일 → 365일 (현물은 초장기)
+                    "partial_sell_ratio": 0.30,         # 0.25 → 0.30 (적게 매도)
                     "min_holding": 0,
-                    "reentry_cooldown_base_hours": 0.5, # 🚀 수정: 3 → 0.5시간 (대폭 단축)
-                    "min_pullback_for_reentry": 0.8,    # 🚀 수정: 1.2 → 0.8%
-                    "volatility_cooldown_multiplier": 0.6, # 0.8 → 0.6
+                    "reentry_cooldown_base_hours": 4,   # 0.5시간 → 4시간 (현물은 더 신중)
+                    "min_pullback_for_reentry": 1.2,    # 0.8% → 1.2%
+                    "volatility_cooldown_multiplier": 0.9, # 0.6 → 0.9
                     "market_cooldown_adjustment": True,
                     "enable_sequential_validation": True,
                     "dynamic_drop_adjustment": True,
-                    "uptrend_sell_ratio_multiplier": 0.6,  # 🚀 수정: 0.8 → 0.6
+                    "uptrend_sell_ratio_multiplier": 0.4,  # 🚀 0.6 → 0.4 (현물은 장기보유 우선)
                     "high_profit_sell_reduction": True,
-                    "rsi_upper_bound": 85               # 🚀 수정: 75 → 85 (대폭 상향)
+                    "rsi_upper_bound": 92,              # 🚀 85 → 92 (현물은 최고 관대)
+                    "volatility_threshold": 0.6,        # 현물은 가장 낮은 변동성
+                    "physical_premium": True            # 🆕 현물 프리미엄 고려
                 }
             }
             
-            # 🥇 백테스팅에서 검증된 금 ETF 포트폴리오 구성 (비중은 유지)
+            # 🥇 금투자 최적화 포트폴리오 구성
             target_stocks_config = {
                 "132030": {  # KODEX 골드선물(H) - 환헤지
-                    "weight": 0.35,              # 백테스팅 검증된 비중 유지
+                    "weight": 0.35,              # 비중 유지 (백테스팅 검증)
                     "stock_type": "gold_etf_hedged",
                     "name": "KODEX 골드선물(H)"
                 },
                 "319640": {  # TIGER 골드선물 - 환노출  
-                    "weight": 0.35,              # 백테스팅 검증된 비중 유지
+                    "weight": 0.35,              # 비중 유지 (백테스팅 검증)
                     "stock_type": "gold_etf_unhedged", 
                     "name": "TIGER 골드선물"
                 },
                 "411060": {  # ACE KRX 금현물 - 현물기반
-                    "weight": 0.30,              # 백테스팅 검증된 비중 유지
+                    "weight": 0.30,              # 비중 유지 (백테스팅 검증)
                     "stock_type": "gold_physical",
                     "name": "ACE KRX 금현물"
                 }
             }
 
-            # 종목별 설정 적용 (기존 로직 유지)
+            # 종목별 설정 적용 (금투자 최적화)
             target_stocks = {}
             
             for stock_code, basic_config in target_stocks_config.items():
                 try:
-                    logger.info(f"🥇 백테스팅 개선 설정 적용 중: {stock_code}")
+                    logger.info(f"🥇 금투자 최적화 설정 적용 중: {stock_code}")
                     
                     stock_type = basic_config.get("stock_type", "gold_etf_hedged")
                     type_template = stock_type_templates.get(stock_type, stock_type_templates["gold_etf_hedged"])
                     
-                    # 백테스팅 개선 설정 적용
+                    # 금투자 최적화 설정 적용
                     optimized_config = {
                         "name": basic_config["name"],
                         "weight": basic_config["weight"],
                         "stock_type": stock_type,
-                        **type_template  # 백테스팅 개선된 모든 설정 적용
+                        **type_template  # 금투자 최적화된 모든 설정 적용
                     }
                     
                     target_stocks[stock_code] = optimized_config
                     
-                    logger.info(f"✅ {basic_config['name']} 개선 설정 완료:")
-                    logger.info(f"  └─ 목표수익률: {type_template['hold_profit_target']}% (상향)")
-                    logger.info(f"  └─ 쿨다운: {type_template['reentry_cooldown_base_hours']}시간 (단축)")
-                    logger.info(f"  └─ 보유기간: {type_template['time_based_sell_days']}일 (연장)")
-                    logger.info(f"  └─ RSI상한: {type_template['rsi_upper_bound']} (완화)")
+                    logger.info(f"✅ {basic_config['name']} 금투자 최적화 완료:")
+                    logger.info(f"  └─ 목표수익률: {type_template['hold_profit_target']}% (금 특성 반영)")
+                    logger.info(f"  └─ 쿨다운: {type_template['reentry_cooldown_base_hours']}시간 (금 변동성 고려)")
+                    logger.info(f"  └─ 보유기간: {type_template['time_based_sell_days']}일 (장기투자)")
+                    logger.info(f"  └─ RSI상한: {type_template['rsi_upper_bound']} (금 특성)")
                     
                 except Exception as e:
-                    logger.error(f"백테스팅 개선 설정 적용 중 오류 {stock_code}: {str(e)}")
-                    # 오류 시 기본 환헤지 설정 적용
-                    target_stocks[stock_code] = {
-                        "name": basic_config.get("name", f"종목{stock_code}"),
-                        "weight": basic_config["weight"],
-                        "stock_type": "gold_etf_hedged",
-                        **stock_type_templates["gold_etf_hedged"]
-                    }
-            
-            # 🥇 백테스팅 개선된 예산 할당 로깅
-            budget = 600000  # 백테스팅에서 검증된 60만원 예산
-            logger.info("📋 🥇 백테스팅 개선 결과 반영된 포트폴리오:")
-            logger.info("🚀 주요 개선사항: 목표수익률 상향, 쿨다운 단축, 보유 기간 연장")
-            for stock_code, stock_config in target_stocks.items():
-                allocated = budget * stock_config['weight']
-                logger.info(f"  • {stock_config['name']}({stock_code}): {stock_config['weight']*100:.1f}% → {allocated:,.0f}원")
-                logger.info(f"    └─ 목표: {stock_config['hold_profit_target']}% (개선), 쿨다운: {stock_config['reentry_cooldown_base_hours']}시간 (단축)")
-            
-            # 🔥🔥🔥 백테스팅 개선 결과가 반영된 전체 설정 🔥🔥🔥
+                    logger.error(f"금투자 최적화 설정 적용 중 오류 {stock_code}: {str(e)}")
+
+            # 🔥 금투자 특화 매매 파라미터
             return {
-                # 기존 설정들 유지
-                "use_absolute_budget": True,
-                "absolute_budget": budget,
-                "absolute_budget_strategy": "proportional",
-                "initial_total_asset": 0,
-                
-                # 🚀 백테스팅 개선된 동적 조정 설정
-                "performance_multiplier_range": [0.8, 1.5],  # 더 넓은 범위
-                "budget_loss_tolerance": 0.12,  # 0.15 → 0.12 (더 엄격)
-                "max_daily_trades": 6,  # 8 → 6 (거래 빈도 감소)
-                "emergency_stop_loss": -0.25,
-                
-                # 🥇 백테스팅 개선된 종목 설정
+                "absolute_budget": 600000,  # 절대 예산 (60만원 기본)
                 "target_stocks": target_stocks,
                 
-                # 나머지 기존 설정들 유지...
+                # 🔥 금 특화 하락률 기준 (변동성 낮음 반영)
+                "base_drops": [0, 0.015, 0.020, 0.025, 0.030],  # 🚀 1.5%~3% (기존 2.5%~4%에서 하향)
+                
+                # 금투자 특화 제어 시스템
                 "enhanced_buy_control": {
                     "enable_adaptive_cooldown": True,
-                    "enable_sequential_validation": True,
+                    "enable_sequential_validation": True,  
                     "enable_enhanced_order_tracking": True,
                     "enable_broker_sync": True,
-                    "cooldown_multiplier_range": [0.3, 1.5],  # 더 짧은 쿨다운
-                    "max_same_day_entries": 4,  # 3 → 4
-                    "volatility_threshold": 0.06,  # 0.08 → 0.06 (더 민감)
+                    "gold_market_analysis": True,           # 🆕 금시장 분석 활성화
+                    "safe_haven_detection": True,          # 🆕 안전자산 수요 감지
+                    "currency_correlation": True,          # 🆕 환율 상관관계 분석
+                    "volatility_adjustment": True          # 🆕 변동성 기반 조정
+                },
+                
+                # 🔥 금투자 특화 시장 보호 (기존 주식용 수정)
+                "market_protection": {
+                    "enable_market_sentiment": True,
+                    "bear_market_threshold": -15,           # -20 → -15 (금은 더 민감)
+                    "volatility_protection": True,
+                    "max_daily_trades": 2,                  # 3 → 2 (금은 적게 매매)
+                    "emergency_stop_loss": -30,             # 🚀 -25 → -30 (금은 더 관대)
+                    "safe_haven_boost": True               # 🆕 안전자산 부스터
+                },
+                
+                # 성과 추적 (기존 유지)
+                "performance_tracking": {
+                    "daily_summary": True,
+                    "weekly_report": True,
+                    "monthly_analysis": True,
+                    "benchmark_comparison": True,          # Buy & Hold와 비교
+                    "gold_benchmark": "GLD"                # 🆕 금 ETF 벤치마크
+                },
+                
+                # 리스크 관리 (금투자 특화)
+                "risk_management": {
+                    "max_position_size": 0.4,              # 종목당 최대 40% (기존 유지)
+                    "cash_reserve_ratio": 0.1,             # 10% 현금 보유
+                    "correlation_limit": 0.8,              # 🚀 0.7 → 0.8 (금 ETF는 상관성 높음)
+                    "volatility_limit": 2.5,               # 🚀 2.0 → 2.5 (금은 변동성 낮음)
+                    "drawdown_limit": -15,                 # 🚀 -12 → -15 (금은 더 관대)
                     "trend_confirmation_required": True
                 },
                 
-                # 기타 모든 기존 설정들 그대로 유지...
+                # 기타 설정들 (기존 유지)
                 "div_num": 5,
                 "buy_limit": True,
                 "sell_limit": True,
                 "fee_rate": 0.00015,
                 "tax_rate": 0.0023,
                 "use_discord_alert": True,
-                "bot_name": "GoldETF_BacktestImproved_Bot",
-                "version": "2.1_Backtest_Improved",
+                "bot_name": "GoldETF_Optimized_Bot",        # 🚀 봇명 변경
+                "version": "3.0_Gold_Optimized",           # 🚀 버전 업데이트
                 "last_config_update": datetime.now().isoformat(),
                 
-                # 🚀 백테스팅 개선 메타데이터 (기존 메타데이터 업데이트)
-                "backtest_metadata": {
+                # 🚀 금투자 최적화 메타데이터
+                "gold_optimization_metadata": {
                     "optimization_date": datetime.now().isoformat(),
-                    "issue_resolved": "SmartMagicSplit 26.48% < Buy&Hold ~35%",
-                    "key_improvements": {
-                        "profit_target_increased": "20-35%로 대폭 상향",
-                        "cooldown_reduced": "2시간 → 0.5시간 단축", 
-                        "holding_period_extended": "45-90일로 연장",
-                        "trading_frequency_reduced": "과도한 매매 방지",
-                        "rsi_threshold_relaxed": "80-85로 완화"
+                    "optimization_type": "Gold ETF Specialized",
+                    "key_changes": {
+                        "profit_targets_realistic": "35% → 10-15% (현실적)",
+                        "rsi_bounds_relaxed": "85 → 90-92 (금 특성)",
+                        "drop_requirements_lowered": "2.5-4% → 1.5-3% (변동성)",
+                        "holding_period_extended": "90 → 150-365일 (장기)",
+                        "foreign_analysis_removed": "금 ETF에 부적합한 분석 제거"
                     },
-                    "expected_performance": {
-                        "target_annual_return": "35-45% (개선된 목표)",
-                        "vs_buyhold": "+5~10%p 목표",
-                        "reduced_trading_cost": "거래 빈도 30% 감소"
+                    "expected_improvements": {
+                        "reduced_false_signals": "RSI 과매수 신호 감소",
+                        "better_entry_timing": "낮은 하락률 기준으로 진입 증가", 
+                        "long_term_focus": "금의 장기 투자 특성 반영",
+                        "realistic_targets": "달성 가능한 수익률 목표"
+                    },
+                    "risk_considerations": {
+                        "currency_risk": "환노출 ETF 환율 리스크 고려",
+                        "correlation_risk": "금 ETF간 높은 상관성",
+                        "liquidity_risk": "금현물 ETF 유동성 고려",
+                        "premium_discount": "NAV 괴리율 모니터링"
                     }
                 }
             }
             
         except Exception as e:
-            logger.error(f"백테스팅 개선 설정 생성 중 오류: {str(e)}")
-            # 기본 설정 반환 (기존 _get_fallback_config 사용)
-            return self._get_fallback_config()
+            logger.error(f"금투자 최적화 설정 생성 중 오류: {str(e)}")
+            # 오류 시 기본 금투자 설정 반환
+            return self._get_gold_fallback_config()
+
+    def _get_gold_fallback_config(self):
+        """금투자 기본 fallback 설정"""
+        return {
+            "absolute_budget": 600000,
+            "target_stocks": {
+                "132030": {
+                    "name": "KODEX 골드선물(H)",
+                    "weight": 0.4,
+                    "stock_type": "gold_etf_hedged",
+                    "hold_profit_target": 12,
+                    "rsi_upper_bound": 90
+                },
+                "319640": {
+                    "name": "TIGER 골드선물", 
+                    "weight": 0.35,
+                    "stock_type": "gold_etf_unhedged",
+                    "hold_profit_target": 15,
+                    "rsi_upper_bound": 88
+                },
+                "411060": {
+                    "name": "ACE KRX 금현물",
+                    "weight": 0.25, 
+                    "stock_type": "gold_physical",
+                    "hold_profit_target": 10,
+                    "rsi_upper_bound": 92
+                }
+            },
+            "base_drops": [0, 0.015, 0.020, 0.025, 0.030],  # 금 특화
+            "div_num": 5,
+            "use_discord_alert": True,
+            "version": "3.0_Gold_Fallback"
+        }
 
     def load_config(self):
             """설정 파일 로드 - 기본 설정 생성 통합"""
@@ -4850,33 +4900,33 @@ class SmartMagicSplit:
             if position_multiplier < 1.0:
                 logger.info(f"💰 {stock_name} 하락 보호 매수량 조정: {position_multiplier*100:.0f}% 적용 예정")
             
-            # 🔥🔥🔥 외국인/기관 매매동향 체크 (모든 차수에 적용!) 🔥🔥🔥
-            if FI_ANALYZER_AVAILABLE:
-                try:
-                    fi_analysis = trading_trend_analyzer.calculate_combined_trading_signal(stock_code)
+            # # 🔥🔥🔥 외국인/기관 매매동향 체크 (모든 차수에 적용!) 🔥🔥🔥
+            # if FI_ANALYZER_AVAILABLE:
+            #     try:
+            #         fi_analysis = trading_trend_analyzer.calculate_combined_trading_signal(stock_code)
                     
-                    # 외국인/기관 강한 매도 시 매수 차단
-                    if (fi_analysis['direction'] == 'bearish' and 
-                        fi_analysis['signal_strength'] in ['STRONG', 'MODERATE']):
+            #         # 외국인/기관 강한 매도 시 매수 차단
+            #         if (fi_analysis['direction'] == 'bearish' and 
+            #             fi_analysis['signal_strength'] in ['STRONG', 'MODERATE']):
                         
-                        # 차수별 차등 적용
-                        if position_num <= 2:  # 1-2차는 엄격
-                            return False, f"🚫 외국인/기관 {fi_analysis['signal_strength'].lower()} 매도로 {position_num}차 진입 보류"
-                        elif position_num <= 3 and fi_analysis['signal_strength'] == 'STRONG':
-                            return False, f"🚫 외국인/기관 강한 매도로 3차 진입 보류"
-                        # 4-5차는 가격 메리트로 진입 허용
+            #             # 차수별 차등 적용
+            #             if position_num <= 2:  # 1-2차는 엄격
+            #                 return False, f"🚫 외국인/기관 {fi_analysis['signal_strength'].lower()} 매도로 {position_num}차 진입 보류"
+            #             elif position_num <= 3 and fi_analysis['signal_strength'] == 'STRONG':
+            #                 return False, f"🚫 외국인/기관 강한 매도로 3차 진입 보류"
+            #             # 4-5차는 가격 메리트로 진입 허용
                     
-                    # 외국인/기관 강한 매수 시 추가 로깅
-                    elif (fi_analysis['direction'] == 'bullish' and 
-                        fi_analysis['signal_strength'] in ['STRONG', 'MODERATE']):
-                        logger.info(f"💰 {stock_name} {position_num}차: 외국인/기관 {fi_analysis['signal_strength'].lower()} 매수흐름 감지")
+            #         # 외국인/기관 강한 매수 시 추가 로깅
+            #         elif (fi_analysis['direction'] == 'bullish' and 
+            #             fi_analysis['signal_strength'] in ['STRONG', 'MODERATE']):
+            #             logger.info(f"💰 {stock_name} {position_num}차: 외국인/기관 {fi_analysis['signal_strength'].lower()} 매수흐름 감지")
                     
-                    # 중립일 때도 로깅 (디버깅용)
-                    else:
-                        logger.debug(f"🔄 {stock_name} {position_num}차: 외국인/기관 중립({fi_analysis['direction']}, {fi_analysis['signal_strength']})")
+            #         # 중립일 때도 로깅 (디버깅용)
+            #         else:
+            #             logger.debug(f"🔄 {stock_name} {position_num}차: 외국인/기관 중립({fi_analysis['direction']}, {fi_analysis['signal_strength']})")
                         
-                except Exception as fi_error:
-                    logger.warning(f"⚠️ 외국인/기관 분석 오류 ({stock_code}): {str(fi_error)}")
+            #     except Exception as fi_error:
+            #         logger.warning(f"⚠️ 외국인/기관 분석 오류 ({stock_code}): {str(fi_error)}")
             
             # 🔥🔥🔥 기존 매수 조건 로직 (기존 코드 유지) 🔥🔥🔥
             
