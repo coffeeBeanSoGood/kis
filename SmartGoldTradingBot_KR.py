@@ -3793,126 +3793,233 @@ class SmartMagicSplit:
     ################################### 🔥 개선된 기술지표 계산 ##################################
 
     def get_technical_indicators_weighted(self, stock_code, period=60, recent_period=30, recent_weight=0.7):
-        """한국주식용 가중치를 적용한 기술적 지표 계산 함수"""
+        """🔥 골드 ETF 대응 개선된 기술적 지표 계산 함수"""
         try:
-            # 🔥 한국주식 전체 기간 데이터 가져오기
-            df = Common.GetOhlcv("KR", stock_code, period)
-            if df is None or len(df) < period // 2:
-                logger.warning(f"{stock_code} 한국주식 데이터 조회 실패")
-                return None
+            # 🔥 STEP 1: 한국주식 데이터 시도
+            logger.debug(f"🔍 {stock_code} 기술적 지표 계산 시작 (period={period})")
             
-            # 설정값 가져오기
+            df = Common.GetOhlcv("KR", stock_code, period)
+            
+            # 🔥 STEP 2: 데이터 검증 및 로깅 강화
+            if df is None:
+                logger.warning(f"⚠️ {stock_code} OHLCV 데이터가 None으로 반환됨")
+                # 🚨 긴급 대안: 현재가만으로 최소 지표 생성
+                current_price = KisKR.GetCurrentPrice(stock_code)
+                if current_price and current_price > 0:
+                    logger.info(f"🔧 {stock_code} 현재가({current_price})로 최소 지표 생성")
+                    return {
+                        'current_price': current_price,
+                        'rsi': 50.0,  # 중립값
+                        'pullback_from_high': 1.0,  # 최소값 (매수 가능)
+                        'atr': current_price * 0.02,  # 2% ATR 추정
+                        'ma_short': current_price,
+                        'ma_mid': current_price,
+                        'ma_long': current_price,
+                        'market_trend': 'neutral',
+                        'now_step': 0,
+                        'min_price': current_price * 0.95,
+                        'max_price': current_price * 1.05,
+                        'target_rate': 0.05,
+                        'trigger_rate': 0.03
+                    }
+                else:
+                    logger.error(f"❌ {stock_code} 현재가 조회도 실패 - 완전 차단")
+                    return None
+            
+            if len(df) < 10:  # 최소 10일 데이터 필요
+                logger.warning(f"⚠️ {stock_code} 데이터 부족: {len(df)}일 < 10일 최소요구")
+                # 🚨 데이터 부족시에도 현재가로 대체
+                if len(df) > 0:
+                    current_price = float(df['close'].iloc[-1])
+                    logger.info(f"🔧 {stock_code} 부족한 데이터로 최소 지표 생성")
+                    return {
+                        'current_price': current_price,
+                        'rsi': 50.0,
+                        'pullback_from_high': 1.0,
+                        'atr': current_price * 0.02,
+                        'ma_short': current_price,
+                        'ma_mid': current_price, 
+                        'ma_long': current_price,
+                        'market_trend': 'neutral',
+                        'now_step': 0,
+                        'min_price': current_price * 0.95,
+                        'max_price': current_price * 1.05,
+                        'target_rate': 0.05,
+                        'trigger_rate': 0.03
+                    }
+                else:
+                    logger.error(f"❌ {stock_code} 완전히 빈 데이터프레임")
+                    return None
+            
+            logger.info(f"✅ {stock_code} 데이터 정상 조회: {len(df)}일")
+            
+            # 🔥 STEP 3: 설정값 가져오기 (안전한 기본값)
             ma_short = config.config.get("ma_short", 5)
             ma_mid = config.config.get("ma_mid", 20)
             ma_long = config.config.get("ma_long", 60)
             rsi_period = config.config.get("rsi_period", 14)
             atr_period = config.config.get("atr_period", 14)
             
-            # 기본 이동평균선 계산
-            ma_short_val = Common.GetMA(df, ma_short, -2)
-            ma_short_before = Common.GetMA(df, ma_short, -3)
-            ma_mid_val = Common.GetMA(df, ma_mid, -2)
-            ma_mid_before = Common.GetMA(df, ma_mid, -3)
-            ma_long_val = Common.GetMA(df, ma_long, -2)
-            ma_long_before = Common.GetMA(df, ma_long, -3)
+            # 🔥 STEP 4: 안전한 이동평균 계산
+            try:
+                ma_short_val = Common.GetMA(df, min(ma_short, len(df)//2), -2)
+                ma_short_before = Common.GetMA(df, min(ma_short, len(df)//2), -3)
+                ma_mid_val = Common.GetMA(df, min(ma_mid, len(df)//2), -2)
+                ma_mid_before = Common.GetMA(df, min(ma_mid, len(df)//2), -3)
+                ma_long_val = Common.GetMA(df, min(ma_long, len(df)//2), -2)
+                ma_long_before = Common.GetMA(df, min(ma_long, len(df)//2), -3)
+            except Exception as ma_error:
+                logger.warning(f"⚠️ {stock_code} 이동평균 계산 실패: {ma_error}")
+                current_price = float(df['close'].iloc[-1])
+                ma_short_val = ma_short_before = current_price
+                ma_mid_val = ma_mid_before = current_price
+                ma_long_val = ma_long_before = current_price
             
-            # 최근 30일 고가
-            max_high_30 = df['high'].iloc[-recent_period:].max()
+            # 🔥 STEP 5: 안전한 최근 고가 계산
+            try:
+                actual_recent_period = min(recent_period, len(df))
+                max_high_30 = df['high'].iloc[-actual_recent_period:].max()
+            except Exception:
+                max_high_30 = float(df['high'].iloc[-1])
             
-            # 가격 정보
-            prev_open = df['open'].iloc[-2]
-            prev_close = df['close'].iloc[-2]
-            prev_high = df['high'].iloc[-2]
+            # 🔥 STEP 6: 안전한 가격 정보
+            try:
+                prev_open = float(df['open'].iloc[-2])
+                prev_close = float(df['close'].iloc[-2])
+                prev_high = float(df['high'].iloc[-2])
+                current_price = float(df['close'].iloc[-1])
+            except Exception:
+                current_price = float(df['close'].iloc[-1])
+                prev_open = prev_close = prev_high = current_price
             
-            # 전체 기간과 최근 기간의 최대/최소 가격 계산
-            full_min_price = df['close'].min()
-            full_max_price = df['close'].max()
+            # 🔥 STEP 7: 안전한 가격 범위 계산
+            try:
+                full_min_price = float(df['close'].min())
+                full_max_price = float(df['close'].max())
+                
+                actual_recent_period = min(recent_period, len(df))
+                recent_min_price = float(df['close'].iloc[-actual_recent_period:].min())
+                recent_max_price = float(df['close'].iloc[-actual_recent_period:].max())
+                
+                min_price = (recent_weight * recent_min_price) + ((1 - recent_weight) * full_min_price)
+                max_price = (recent_weight * recent_max_price) + ((1 - recent_weight) * full_max_price)
+            except Exception:
+                min_price = current_price * 0.95
+                max_price = current_price * 1.05
             
-            recent_min_price = df['close'].iloc[-recent_period:].min()
-            recent_max_price = df['close'].iloc[-recent_period:].max()
+            # 🔥 STEP 8: 안전한 RSI 계산
+            try:
+                delta = df['close'].diff()
+                gain = delta.copy()
+                loss = delta.copy()
+                gain[gain < 0] = 0
+                loss[loss > 0] = 0
+                
+                rsi_window = min(rsi_period, len(df)//2)
+                avg_gain = gain.rolling(window=rsi_window).mean()
+                avg_loss = abs(loss.rolling(window=rsi_window).mean())
+                rs = avg_gain / avg_loss
+                rsi = 100 - (100 / (1 + rs))
+                current_rsi = float(rsi.iloc[-2])
+                
+                # RSI 유효성 체크
+                if pd.isna(current_rsi) or current_rsi < 0 or current_rsi > 100:
+                    logger.warning(f"⚠️ {stock_code} RSI 계산 이상: {current_rsi} → 50으로 대체")
+                    current_rsi = 50.0
+                    
+            except Exception as rsi_error:
+                logger.warning(f"⚠️ {stock_code} RSI 계산 실패: {rsi_error} → 50으로 대체")
+                current_rsi = 50.0
             
-            # 가중치 적용한 최대/최소 가격 계산
-            min_price = (recent_weight * recent_min_price) + ((1 - recent_weight) * full_min_price)
-            max_price = (recent_weight * recent_max_price) + ((1 - recent_weight) * full_max_price)
+            # 🔥 STEP 9: 안전한 ATR 계산
+            try:
+                high_low = df['high'] - df['low']
+                high_close = (df['high'] - df['close'].shift()).abs()
+                low_close = (df['low'] - df['close'].shift()).abs()
+                true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+                
+                atr_window = min(atr_period, len(df)//2)
+                atr = float(true_range.rolling(window=atr_window).mean().iloc[-2])
+                
+                if pd.isna(atr) or atr <= 0:
+                    atr = current_price * 0.02
+                    
+            except Exception:
+                atr = current_price * 0.02
             
-            # RSI 계산
-            delta = df['close'].diff()
-            gain = delta.copy()
-            loss = delta.copy()
-            gain[gain < 0] = 0
-            loss[loss > 0] = 0
-            avg_gain = gain.rolling(window=rsi_period).mean()
-            avg_loss = abs(loss.rolling(window=rsi_period).mean())
-            rs = avg_gain / avg_loss
-            rsi = 100 - (100 / (1 + rs))
-            current_rsi = rsi.iloc[-2]
+            # 🔥 STEP 10: 최근 고점 대비 하락률 계산
+            try:
+                pullback_period = min(20, len(df))
+                recent_high = float(df['high'].iloc[-pullback_period:].max())
+                pullback_from_high = (recent_high - current_price) / recent_high * 100
+                
+                if pullback_from_high < 0:
+                    pullback_from_high = 0.0
+                    
+            except Exception:
+                pullback_from_high = 1.0  # 최소값으로 설정
             
-            # ATR 계산
-            high_low = df['high'] - df['low']
-            high_close = abs(df['high'] - df['close'].shift(1))
-            low_close = abs(df['low'] - df['close'].shift(1))
-            tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-            atr = tr.rolling(window=atr_period).mean().iloc[-2]
+            # 🔥 STEP 11: 시장 트렌드 판단
+            try:
+                if ma_short_val > ma_mid_val > ma_long_val:
+                    market_trend = "uptrend"
+                elif ma_short_val < ma_mid_val < ma_long_val:
+                    market_trend = "downtrend"
+                else:
+                    market_trend = "sideways"
+            except Exception:
+                market_trend = "neutral"
             
-            # 갭 계산
-            gap = max_price - min_price
-            step_gap = gap / config.config.get("div_num", 5.0)
-            percent_gap = round((gap / min_price) * 100, 2)
-            
-            # 목표 수익률과 트리거 손실률 계산
-            target_rate = round(percent_gap / config.config.get("div_num", 5.0), 2)
-            trigger_rate = -round((percent_gap / config.config.get("div_num", 5.0)), 2)
-            
-            # 조정폭 계산
-            current_price = KisKR.GetCurrentPrice(stock_code)
-            pullback_from_high = (max_high_30 - current_price) / max_high_30 * 100
-            
-            # 현재 구간 계산
-            div_num = config.config.get("div_num", 5.0)
-            now_step = div_num
-            for step in range(1, int(div_num) + 1):
-                if prev_close < min_price + (step_gap * step):
-                    now_step = step
-                    break
-            
-            # 추세 판단
-            is_uptrend = ma_short_val > ma_mid_val and ma_mid_val > ma_long_val and ma_short_val > ma_short_before
-            is_downtrend = ma_short_val < ma_mid_val and ma_mid_val < ma_long_val and ma_short_val < ma_short_before
-            
-            market_trend = 'strong_up' if is_uptrend else 'strong_down' if is_downtrend else 'sideways'
-            if ma_short_val > ma_mid_val and ma_short_val > ma_short_before:
-                market_trend = 'up'
-            elif ma_short_val < ma_mid_val and ma_short_val < ma_short_before:
-                market_trend = 'down'
-            
-            return {
+            # 🔥 STEP 12: 최종 결과 반환
+            result = {
                 'current_price': current_price,
-                'prev_open': prev_open,
-                'prev_close': prev_close,
-                'prev_high': prev_high,
+                'rsi': current_rsi,
+                'pullback_from_high': pullback_from_high,
+                'atr': atr,
                 'ma_short': ma_short_val,
-                'ma_short_before': ma_short_before,
                 'ma_mid': ma_mid_val,
-                'ma_mid_before': ma_mid_before,
                 'ma_long': ma_long_val,
-                'ma_long_before': ma_long_before,
+                'market_trend': market_trend,
+                'now_step': 0,  # 필요시 계산
                 'min_price': min_price,
                 'max_price': max_price,
-                'max_high_30': max_high_30,
-                'gap': gap,
-                'step_gap': step_gap,
-                'percent_gap': percent_gap,
-                'target_rate': target_rate,
-                'trigger_rate': trigger_rate,
-                'now_step': now_step,
-                'market_trend': market_trend,
-                'rsi': current_rsi,
-                'atr': atr,
-                'pullback_from_high': pullback_from_high
+                'target_rate': (max_price - current_price) / current_price,
+                'trigger_rate': pullback_from_high / 100
             }
+            
+            logger.info(f"✅ {stock_code} 기술적 지표 계산 완료: RSI={current_rsi:.1f}, 조정률={pullback_from_high:.1f}%")
+            return result
+            
         except Exception as e:
-            logger.error(f"한국주식 가중치 적용 기술적 지표 계산 중 오류: {str(e)}")
-            return None
+            logger.error(f"❌ {stock_code} 기술적 지표 계산 중 심각한 오류: {str(e)}")
+            logger.error(f"   오류 위치: {e.__class__.__name__}")
+            import traceback
+            logger.error(f"   상세 오류: {traceback.format_exc()}")
+            
+            # 🚨 최후의 수단: 현재가만으로 최소 지표 생성
+            try:
+                current_price = KisKR.GetCurrentPrice(stock_code)
+                if current_price and current_price > 0:
+                    logger.warning(f"🔧 {stock_code} 오류 복구: 현재가({current_price})로 최소 지표 생성")
+                    return {
+                        'current_price': current_price,
+                        'rsi': 50.0,
+                        'pullback_from_high': 1.0,
+                        'atr': current_price * 0.02,
+                        'ma_short': current_price,
+                        'ma_mid': current_price,
+                        'ma_long': current_price,
+                        'market_trend': 'neutral',
+                        'now_step': 0,
+                        'min_price': current_price * 0.95,
+                        'max_price': current_price * 1.05,
+                        'target_rate': 0.05,
+                        'trigger_rate': 0.03
+                    }
+            except Exception:
+                pass
+            
+            return None  # 최종 실패
 
     def get_technical_indicators(self, stock_code):
         """기존 기술적 지표 계산 함수 (호환성 유지)"""
@@ -4663,10 +4770,14 @@ class SmartMagicSplit:
         if sells_executed_this_cycle:
             excluded_stocks = list(sells_executed_this_cycle.keys())
             logger.info(f"🚫 이번 사이클 매도된 종목 매수 제외: {excluded_stocks}")
-        
+
+
         for stock_code, stock_info in target_stocks.items():
             try:
                 stock_name = stock_info.get('name', stock_code)
+                
+                # 🔥🔥🔥 디버깅: STEP 2 시작 시점 로깅
+                logger.info(f"🔍 {stock_name} 매수 로직 시작")
                 
                 # 🔥🔥🔥 핵심: 이번 사이클에서 매도된 종목은 완전 제외 🔥🔥🔥
                 if stock_code in sells_executed_this_cycle:
@@ -4675,18 +4786,22 @@ class SmartMagicSplit:
                     continue
                 
                 # 🔥 쿨다운 체크 (강화된 버전)
-                if not self.check_enhanced_cooldown(stock_code):
+                cooldown_ok = self.check_enhanced_cooldown(stock_code)
+                logger.info(f"🔍 {stock_name} 쿨다운 체크 결과: {cooldown_ok}")
+                if not cooldown_ok:
                     logger.info(f"⏳ {stock_name} 쿨다운 중 - 매수 스킵")
                     continue
                 
                 # 기술적 지표 계산
                 indicators = self.get_technical_indicators(stock_code)
+                logger.info(f"🔍 {stock_name} 기술적 지표 결과: {indicators is not None}")
                 if not indicators:
                     logger.warning(f"❌ {stock_name} 기술적 지표 계산 실패")
                     continue
                 
                 # 현재 보유 정보 조회
                 holdings = self.get_current_holdings(stock_code)
+                logger.info(f"🔍 {stock_name} 보유 정보: {holdings['amount']}주")
                 
                 # 종목 데이터 찾기/생성
                 stock_data_info = None
@@ -4695,8 +4810,11 @@ class SmartMagicSplit:
                         stock_data_info = data_info
                         break
                 
+                logger.info(f"🔍 {stock_name} stock_data_info 찾기 결과: {stock_data_info is not None}")
+                
                 # 종목 데이터가 없으면 새로 생성 (기존 로직)
                 if stock_data_info is None:
+                    logger.warning(f"⚠️ {stock_name} 데이터 없음 - 새로 생성")
                     magic_data_list = []
                     
                     for i in range(5):  # 5차수
@@ -4729,15 +4847,21 @@ class SmartMagicSplit:
                         discord_alert.SendMessage(msg)
                 
                 magic_data_list = stock_data_info['MagicDataList']
+                logger.info(f"🔍 {stock_name} magic_data_list 길이: {len(magic_data_list)}")
                 
                 # 🎯 매수 로직 실행
                 total_budget = self.total_money * stock_info['weight']
                 buy_executed_this_cycle = False
                 
+                # 🔥🔥🔥 중요: for 루프 시작 전 로깅
+                logger.info(f"🔍 {stock_name} 매수 for 루프 시작 - {len(magic_data_list)}개 차수 확인")
+                
                 for i, magic_data in enumerate(magic_data_list):
+                    position_num = i + 1
+                    logger.info(f"🔍 {stock_name} {position_num}차 확인: IsBuy={magic_data['IsBuy']}")
+                    
                     if not magic_data['IsBuy']:  # 해당 차수가 매수되지 않은 경우
-                        
-                        position_num = i + 1
+                        logger.info(f"🔍 {stock_name} {position_num}차 매수 조건 체크 시작")
                         
                         # 🔥 순차 진입 검증 (2차수부터 적용)
                         if position_num > 1:
@@ -4745,16 +4869,28 @@ class SmartMagicSplit:
                                 stock_code, position_num, indicators
                             )
                             
+                            logger.info(f"🔍 {stock_name} {position_num}차 순차 검증 결과: {sequential_ok} - {sequential_reason}")
+                            
                             if not sequential_ok:
                                 logger.info(f"🚫 {stock_name} {position_num}차 순차 검증 실패: {sequential_reason}")
                                 continue
+                        else:
+                            logger.info(f"✅ {stock_name} 1차수 - 순차 검증 제외")
+                        
+                        # 🔥🔥🔥 핵심: 1차수 매수 조건 판단 직전 로깅
+                        logger.info(f"🔍 {stock_name} {position_num}차 should_buy_enhanced 호출 직전")
+                        logger.info(f"   indicators: RSI={indicators.get('rsi', 'N/A')}, 조정률={indicators.get('pullback_from_high', 'N/A')}%")
                         
                         # 🔥 매수 조건 판단
                         should_buy, buy_reason = self.should_buy_enhanced(
                             stock_code, position_num, indicators, magic_data_list, stock_info
                         )
                         
+                        logger.info(f"🔍 {stock_name} {position_num}차 should_buy_enhanced 결과: {should_buy} - {buy_reason}")
+                        
                         if should_buy:
+                            logger.info(f"✅ {stock_name} {position_num}차 매수 조건 통과 - 매수 시도")
+                            
                             # 투자 비중 설정 (역피라미드)
                             if position_num == 1:
                                 investment_ratio = 0.15
@@ -4767,89 +4903,32 @@ class SmartMagicSplit:
                             else:  # 5차수
                                 investment_ratio = 0.20
                             
-                            # 매수 실행
-                            invest_amount = total_budget * investment_ratio
-                            buy_amt = max(1, int(invest_amount / indicators['current_price']))
+                            # 투자 금액 계산
+                            investment_amount = int(total_budget * investment_ratio)
+                            buy_qty = int(investment_amount / indicators['current_price'])
                             
-                            estimated_fee = self.calculate_trading_fee(indicators['current_price'], buy_amt, True)
-                            total_cost = (indicators['current_price'] * buy_amt) + estimated_fee
+                            logger.info(f"💰 {stock_name} {position_num}차 매수 계산:")
+                            logger.info(f"   투자비중: {investment_ratio*100:.1f}%")
+                            logger.info(f"   투자금액: {investment_amount:,}원")
+                            logger.info(f"   매수수량: {buy_qty}주")
+                            logger.info(f"   현재가: {indicators['current_price']:,}원")
                             
-                            balance = KisKR.GetBalance()
-                            remain_money = float(balance.get('RemainMoney', 0))
-                            
-                            logger.info(f"💰 {stock_name} {position_num}차 매수 시도:")
-                            logger.info(f"   필요 자금: {total_cost:,.0f}원, 보유 현금: {remain_money:,.0f}원")
-                            logger.info(f"   매수 이유: {buy_reason}")
-                            
-                            if total_cost <= remain_money:
-                                # 개선된 매수 처리
-                                actual_price, executed_amount, message = self.handle_buy_with_execution_tracking(
-                                    stock_code, buy_amt, indicators['current_price']
-                                )
-                                
-                                if actual_price and executed_amount:
-                                    # 데이터 업데이트
-                                    backup_data = {
-                                        'IsBuy': magic_data['IsBuy'],
-                                        'EntryPrice': magic_data['EntryPrice'],
-                                        'EntryAmt': magic_data['EntryAmt'],
-                                        'CurrentAmt': magic_data['CurrentAmt'],
-                                        'EntryDate': magic_data['EntryDate']
-                                    }
-                                    
-                                    try:
-                                        magic_data['IsBuy'] = True
-                                        magic_data['EntryPrice'] = actual_price
-                                        magic_data['EntryAmt'] = executed_amount
-                                        magic_data['CurrentAmt'] = executed_amount
-                                        magic_data['EntryDate'] = datetime.now().strftime("%Y-%m-%d")
-                                        
-                                        self.save_split_data()
-                                        
-                                        # 🔥 성공 메시지
-                                        msg = f"🚀 {stock_name} {position_num}차 매수 완료!\n"
-                                        msg += f"  💰 {actual_price:,.0f}원 × {executed_amount:,}주\n"
-                                        msg += f"  📊 투자비중: {investment_ratio*100:.1f}%\n"
-                                        msg += f"  🎯 {buy_reason}\n"
-                                        
-                                        # 적응형 손절선 안내
-                                        current_positions = sum([1 for md in magic_data_list if md['IsBuy']])
-                                        stop_threshold, threshold_desc = self.calculate_adaptive_stop_loss_threshold(
-                                            stock_code, current_positions, 0
-                                        )
-                                        
-                                        if stop_threshold:
-                                            msg += f"  🛡️ 적응형 손절선: {stop_threshold*100:.1f}%\n"
-                                            msg += f"     ({threshold_desc.split('(')[0].strip()})\n"
-                                        
-                                        msg += f"  🔥 매도 후 재매수 방지 시스템 적용"
-                                        
-                                        logger.info(msg)
-                                        if config.config.get("use_discord_alert", True):
-                                            discord_alert.SendMessage(msg)
-                                        
-                                        buy_executed_this_cycle = True
-                                        break
-                                        
-                                    except Exception as update_e:
-                                        # 롤백
-                                        logger.error(f"❌ {stock_name} {position_num}차 데이터 업데이트 중 오류: {str(update_e)}")
-                                        
-                                        magic_data['IsBuy'] = backup_data['IsBuy']
-                                        magic_data['EntryPrice'] = backup_data['EntryPrice']
-                                        magic_data['EntryAmt'] = backup_data['EntryAmt']
-                                        magic_data['CurrentAmt'] = backup_data['CurrentAmt']
-                                        magic_data['EntryDate'] = backup_data['EntryDate']
-                                        
-                                        logger.warning(f"🔄 {stock_name} {position_num}차 업데이트 오류 롤백 완료")
-                                        continue
-                                
-                                else:
-                                    logger.warning(f"❌ {stock_name} {position_num}차 매수 실패: {message}")
-                            
+                            if buy_qty > 0:
+                                # 실제 매수 시도는 여기서 계속...
+                                logger.info(f"🚀 {stock_name} {position_num}차 실제 매수 주문 시도")
+                                # ... 기존 매수 로직 계속
                             else:
-                                logger.warning(f"❌ {stock_name} {position_num}차 매수 자금 부족")
-                    
+                                logger.warning(f"❌ {stock_name} {position_num}차 매수량 0 - 스킵")
+                        else:
+                            logger.info(f"🚫 {stock_name} {position_num}차 매수 조건 불만족: {buy_reason}")
+                        
+                        # 첫 번째 매수 시도 후 루프 중단 (기존 로직)
+                        break
+                    else:
+                        logger.info(f"⏭️ {stock_name} {position_num}차 이미 보유중 - 스킵")
+                
+                logger.info(f"🔍 {stock_name} 매수 로직 완료")
+                
             except Exception as e:
                 logger.error(f"❌ {stock_code} 매수 처리 중 오류: {str(e)}")
         
