@@ -2153,6 +2153,132 @@ class SmartMagicSplit:
             logger.error(f"시간 기반 매도 체크 오류: {str(e)}")
             return False, ""
 
+    def calculate_dynamic_profit_target(self, stock_code, indicators):
+            """동적으로 목표 수익률을 계산하는 함수 - 시장/RSI/변동성 기반 조정"""
+            try:
+                target_stocks = config.target_stocks
+                base_target = target_stocks[stock_code].get('base_profit_target', 10)
+                
+                # 기본 시장 상황 조정
+                market_timing = getattr(self, '_current_market_timing', self.detect_market_timing())
+                market_factor = 1.0
+                
+                if market_timing in ["strong_uptrend", "uptrend"]:
+                    market_factor = 1.2  # 상승장: 20% 상향
+                elif market_timing in ["strong_downtrend", "downtrend"]:
+                    market_factor = 0.8  # 하락장: 20% 하향
+                
+                # RSI 기반 조정
+                rsi = indicators.get('rsi', 50)
+                rsi_factor = 1.0
+                
+                if rsi >= 70:  # 과매수
+                    rsi_factor = 0.85  # 목표 하향 (빨리 매도)
+                elif rsi >= 60:
+                    rsi_factor = 0.95
+                elif rsi <= 30:  # 과매도
+                    rsi_factor = 1.15  # 목표 상향 (더 기다림)
+                elif rsi <= 40:
+                    rsi_factor = 1.05
+                
+                # 변동성 기반 조정
+                try:
+                    df = Common.GetOhlcv("KR", stock_code, 20)
+                    if df is not None and len(df) >= 15:
+                        volatility = df['close'].pct_change().std() * 100
+                        
+                        if volatility > 5.0:  # 고변동성
+                            vol_factor = 0.9  # 목표 하향 (빠른 매도)
+                        elif volatility < 2.0:  # 저변동성
+                            vol_factor = 1.1  # 목표 상향 (여유있게)
+                        else:
+                            vol_factor = 1.0
+                    else:
+                        vol_factor = 1.0
+                except:
+                    vol_factor = 1.0
+                
+                # 최종 목표 수익률 계산
+                dynamic_target = base_target * market_factor * rsi_factor * vol_factor
+                
+                # 안전 범위 제한 (기본값의 60% ~ 150%)
+                min_target = base_target * 0.6
+                max_target = base_target * 1.5
+                dynamic_target = max(min_target, min(dynamic_target, max_target))
+                
+                # 로깅
+                if abs(dynamic_target - base_target) > 0.5:
+                    logger.info(f"📊 {stock_code} 동적 목표 수익률 조정:")
+                    logger.info(f"   기본: {base_target:.1f}% → 동적: {dynamic_target:.1f}%")
+                    logger.info(f"   시장: {market_timing} (×{market_factor:.2f})")
+                    logger.info(f"   RSI: {rsi:.1f} (×{rsi_factor:.2f})")
+                    logger.info(f"   변동성: ×{vol_factor:.2f}")
+                
+                return dynamic_target
+                
+            except Exception as e:
+                logger.error(f"동적 목표 수익률 계산 오류: {str(e)}")
+                return target_stocks.get(stock_code, {}).get('base_profit_target', 10)
+
+    def check_budget_driven_opportunity_cost(self, stock_code, magic_data, position_return_pct, current_price):
+            """🔥 예산 압박 상황에서 기회비용 방지 체크 (US 실버봇 로직)"""
+            try:
+                # 현재 계좌 상태 조회
+                balance = KisKR.GetBalance()
+                total_money = float(balance.get('TotalMoney', 0))
+                remain_money = float(balance.get('RemainMoney', 0))
+                
+                if total_money <= 0:
+                    return None
+                
+                # 현금 비율 계산
+                cash_ratio = remain_money / total_money
+                
+                # 🔥 예산 압박 조건 체크
+                position_num = magic_data['Number']
+                
+                # 조건 1: 현금 비율이 20% 미만
+                low_cash = cash_ratio < 0.20
+                
+                # 조건 2: 최소 수익 (2% 이상)
+                min_profit = position_return_pct >= 2.0
+                
+                # 조건 3: 고차수 포지션 (3차 이상)
+                high_position = position_num >= 3
+                
+                # 🔥 예산 압박 수익보존 발동
+                if low_cash and min_profit:
+                    reason = f"예산압박(현금{cash_ratio*100:.1f}%)"
+                    
+                    if high_position:
+                        reason += f"+고차수({position_num}차)"
+                    
+                    reason += f" → {position_return_pct:.1f}% 수익보존"
+                    
+                    logger.warning(f"💰 {stock_code} {position_num}차 예산 압박 감지:")
+                    logger.warning(f"   현금비율: {cash_ratio*100:.1f}% (기준: 20%)")
+                    logger.warning(f"   현재수익: {position_return_pct:.1f}%")
+                    logger.warning(f"   판단: 즉시 매도로 현금확보 권장")
+                    
+                    return reason
+                
+                # 조건 4: 극심한 현금 부족 (10% 미만)
+                if cash_ratio < 0.10 and position_return_pct >= 1.0:
+                    reason = f"극심한예산압박(현금{cash_ratio*100:.1f}%) → {position_return_pct:.1f}% 수익보존"
+                    
+                    logger.error(f"🚨 {stock_code} {position_num}차 극심한 예산 압박!")
+                    logger.error(f"   현금비율: {cash_ratio*100:.1f}% (위험 수준)")
+                    logger.error(f"   최소수익: {position_return_pct:.1f}%")
+                    logger.error(f"   판단: 즉시 매도 필수")
+                    
+                    return reason
+                
+                return None
+                
+            except Exception as e:
+                logger.error(f"예산 기반 기회비용 체크 오류: {str(e)}")
+                return None
+
 ################################### 🔥 US 버전 하이브리드 스마트 부분매도 시스템 ##################################
 
     def get_partial_sell_config(self, stock_code):
@@ -5144,7 +5270,7 @@ class SmartMagicSplit:
 ################################### 🔥 개선된 메인 매매 로직 ##################################
 
     def process_enhanced_selling_logic(self, stock_code, stock_info, magic_data_list, indicators, holdings):
-            """🔥🔥🔥 US 버전 하이브리드 부분매도가 통합된 개선된 매도 로직 처리"""
+            """🔥🔥🔥 US 버전 하이브리드 부분매도가 통합된 개선된 매도 로직 처리 - 오류 수정 버전"""
             try:
                 current_price = indicators['current_price']
                 target_stocks = config.target_stocks
@@ -5183,6 +5309,7 @@ class SmartMagicSplit:
                     if not magic_data.get('IsBuy', False) or magic_data.get('CurrentAmt', 0) <= 0:
                         continue
                     
+                    # 🔥🔥🔥 중요: 변수 선언을 가장 먼저 (오류 수정 핵심) 🔥🔥🔥
                     position_num = magic_data['Number']
                     entry_price = magic_data['EntryPrice']
                     current_amount = magic_data.get('CurrentAmt', magic_data['EntryAmt'])
@@ -5201,7 +5328,7 @@ class SmartMagicSplit:
                     
                     max_profit_achieved = magic_data[max_profit_key]
                     
-                    # 🔥🔥🔥 US 버전 하이브리드 스마트 부분매도 체크 (최우선!) 🔥🔥🔥
+                    # 🔥🔥🔥 US 버전 하이브리드 스마트 부분매도 체크 (최우선) 🔥🔥🔥
                     if adjusted_config:
                         should_partial_sell, hybrid_action, partial_reason = self.should_execute_partial_sell(
                             stock_code, magic_data, current_price, adjusted_config
@@ -5218,7 +5345,7 @@ class SmartMagicSplit:
                             if success:
                                 sells_executed = True
                                 
-                                # 전량매도인 경우 쿨다운 설정
+                                # 🔥 수정: current_amount가 이미 정의되어 있으므로 정상 작동
                                 if hybrid_action['sell_amount'] >= current_amount:
                                     if not hasattr(self, 'last_sell_time'):
                                         self.last_sell_time = {}
@@ -5242,49 +5369,12 @@ class SmartMagicSplit:
                                 logger.error(f"❌ {stock_name} {position_num}차 부분매도 실행 실패: {message}")
                     
                     # 🔥 부분매도 비활성화 또는 실패 시 기존 전량매도 로직
+                    # 🔥 수정: 변수가 이미 위에서 선언되어 있으므로 중복 선언 제거
                     
                     # 매도 조건 체크 (우선순위 순서)
                     should_sell = False
                     sell_reason = ""
-
-                    # 🔥🔥🔥 US 버전 하이브리드 스마트 부분매도 체크 (최우선) 🔥🔥🔥
-                    if adjusted_config:
-                        should_partial_sell, hybrid_action, partial_reason = self.should_execute_partial_sell(
-                            stock_code, magic_data, current_price, adjusted_config
-                        )
-                        
-                        if should_partial_sell and hybrid_action:
-                            logger.info(f"💎 {stock_name} {position_num}차 부분매도 조건 충족: {partial_reason}")
-                            
-                            # 부분매도 실행
-                            success, message = self.execute_hybrid_smart_partial_sell(
-                                stock_code, magic_data, current_price, hybrid_action
-                            )
-                            
-                            if success:
-                                sells_executed = True
-                                
-                                # 전량매도인 경우 쿨다운 설정
-                                if hybrid_action['sell_amount'] >= magic_data.get('CurrentAmt', 0):
-                                    if not hasattr(self, 'last_sell_time'):
-                                        self.last_sell_time = {}
-                                    if not hasattr(self, 'last_sell_info'):
-                                        self.last_sell_info = {}
-                                    
-                                    self.last_sell_time[stock_code] = datetime.now()
-                                    self.last_sell_info[stock_code] = {
-                                        'amount': hybrid_action['sell_amount'],
-                                        'price': current_price,
-                                        'timestamp': datetime.now(),
-                                        'type': 'profit_taking'
-                                    }
-                                    
-                                    logger.info(f"🕐 {stock_name} 부분매도 완료 - 강제 쿨다운 설정 (6시간)")
-                                
-                                continue  # 다음 차수로
-                            else:
-                                logger.error(f"❌ {stock_name} {position_num}차 부분매도 실행 실패: {message}")
-
+                    
                     # 🎯 1순위: 수익률 상한제 체크
                     cap_sell, cap_reason = self.check_profit_cap(
                         stock_code, magic_data, current_price, stock_config
@@ -5304,7 +5394,7 @@ class SmartMagicSplit:
                         if trailing_sell:
                             should_sell = True
                             sell_reason = trailing_reason
-                            logger.warning(f"🔄 {stock_name} {position_num}차 트레일링 스탑 매도")
+                            logger.warning(f"🔄 {stock_name} {position_num}차 트레일링 스톱 매도")
                     
                     # 🚀 3순위: 빠른 수익 확정 체크
                     if not should_sell:
@@ -5338,16 +5428,24 @@ class SmartMagicSplit:
                             should_sell = True
                             sell_reason = time_reason
                             logger.info(f"⏰ {stock_name} {position_num}차 시간 기반 매도")
-                    
-                    # 📊 6순위: 기본 목표가 체크 (마지막 방어선)
+
+                    # 📊 6순위: 동적 목표가 체크 (마지막 방어선) - 🔥 개선
                     if not should_sell:
-                        base_target = stock_config.get('base_profit_target', 10)
+                        # 🔥 동적 목표 수익률 계산 (시장/RSI/변동성 반영)
+                        dynamic_target = self.calculate_dynamic_profit_target(stock_code, indicators)
                         
-                        if current_return >= base_target:
+                        if current_return >= dynamic_target:
                             should_sell = True
-                            sell_reason = f"기본목표달성({current_return:.1f}%≥{base_target}%)"
-                            logger.info(f"📊 {stock_name} {position_num}차 기본 목표가 달성")
-                    
+                            
+                            # 기본값과 다른 경우 설명 추가
+                            base_target = stock_config.get('base_profit_target', 10)
+                            if abs(dynamic_target - base_target) > 0.5:
+                                sell_reason = f"동적목표달성({current_return:.1f}%≥{dynamic_target:.1f}%,기본{base_target:.1f}%)"
+                            else:
+                                sell_reason = f"목표달성({current_return:.1f}%≥{dynamic_target:.1f}%)"
+                            
+                            logger.info(f"📊 {stock_name} {position_num}차 동적 목표가 달성")
+
                     # 🔥 매도 실행
                     if should_sell:
                         logger.info(f"💰 {stock_name} {position_num}차 매도 조건 충족:")
