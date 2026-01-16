@@ -1199,6 +1199,47 @@ class SmartMagicSplit:
             self.logger.warning("⚠️ AI Cash Target Seller 비활성화 (모듈 미설치)")
         # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+    def should_run_cash_target_seller(self):
+        """
+        AI 현금확보 로직 실행 시점 판단
+        
+        [실행 전략]
+        - 미국 정규장 오픈 후 30분 경과 (한국시간 00:00 이후)
+        - 장 마감 30분 전까지 (한국시간 05:30 이전)
+        - 초기 변동성 진정 후 안정된 시점에 현금 확보
+        
+        Returns:
+            bool: 실행 가능 여부
+        """
+        try:
+            import pytz
+            
+            # 한국 시간 가져오기
+            kst = pytz.timezone('Asia/Seoul')
+            now_kst = datetime.now(kst)
+            current_hour = now_kst.hour
+            current_minute = now_kst.minute
+            current_time = current_hour * 60 + current_minute  # 분 단위로 변환
+            
+            # 실행 가능 시간대: 00:00 ~ 05:30 (한국시간)
+            # = 미국 장 오픈 후 30분 ~ 마감 30분 전
+            start_time = 0 * 60 + 0      # 00:00 (0분)
+            end_time = 5 * 60 + 30        # 05:30 (330분)
+            
+            # 시간대 체크
+            if start_time <= current_time < end_time:
+                logger.debug(f"✅ AI 현금확보 실행 가능 시간대: {current_hour:02d}:{current_minute:02d} KST")
+                return True
+            else:
+                logger.debug(f"⏭️ AI 현금확보 실행 불가 시간대: {current_hour:02d}:{current_minute:02d} KST "
+                            f"(가능시간: 00:00~05:30)")
+                return False
+                
+        except Exception as e:
+            logger.error(f"AI 현금확보 실행 시점 체크 오류: {e}")
+            # 오류 시 안전하게 실행 허용 (기존 동작 유지)
+            return True
+
 ################################### 쿨다운 시스템 ##################################
 
     def check_post_sell_cooldown(self, stock_code):
@@ -6351,6 +6392,12 @@ class SmartMagicSplit:
     def process_trading(self):
         """매매 로직 처리 - 종합 점수 기반 개선 버전"""
 
+        # 🔥🔥🔥 미체결 주문 자동 관리 (가장 먼저 실행) 🔥🔥🔥
+        try:
+            self.check_and_manage_pending_orders()
+        except Exception as e:
+            logger.error(f"미체결 주문 관리 중 오류: {str(e)}")
+
         # 🔍 30분마다 불일치 감지 (수정하지 않음!)
         current_time = datetime.now()
 
@@ -9869,13 +9916,20 @@ def run_bot():
             allocated_budget = bot.total_money * weight
             logger.info(f"  - {stock_config['name']}({stock_code}): 비중 {weight*100:.1f}% (${allocated_budget:,.0f})")
 
-        # AI Cash Target Seller 실행
+        # 🔥🔥🔥 AI Cash Target Seller 실행 (시간대 제어 추가) 🔥🔥🔥
         if hasattr(bot, 'cash_target_seller') and bot.cash_target_seller:
             try:
-                cash_executed = bot.cash_target_seller.execute_if_needed()
-                if cash_executed:
-                    logger.warning("💰 목표 현금 확보 완료")
-                    time.sleep(2)
+                # 실행 시점 체크 (00:00~05:30 KST만 실행)
+                should_run = bot.should_run_cash_target_seller()
+                
+                if should_run:
+                    cash_executed = bot.cash_target_seller.execute_if_needed()
+                    if cash_executed:
+                        logger.warning("💰 목표 현금 확보 완료")
+                        time.sleep(2)
+                else:
+                    logger.debug("⏭️ AI 현금확보: 실행 시간대 아님 (초기 변동성 회피)")
+                    
             except Exception as e:
                 logger.error(f"❌ Cash Target Seller 오류: {e}")
 
