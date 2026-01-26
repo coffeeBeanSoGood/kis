@@ -105,6 +105,7 @@ MONITOR_CONFIG = {
     "history_file": "signal_history.json",
     "results_file": "signal_results.json",
     "use_discord": True,
+    "dashboard_url": "http://115.68.177.222:5000", # webdashboard
     
     # 조용한 모드 설정
     "discord_only_strong_signals": True,
@@ -1006,8 +1007,13 @@ class SignalMonitor:
                         discord_msg += f"• 기관: `{inst_status} {abs(institution):,}주`\n"
                 
                 discord_msg += f"\n{'─'*30}\n"
+                # 🔥 대시보드 링크 추가
+                dashboard_url = MONITOR_CONFIG.get("dashboard_url", "")
+                if dashboard_url:
+                    discord_msg += f"📊 **대시보드**: {dashboard_url}\n"
+
                 discord_msg += f"🎯 SignalMonitor_KR (최종 완성)"
-                
+
                 try:
                     discord_alert.SendMessage(discord_msg)
                     logger.info(f"✅ 디스코드 알림 전송 완료: {stock_name}")
@@ -1075,13 +1081,21 @@ def main():
         logger.info(f"🗑️ 히스토리 자동 정리: ON ({MONITOR_CONFIG['history_max_days']}일)")
         logger.info(f"💬 디스코드 알림: {'ON (STRONG 신호만)' if MONITOR_CONFIG.get('use_discord') else 'OFF'}")
         logger.info("=" * 60)
-        
+
+
         if MONITOR_CONFIG.get("use_discord", True):
             try:
+                dashboard_url = MONITOR_CONFIG.get("dashboard_url", "")
+                
                 startup_msg = "🚀 **매매 신호 모니터링 시작!** (최종 완성)\n"
                 startup_msg += f"{'─'*30}\n"
                 startup_msg += f"📊 **모니터링 종목**: {len(TARGET_STOCKS)}개\n"
                 startup_msg += f"⏱️ **체크 주기**: {MONITOR_CONFIG['check_interval_minutes']}분\n"
+                
+                # 🔥 대시보드 링크 추가
+                if dashboard_url:
+                    startup_msg += f"🌐 **웹 대시보드**: {dashboard_url}\n"
+                
                 startup_msg += f"\n✨ **완성된 기능**:\n"
                 startup_msg += f"• 🎯 신호 점수 정규화 (정확도 +30%)\n"
                 startup_msg += f"• ⚡ 외국인/기관 캐싱 (속도 3배)\n"
@@ -1090,7 +1104,6 @@ def main():
                 startup_msg += f"• 🗑️ 자동 히스토리 관리\n"
                 startup_msg += f"\n{'─'*30}\n"
                 startup_msg += f"✅ 시스템 준비 완료!"
-                
                 discord_alert.SendMessage(startup_msg)
                 logger.info("✅ 디스코드 시작 알림 전송 완료")
             except Exception as discord_e:
