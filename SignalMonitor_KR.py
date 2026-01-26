@@ -214,6 +214,20 @@ class SignalMonitor:
         self.market_open_time = datetime.strptime("09:00", "%H:%M").time()
         self.market_close_time = datetime.strptime("15:30", "%H:%M").time()
         
+        # ============================================
+        # 🔥🔥🔥 [추가] 신호 성과 추적 관련 변수
+        # ============================================
+        self.performance_file = "signal_performance.json"
+        self.performance_data = self.load_performance_data()
+        # ============================================
+
+        # ============================================
+        # 🔥🔥🔥 [추가] 신호 안정성 검증 관련 변수
+        # ============================================
+        # 종목별 최근 신호 기록 (최대 3개)
+        self.signal_stability_cache = {}  # {stock_code: [신호1, 신호2, 신호3]}
+        # ============================================
+
         self.load_history()
         self.initialize_api()
     
@@ -270,7 +284,521 @@ class SignalMonitor:
             logger.debug(f"💾 신호 히스토리 저장: {len(self.signal_history)}건")
         except Exception as e:
             logger.error(f"히스토리 저장 실패: {e}")
-    
+        
+    # ============================================
+    # 🔥🔥🔥 [추가] 성과 데이터 관리 함수들
+    # ============================================
+    def load_performance_data(self):
+        """성과 데이터 로드"""
+        try:
+            if os.path.exists(self.performance_file):
+                with open(self.performance_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                logger.info(f"✅ 성과 데이터 로드: {len(data)}건")
+                return data
+            else:
+                logger.info("📋 새로운 성과 데이터 시작")
+                return {}
+        except Exception as e:
+            logger.error(f"성과 데이터 로드 실패: {e}")
+            return {}
+
+    def save_performance_data(self):
+        """성과 데이터 저장"""
+        try:
+            with open(self.performance_file, 'w', encoding='utf-8') as f:
+                json.dump(self.performance_data, f, ensure_ascii=False, indent=2)
+            logger.debug(f"💾 성과 데이터 저장: {len(self.performance_data)}건")
+        except Exception as e:
+            logger.error(f"성과 데이터 저장 실패: {e}")
+
+    def track_signal_performance(self):
+        """
+        신호 성과 추적 (1일/3일/5일 후 수익률 계산)
+        매일 장 마감 후 실행
+        """
+        try:
+            logger.info("=" * 60)
+            logger.info("📊 신호 성과 추적 시작")
+            logger.info("=" * 60)
+            
+            now = datetime.now()
+            updated_count = 0
+            
+            for signal in self.signal_history:
+                signal_id = f"{signal['stock_code']}_{signal['timestamp']}"
+                
+                # 이미 성과 데이터가 있으면 스킵
+                if signal_id in self.performance_data:
+                    perf = self.performance_data[signal_id]
+                    # 5일 후 데이터까지 있으면 완료
+                    if 'day5_return' in perf and perf['day5_return'] is not None:
+                        continue
+                else:
+                    # 새로운 성과 데이터 생성
+                    self.performance_data[signal_id] = {
+                        'stock_code': signal['stock_code'],
+                        'stock_name': signal['stock_name'],
+                        'sector': signal['sector'],
+                        'signal': signal['signal'],
+                        'score': signal['score'],
+                        'timestamp': signal['timestamp'],
+                        'entry_price': signal.get('details', {}).get('stock_info', {}).get('current_price', 0),
+                        'day1_return': None,
+                        'day3_return': None,
+                        'day5_return': None,
+                        'max_return': None,
+                        'min_return': None
+                    }
+                
+                perf = self.performance_data[signal_id]
+                entry_price = perf['entry_price']
+                
+                if entry_price == 0:
+                    continue
+                
+                # 신호 발생 시각
+                signal_time = datetime.strptime(signal['timestamp'], "%Y-%m-%d %H:%M:%S")
+                days_passed = (now - signal_time).days
+                
+                # 1일/3일/5일 후 수익률 계산
+                stock_code = signal['stock_code']
+                
+                # 🔥 스로틀링 적용
+                current_price = 0
+                stock_info = self.api_call_with_throttle(self.kiwoom.GetStockInfo, stock_code)
+                if stock_info:
+                    current_price = stock_info.get('CurrentPrice', 0)
+                
+                if current_price == 0:
+                    continue
+                
+                return_pct = ((current_price - entry_price) / entry_price) * 100
+                
+                # 최대/최소 수익률 업데이트
+                if perf['max_return'] is None or return_pct > perf['max_return']:
+                    perf['max_return'] = round(return_pct, 2)
+                if perf['min_return'] is None or return_pct < perf['min_return']:
+                    perf['min_return'] = round(return_pct, 2)
+                
+                # 1일 후
+                if days_passed >= 1 and perf['day1_return'] is None:
+                    perf['day1_return'] = round(return_pct, 2)
+                    logger.info(f"  ✓ {signal['stock_name']} 1일 후: {return_pct:+.2f}%")
+                    updated_count += 1
+                
+                # 3일 후
+                if days_passed >= 3 and perf['day3_return'] is None:
+                    perf['day3_return'] = round(return_pct, 2)
+                    logger.info(f"  ✓ {signal['stock_name']} 3일 후: {return_pct:+.2f}%")
+                    updated_count += 1
+                
+                # 5일 후
+                if days_passed >= 5 and perf['day5_return'] is None:
+                    perf['day5_return'] = round(return_pct, 2)
+                    logger.info(f"  ✓ {signal['stock_name']} 5일 후: {return_pct:+.2f}%")
+                    updated_count += 1
+            
+            logger.info(f"✅ 성과 업데이트 완료: {updated_count}건")
+            
+            if updated_count > 0:
+                self.save_performance_data()
+            
+        except Exception as e:
+            logger.error(f"성과 추적 실패: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
+    def generate_performance_report(self):
+        """
+        성과 리포트 생성 및 디스코드 전송
+        매일 15:40 자동 실행
+        """
+        try:
+            logger.info("=" * 60)
+            logger.info("📊 성과 리포트 생성 중...")
+            logger.info("=" * 60)
+            
+            # 최소 신호 개수 체크
+            total_signals = len([p for p in self.performance_data.values() 
+                            if p.get('day1_return') is not None])
+            
+            if total_signals < 3:
+                logger.warning(f"⚠️ 데이터 부족: {total_signals}개 (최소 3개 필요)")
+                return
+            
+            # 신호별 통계 계산
+            signal_stats = {}
+            for signal_type in ['STRONG_BUY', 'BUY', 'HOLD', 'SELL', 'STRONG_SELL']:
+                signal_stats[signal_type] = {
+                    'count': 0,
+                    'day1_wins': 0,
+                    'day3_wins': 0,
+                    'day5_wins': 0,
+                    'day1_avg': [],
+                    'day3_avg': [],
+                    'day5_avg': []
+                }
+            
+            # 섹터별 통계
+            sector_stats = {}
+            for sector in ['robot', 'nuclear', 'defense', 'battery', 'semiconductor']:
+                sector_stats[sector] = {
+                    'count': 0,
+                    'wins': 0,
+                    'returns': []
+                }
+            
+            # 데이터 수집
+            for perf in self.performance_data.values():
+                signal = perf['signal']
+                sector = perf['sector']
+                
+                if signal in signal_stats:
+                    stats = signal_stats[signal]
+                    stats['count'] += 1
+                    
+                    # 1일 후
+                    if perf.get('day1_return') is not None:
+                        ret = perf['day1_return']
+                        stats['day1_avg'].append(ret)
+                        if ret > 0:
+                            stats['day1_wins'] += 1
+                    
+                    # 3일 후
+                    if perf.get('day3_return') is not None:
+                        ret = perf['day3_return']
+                        stats['day3_avg'].append(ret)
+                        if ret > 0:
+                            stats['day3_wins'] += 1
+                    
+                    # 5일 후
+                    if perf.get('day5_return') is not None:
+                        ret = perf['day5_return']
+                        stats['day5_avg'].append(ret)
+                        if ret > 0:
+                            stats['day5_wins'] += 1
+                
+                # 섹터 통계 (3일 기준)
+                if sector in sector_stats and perf.get('day3_return') is not None:
+                    sec_stats = sector_stats[sector]
+                    sec_stats['count'] += 1
+                    ret = perf['day3_return']
+                    sec_stats['returns'].append(ret)
+                    if ret > 0:
+                        sec_stats['wins'] += 1
+            
+            # 리포트 생성
+            report = self._format_performance_report(signal_stats, sector_stats, total_signals)
+            
+            # 콘솔 출력
+            logger.info("\n" + report['console'])
+            
+            # 디스코드 전송
+            if MONITOR_CONFIG.get("use_discord", True):
+                try:
+                    discord_alert.SendMessage(report['discord'])
+                    logger.info("✅ 성과 리포트 디스코드 전송 완료")
+                except Exception as discord_e:
+                    logger.error(f"❌ 디스코드 전송 실패: {discord_e}")
+            
+        except Exception as e:
+            logger.error(f"리포트 생성 실패: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
+    def _format_performance_report(self, signal_stats, sector_stats, total_signals):
+        """리포트 포맷팅"""
+        
+        # 신뢰도 레벨 결정
+        if total_signals >= 20:
+            confidence_level = "✅ 신뢰 가능"
+        elif total_signals >= 10:
+            confidence_level = "✓ 데이터 축적 중"
+        else:
+            confidence_level = "⚠️ 초기 데이터 (참고용)"
+        
+        # 콘솔용 리포트
+        console_report = "=" * 60 + "\n"
+        console_report += "📊 신호 시스템 성과 리포트\n"
+        console_report += "=" * 60 + "\n"
+        console_report += f"총 분석 신호: {total_signals}개 ({confidence_level})\n"
+        console_report += f"리포트 생성: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        
+        console_report += "[ 신호별 성과 - 3일 기준 ]\n"
+        console_report += "-" * 60 + "\n"
+        
+        for signal_type, stats in signal_stats.items():
+            if stats['count'] == 0:
+                continue
+            
+            day3_count = len(stats['day3_avg'])
+            if day3_count == 0:
+                continue
+            
+            day3_win_rate = (stats['day3_wins'] / day3_count) * 100
+            day3_avg_return = sum(stats['day3_avg']) / day3_count
+            
+            emoji = "🔥" if day3_win_rate >= 70 else "✅" if day3_win_rate >= 60 else "⚠️" if day3_win_rate >= 50 else "❌"
+            
+            console_report += f"{emoji} {signal_type:12s}: "
+            console_report += f"승률 {day3_win_rate:5.1f}% ({stats['day3_wins']}승/{day3_count-stats['day3_wins']}패), "
+            console_report += f"평균 {day3_avg_return:+6.2f}%\n"
+        
+        console_report += "\n[ 섹터별 성과 - 3일 기준 ]\n"
+        console_report += "-" * 60 + "\n"
+        
+        sector_names = {
+            'robot': '🤖 로봇',
+            'nuclear': '⚡ 원전',
+            'defense': '🚀 방산',
+            'battery': '🔋 2차전지',
+            'semiconductor': '💾 반도체'
+        }
+        
+        for sector, stats in sector_stats.items():
+            if stats['count'] == 0:
+                continue
+            
+            win_rate = (stats['wins'] / stats['count']) * 100
+            avg_return = sum(stats['returns']) / stats['count']
+            
+            emoji = "🔥" if win_rate >= 70 else "✅" if win_rate >= 60 else "⚠️"
+            
+            console_report += f"{emoji} {sector_names.get(sector, sector):12s}: "
+            console_report += f"승률 {win_rate:5.1f}%, 평균 {avg_return:+6.2f}% ({stats['count']}건)\n"
+        
+        console_report += "=" * 60
+        
+        # 디스코드용 리포트
+        discord_report = "📊 **신호 시스템 성과 리포트**\n"
+        discord_report += "─" * 30 + "\n"
+        discord_report += f"**총 분석**: {total_signals}개 신호 ({confidence_level})\n"
+        discord_report += f"**리포트 시각**: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+        
+        discord_report += "**📈 신호별 성과 (3일 기준)**\n"
+        
+        for signal_type, stats in signal_stats.items():
+            if stats['count'] == 0 or len(stats['day3_avg']) == 0:
+                continue
+            
+            day3_count = len(stats['day3_avg'])
+            day3_win_rate = (stats['day3_wins'] / day3_count) * 100
+            day3_avg_return = sum(stats['day3_avg']) / day3_count
+            
+            emoji = "🔥" if day3_win_rate >= 70 else "✅" if day3_win_rate >= 60 else "⚠️" if day3_win_rate >= 50 else "❌"
+            
+            discord_report += f"{emoji} `{signal_type}`: 승률 **{day3_win_rate:.1f}%**, 평균 **{day3_avg_return:+.2f}%** ({day3_count}건)\n"
+        
+        discord_report += "\n**🎯 섹터별 성과 (3일 기준)**\n"
+        
+        for sector, stats in sector_stats.items():
+            if stats['count'] == 0:
+                continue
+            
+            win_rate = (stats['wins'] / stats['count']) * 100
+            avg_return = sum(stats['returns']) / stats['count']
+            
+            emoji = "🔥" if win_rate >= 70 else "✅" if win_rate >= 60 else "⚠️"
+            
+            discord_report += f"{emoji} `{sector_names.get(sector, sector)}`: 승률 **{win_rate:.1f}%**, 평균 **{avg_return:+.2f}%**\n"
+        
+        discord_report += "\n─" * 30 + "\n"
+        discord_report += "🎯 SignalMonitor 성과 추적 시스템"
+        
+        return {
+            'console': console_report,
+            'discord': discord_report
+        }
+
+    # ============================================
+    # 🔥🔥🔥 [추가] 신호 안정성 검증 함수
+    # ============================================
+    def check_signal_stability(self, stock_code, current_signal, current_confidence):
+        """
+        신호 안정성 검증
+        최근 3회 중 2회 이상 같은 신호인지 확인
+        
+        Args:
+            stock_code: 종목코드
+            current_signal: 현재 신호 (STRONG_BUY, BUY 등)
+            current_confidence: 현재 신뢰도
+        
+        Returns:
+            tuple: (조정된 신뢰도, 안정성 메시지)
+        """
+        try:
+            # 종목별 신호 기록 가져오기
+            if stock_code not in self.signal_stability_cache:
+                self.signal_stability_cache[stock_code] = []
+            
+            signal_history = self.signal_stability_cache[stock_code]
+            
+            # 현재 신호 추가 (최대 3개 유지)
+            signal_history.append({
+                'signal': current_signal,
+                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                'confidence': current_confidence
+            })
+            
+            # 최근 3개만 유지
+            if len(signal_history) > 3:
+                signal_history.pop(0)
+            
+            # 신호가 3개 미만이면 초기 상태로 간주
+            if len(signal_history) < 3:
+                return current_confidence, f"📊 초기 신호 ({len(signal_history)}/3)"
+            
+            # 최근 3개 신호에서 각 신호 타입별 카운트
+            signal_counts = {}
+            for sig in signal_history:
+                signal_type = sig['signal']
+                signal_counts[signal_type] = signal_counts.get(signal_type, 0) + 1
+            
+            # 현재 신호가 2회 이상 나타났는지 확인
+            current_count = signal_counts.get(current_signal, 0)
+            
+            if current_count >= 2:
+                # 안정적인 신호
+                adjusted_confidence = current_confidence  # 신뢰도 유지
+                stability_msg = f"✅ 신호 안정 (3회 중 {current_count}회)"
+                logger.debug(f"  ✅ {stock_code} 신호 안정: {current_signal} ({current_count}/3)")
+            else:
+                # 불안정한 신호 - 신뢰도 30% 감소
+                adjusted_confidence = current_confidence * 0.7
+                
+                # 다른 신호들 표시
+                other_signals = [sig['signal'] for sig in signal_history if sig['signal'] != current_signal]
+                stability_msg = f"⚠️ 신호 불안정 (혼재: {', '.join(other_signals)})"
+                
+                logger.warning(f"  ⚠️ {stock_code} 신호 불안정: {signal_history[-3]['signal']} → {signal_history[-2]['signal']} → {current_signal}")
+            
+            return adjusted_confidence, stability_msg
+            
+        except Exception as e:
+            logger.error(f"신호 안정성 검증 실패: {e}")
+            return current_confidence, ""
+
+    # ============================================
+    # 🔥🔥🔥 [추가] 시장 상황 필터 함수들
+    # ============================================
+    def get_market_condition(self):
+        """
+        시장 상황 조회 (코스피/코스닥 당일 등락률)
+        
+        Returns:
+            dict: {
+                'kospi_change': 코스피 등락률(%),
+                'kosdaq_change': 코스닥 등락률(%),
+                'is_crash': 급락 여부,
+                'warning_msg': 경고 메시지
+            }
+        """
+        try:
+            # 캐시 확인 (1분마다 갱신)
+            now = datetime.now()
+            cache_key = 'market_condition'
+            
+            if hasattr(self, '_market_condition_cache'):
+                cached_data, cached_time = self._market_condition_cache
+                elapsed = (now - cached_time).total_seconds()
+                if elapsed < 60:  # 1분 이내면 캐시 사용
+                    logger.debug(f"💾 시장 상황 캐시 사용 (남은 시간: {60-elapsed:.0f}초)")
+                    return cached_data
+            
+            logger.info("🔍 시장 상황 조회 중...")
+            
+            # 코스피 대표 종목: 삼성전자 (005930)
+            kospi_stock = self.api_call_with_throttle(self.kiwoom.GetStockInfo, "005930")
+            kospi_change = kospi_stock.get('ChangeRate', 0) if kospi_stock else 0
+            
+            # 코스닥 대표 종목: 셀트리온헬스케어 (091990) 또는 에코프로비엠 (247540)
+            kosdaq_stock = self.api_call_with_throttle(self.kiwoom.GetStockInfo, "247540")
+            kosdaq_change = kosdaq_stock.get('ChangeRate', 0) if kosdaq_stock else 0
+            
+            # 급락 판단 (-2% 이상)
+            crash_threshold = -2.0
+            is_kospi_crash = kospi_change <= crash_threshold
+            is_kosdaq_crash = kosdaq_change <= crash_threshold
+            is_crash = is_kospi_crash or is_kosdaq_crash
+            
+            # 경고 메시지 생성
+            warning_msg = ""
+            if is_crash:
+                crash_markets = []
+                if is_kospi_crash:
+                    crash_markets.append(f"코스피 {kospi_change:+.2f}%")
+                if is_kosdaq_crash:
+                    crash_markets.append(f"코스닥 {kosdaq_change:+.2f}%")
+                
+                warning_msg = f"⚠️ 시장 급락 ({', '.join(crash_markets)})"
+                logger.warning(f"  {warning_msg}")
+            else:
+                logger.info(f"  ✅ 시장 정상: 코스피 {kospi_change:+.2f}%, 코스닥 {kosdaq_change:+.2f}%")
+            
+            result = {
+                'kospi_change': kospi_change,
+                'kosdaq_change': kosdaq_change,
+                'is_crash': is_crash,
+                'warning_msg': warning_msg
+            }
+            
+            # 캐시 저장
+            self._market_condition_cache = (result, now)
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"시장 상황 조회 실패: {e}")
+            return {
+                'kospi_change': 0,
+                'kosdaq_change': 0,
+                'is_crash': False,
+                'warning_msg': ""
+            }
+
+    def apply_market_filter(self, signal, score, confidence, reasons, stock_info):
+        """
+        시장 상황 필터 적용
+        급락 시 매수 신호에 경고 추가
+        
+        Args:
+            signal: 신호 타입
+            score: 신호 점수
+            confidence: 신뢰도
+            reasons: 신호 이유 리스트
+            stock_info: 종목 정보
+        
+        Returns:
+            tuple: (신호, 점수, 신뢰도, 이유리스트)
+        """
+        try:
+            # 시장 상황 조회
+            market = self.get_market_condition()
+            
+            # 급락이 아니면 그대로 반환
+            if not market['is_crash']:
+                return signal, score, confidence, reasons
+            
+            # 급락 상황
+            # 매수 신호(STRONG_BUY, BUY)에만 경고 추가
+            if signal in ['STRONG_BUY', 'BUY']:
+                # 경고 메시지 추가
+                warning = f"🚨 {market['warning_msg']} - 매수 주의"
+                reasons.insert(0, warning)  # 맨 앞에 추가
+                
+                logger.warning(f"  🚨 시장 급락 중 매수 신호 - 주의 필요")
+                logger.warning(f"     코스피: {market['kospi_change']:+.2f}%")
+                logger.warning(f"     코스닥: {market['kosdaq_change']:+.2f}%")
+            
+            # 매도 신호는 그대로 (오히려 더 의미 있음)
+            
+            return signal, score, confidence, reasons
+            
+        except Exception as e:
+            logger.error(f"시장 필터 적용 실패: {e}")
+            return signal, score, confidence, reasons
+
     def cleanup_old_history(self):
         """
         🔥 단계3: 오래된 히스토리 자동 삭제
@@ -733,6 +1261,38 @@ class SignalMonitor:
             else:
                 signal = "STRONG_SELL"
                 signal_emoji = "🚨❌"
+
+            # ============================================
+            # 🔥🔥🔥 [추가] 신호 안정성 검증 적용
+            # ============================================
+            adjusted_confidence, stability_msg = self.check_signal_stability(
+                stock_code, signal, confidence
+            )
+            
+            # 신뢰도 업데이트
+            original_confidence = confidence
+            confidence = adjusted_confidence
+            
+            # 안정성 메시지를 reasons에 추가
+            if stability_msg:
+                reasons.append(stability_msg)
+            # ============================================
+            # 🔥🔥🔥 [추가] 시장 상황 필터 적용
+            # ============================================
+            signal, score, confidence, reasons = self.apply_market_filter(
+                signal, score, confidence, reasons, stock_info
+            )
+            # ============================================
+            analysis_result["signal"] = signal
+            analysis_result["score"] = round(score, 1)
+            analysis_result["confidence"] = round(confidence, 2)
+            analysis_result["reasons"] = reasons
+            analysis_result["available_indicators"] = available_indicators
+
+            # 신뢰도가 크게 낮아진 경우 로그
+            if confidence < original_confidence * 0.8:
+                logger.warning(f"  ⚠️ 신뢰도 하락: {original_confidence*100:.0f}% → {confidence*100:.0f}% (신호 불안정)")
+            # ============================================                
             
             analysis_result["signal"] = signal
             analysis_result["score"] = round(score, 1)
@@ -819,7 +1379,20 @@ class SignalMonitor:
             logger.info(f"📊 전체 종목 스캔 시작 ({len(TARGET_STOCKS)}종목)")
             logger.info(f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             logger.info("🔄" * 30)
-            
+            # ============================================
+            # 🔥🔥🔥 [추가] 시장 상황 먼저 확인
+            # ============================================
+            market = self.get_market_condition()
+            if market['is_crash']:
+                logger.warning("")
+                logger.warning("=" * 60)
+                logger.warning(f"🚨 시장 급락 감지!")
+                logger.warning(f"   코스피: {market['kospi_change']:+.2f}%")
+                logger.warning(f"   코스닥: {market['kosdaq_change']:+.2f}%")
+                logger.warning(f"   ⚠️ 매수 신호 발생 시 주의 필요")
+                logger.warning("=" * 60)
+                logger.warning("")
+
             # 외국인/기관 데이터 캐싱
             foreign_cache, institution_cache = self.get_investor_data_cached()
             
