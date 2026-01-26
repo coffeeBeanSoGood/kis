@@ -24,7 +24,68 @@ class Kiwoom_Common:
         
         # 로깅 설정
         self._setup_logging(log_level)
+
+    def _setup_logging(self, log_level):
+        """로깅 설정"""
+        # 로그 디렉토리 생성
+        log_dir = "./logs"
+        os.makedirs(log_dir, exist_ok=True)
         
+        # 로거 생성
+        self.logger = logging.getLogger("KiwoomCommon")
+        self.logger.setLevel(log_level)
+        
+        # 기존 핸들러 제거
+        self.logger.handlers.clear()
+        
+        # 포매터 설정
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        
+        # 콘솔 핸들러
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        console_handler.setFormatter(formatter)
+        self.logger.addHandler(console_handler)
+        
+        # ========================================
+        # 🔥 수정된 부분: 파일 핸들러 (자동 삭제)
+        # ========================================
+        from logging.handlers import TimedRotatingFileHandler
+        
+        # 기본 로그 파일명 (날짜는 자동 추가됨)
+        log_file = os.path.join(log_dir, "kiwoom.log")
+        
+        # TimedRotatingFileHandler로 변경 (7일 자동 삭제)
+        file_handler = TimedRotatingFileHandler(
+            log_file,
+            when='midnight',      # 매일 자정에 로테이션
+            interval=1,           # 1일마다
+            backupCount=7,        # 🔥 7일치만 보관 (자동 삭제)
+            encoding='utf-8'
+        )
+        file_handler.suffix = "%Y%m%d"  # 파일명: kiwoom.20260126.log
+        
+        # 로그 파일명 생성 함수
+        def log_namer(default_name):
+            """로그 파일 이름 생성: kiwoom.20260126.log"""
+            # default_name 형식: kiwoom.log.20260126
+            parts = default_name.split('.')
+            if len(parts) == 3:
+                base, ext, date = parts
+                return f"{base}_{date}.{ext}"  # kiwoom_20260126.log
+            return default_name
+        
+        file_handler.namer = log_namer
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(formatter)
+        self.logger.addHandler(file_handler)
+        # ========================================
+        # 🔥 수정 끝
+        # ========================================
+
     def _setup_logging(self, log_level):
         """로깅 설정"""
         # 로그 디렉토리 생성
