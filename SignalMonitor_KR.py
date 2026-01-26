@@ -8,6 +8,12 @@
 - 매수/매도 신호 발생 시 알림 (콘솔 + 디스코드)
 - 신호 히스토리 저장 및 정확도 분석
 - 중복 알림 방지 (조용한 모드)
+
+버그 수정 버전:
+- 조용한 모드 논리 일치
+- 중복 체크 최적화
+- 신호 발견 조건 명확화
+- 성능 개선
 """
 
 import Kiwoom_API_Helper_KR as KiwoomKR
@@ -126,6 +132,11 @@ class SignalMonitor:
         self.signal_history = []
         self.signal_cache = {}
         self.last_alerts = {}  # 🔥 마지막 알림 기록
+        
+        # 🔥 장시간 체크 최적화 (버그 4 수정)
+        self.market_open_time = datetime.strptime("09:00", "%H:%M").time()
+        self.market_close_time = datetime.strptime("15:30", "%H:%M").time()
+        
         self.load_history()
         
         # API 초기화
@@ -462,7 +473,9 @@ class SignalMonitor:
     
     def should_send_alert(self, stock_code, result):
         """
-        알림 발송 여부 판단 (중복 방지)
+        알림 발송 여부 판단 (중복 방지만 체크)
+        
+        Note: 조용한 모드 필터링은 check_all_stocks()에서 이미 처리됨
         
         Returns:
             bool: 알림을 보내야 하면 True
@@ -471,70 +484,41 @@ class SignalMonitor:
             current_signal = result["signal"]
             current_time = datetime.now()
             
-            # 이전 알림 기록 확인
+            # 🔥 이전 알림 기록 확인 (버그 2 수정: 중복 체크만)
             if stock_code in self.last_alerts:
                 last_alert = self.last_alerts[stock_code]
                 last_signal = last_alert.get("signal")
                 last_time = last_alert.get("time")
                 
-                # 🔥 1. 신호가 변경되지 않았으면 스킵
-                if last_signal == current_signal:
-                    # 재알림 설정 확인 (조용한 모드에서는 0 = 재알림 없음)
-                    resend_hours = MONITOR_CONFIG.get("resend_alert_hours", 0)
-                    
-                    if resend_hours > 0:
-                        elapsed_hours = (current_time - last_time).total_seconds() / 3600
-                        
-                        if elapsed_hours >= resend_hours:
-                            logger.info(f"재알림 시간 경과 ({elapsed_hours:.1f}시간) - 알림 재발송")
-                            self.last_alerts[stock_code] = {
-                                "signal": current_signal,
-                                "time": current_time,
-                                "score": result["score"]
-                            }
-                            return True
-                    
-                    logger.debug(f"신호 변경 없음 - 알림 스킵: {current_signal}")
+                # 1. 같은 신호 중복 체크
+                if current_signal == last_signal:
+                    logger.debug(f"중복 신호 스킵: {stock_code} - {current_signal}")
                     return False
                 
-                # 🔥 2. 신호 다운그레이드 체크
-                signal_priority = {
-                    "STRONG_BUY": 5,
-                    "BUY": 4,
-                    "HOLD": 3,
-                    "SELL": 2,
-                    "STRONG_SELL": 1
-                }
-                
-                last_priority = signal_priority.get(last_signal, 3)
-                current_priority = signal_priority.get(current_signal, 3)
-                
-                # 다운그레이드 스킵 (조용한 모드)
+                # 2. 신호 다운그레이드 체크
                 if MONITOR_CONFIG.get("skip_downgrade_alerts", True):
-                    # 매수 신호가 약해진 경우 (STRONG_BUY → BUY)
-                    if (last_priority > current_priority and 
-                        last_priority >= 4 and current_priority >= 4):
-                        logger.debug(f"신호 다운그레이드 - 알림 스킵: {last_signal} → {current_signal}")
-                        # 마지막 알림 기록은 업데이트 (다음에 업그레이드 감지를 위해)
-                        self.last_alerts[stock_code] = {
-                            "signal": current_signal,
-                            "time": last_time,  # 시간은 유지
-                            "score": result["score"]
-                        }
-                        return False
+                    signal_priority = {
+                        "STRONG_BUY": 5,
+                        "BUY": 4,
+                        "HOLD": 3,
+                        "SELL": 2,
+                        "STRONG_SELL": 1
+                    }
                     
-                    # 매도 신호가 약해진 경우 (STRONG_SELL → SELL)
-                    if (last_priority < current_priority and 
-                        last_priority <= 2 and current_priority <= 2):
-                        logger.debug(f"신호 다운그레이드 - 알림 스킵: {last_signal} → {current_signal}")
-                        self.last_alerts[stock_code] = {
-                            "signal": current_signal,
-                            "time": last_time,
-                            "score": result["score"]
-                        }
-                        return False
+                    current_priority = signal_priority.get(current_signal, 0)
+                    last_priority = signal_priority.get(last_signal, 0)
+                    
+                    # 매수 신호가 약해지거나, 매도 신호가 약해지면 스킵
+                    if current_signal in ["STRONG_BUY", "BUY", "HOLD"]:
+                        if current_priority < last_priority:
+                            logger.debug(f"신호 다운그레이드 스킵: {last_signal} → {current_signal}")
+                            return False
+                    elif current_signal in ["SELL", "STRONG_SELL"]:
+                        if current_priority > last_priority:
+                            logger.debug(f"매도 신호 다운그레이드 스킵: {last_signal} → {current_signal}")
+                            return False
             
-            # 🔥 3. 새로운 신호 또는 신호 변경 → 알림 발송
+            # 🔥 새로운 신호 또는 신호 변경 → 알림 발송
             logger.info(f"신호 변경 감지: {self.last_alerts.get(stock_code, {}).get('signal', 'NONE')} → {current_signal}")
             self.last_alerts[stock_code] = {
                 "signal": current_signal,
@@ -560,6 +544,9 @@ class SignalMonitor:
             signals_found = []
             alerts_sent = []
             
+            # 🔥 조용한 모드 설정 (버그 1, 3 수정)
+            only_strong_signals = MONITOR_CONFIG.get("discord_only_strong_signals", True)
+            
             for stock_code, stock_info in TARGET_STOCKS.items():
                 try:
                     # 분석 실행
@@ -574,14 +561,26 @@ class SignalMonitor:
                         score = result["score"]
                         threshold = MONITOR_CONFIG["signal_threshold"]
                         
-                        if score >= threshold or signal in ["SELL", "STRONG_SELL"]:
+                        # 🔥 신호 발견 조건 (버그 1 수정)
+                        should_track = False
+                        
+                        if only_strong_signals:
+                            # 조용한 모드 ON: STRONG_BUY/STRONG_SELL만
+                            if signal in ["STRONG_BUY", "STRONG_SELL"]:
+                                should_track = True
+                        else:
+                            # 조용한 모드 OFF: BUY 이상 + 모든 매도 신호
+                            if score >= threshold or signal in ["SELL", "STRONG_SELL"]:
+                                should_track = True
+                        
+                        if should_track:
                             signals_found.append(result)
                             
                             # 히스토리 저장
                             if MONITOR_CONFIG["save_history"]:
                                 self.signal_history.append(result)
                             
-                            # 🔥 중복 알림 체크 후 발송
+                            # 🔥 알림 발송 (중복 체크만)
                             if self.should_send_alert(stock_code, result):
                                 self.send_signal_alert(result)
                                 alerts_sent.append(result)
@@ -607,25 +606,29 @@ class SignalMonitor:
                     logger.info(f"  {sent_mark} [{sig['sector']}] {sig['stock_name']}: {sig['signal']} ({sig['score']:.1f}점)")
             
             # 히스토리 저장
-            if MONITOR_CONFIG["save_history"] and signals_found:
+            if MONITOR_CONFIG["save_history"]:
                 self.save_history()
-            
+                
         except Exception as e:
-            logger.error(f"전체 종목 체크 실패: {e}")
+            logger.error(f"전체 종목 체크 오류: {e}")
             import traceback
             logger.error(traceback.format_exc())
     
     def send_signal_alert(self, result):
-        """신호 알림 발송 (콘솔 + 디스코드)"""
+        """
+        신호 알림 발송 (콘솔 + 디스코드)
+        
+        Note: 조용한 모드 필터링은 check_all_stocks()에서 이미 처리됨
+        """
         try:
+            stock_code = result["stock_code"]
+            stock_name = result["stock_name"]
+            sector = result["sector"]
             signal = result["signal"]
             score = result["score"]
-            stock_name = result["stock_name"]
-            stock_code = result["stock_code"]
-            sector = result["sector"]
             
-            # 신호별 이모지
-            emoji_map = {
+            # 이모지 매핑
+            signal_emoji_map = {
                 "STRONG_BUY": "🔥💰",
                 "BUY": "📈✅",
                 "HOLD": "⏸️",
@@ -633,9 +636,6 @@ class SignalMonitor:
                 "STRONG_SELL": "🚨❌"
             }
             
-            emoji = emoji_map.get(signal, "📊")
-            
-            # 섹터별 이모지
             sector_emoji_map = {
                 "robot": "🤖",
                 "nuclear": "⚡",
@@ -643,10 +643,12 @@ class SignalMonitor:
                 "battery": "🔋",
                 "semiconductor": "💾"
             }
+            
+            emoji = signal_emoji_map.get(signal, "📊")
             sector_emoji = sector_emoji_map.get(sector, "📊")
             
             # ═══════════════════════════════════════════════════════════
-            # 콘솔 메시지 생성
+            # 콘솔 메시지 출력
             # ═══════════════════════════════════════════════════════════
             console_msg = f"\n{'='*50}\n"
             console_msg += f"{emoji} 매매 신호 발생!\n"
@@ -674,12 +676,7 @@ class SignalMonitor:
             # 디스코드 메시지 생성 및 발송
             # ═══════════════════════════════════════════════════════════
             if MONITOR_CONFIG.get("use_discord", True):
-                # 🔇 조용한 모드: 강한 신호만 보내기
-                only_strong = MONITOR_CONFIG.get("discord_only_strong_signals", False)
-                
-                if only_strong and signal not in ["STRONG_BUY", "STRONG_SELL"]:
-                    logger.debug(f"디스코드 알림 스킵: {signal} (강한 신호만 전송 설정)")
-                    return
+                # 🔥 조용한 모드 체크 제거 (버그 2 수정: check_all_stocks에서 이미 처리됨)
                 
                 # 디스코드 메시지 작성
                 discord_msg = f"{emoji} **매매 신호 발생!**\n"
@@ -748,7 +745,7 @@ class SignalMonitor:
             logger.error(traceback.format_exc())
     
     def is_trading_time(self):
-        """장중 시간 체크"""
+        """장중 시간 체크 (최적화)"""
         try:
             if not MONITOR_CONFIG["trading_hours_only"]:
                 return True
@@ -759,12 +756,9 @@ class SignalMonitor:
             if now.weekday() >= 5:
                 return False
             
-            # 장 시간 체크 (09:00 ~ 15:30)
+            # 🔥 장 시간 체크 (사전 파싱된 시간 사용)
             current_time = now.time()
-            market_open = datetime.strptime("09:00", "%H:%M").time()
-            market_close = datetime.strptime("15:30", "%H:%M").time()
-            
-            return market_open <= current_time <= market_close
+            return self.market_open_time <= current_time <= self.market_close_time
             
         except Exception as e:
             logger.error(f"장시간 체크 실패: {e}")
