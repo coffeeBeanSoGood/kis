@@ -145,7 +145,70 @@ class Kiwoom_Common:
         except Exception as e:
             self.logger.error(f"토큰 로드 실패: {e}")
             return False
-    
+
+    def IsTokenValid(self, margin_minutes=5):
+        """
+        토큰 유효성 체크 (만료 5분 전이면 갱신 필요로 판단)
+        
+        Args:
+            margin_minutes: 만료 몇 분 전에 갱신할지 (기본 5분)
+        
+        Returns:
+            bool: 토큰이 유효하면 True, 만료되었거나 곧 만료되면 False
+        """
+        try:
+            if not self.access_token or not self.token_expires:
+                self.logger.debug("토큰 정보 없음 - 재발급 필요")
+                return False
+            
+            # 만료 시간 파싱
+            expire_time = datetime.strptime(self.token_expires, "%Y%m%d%H%M%S")
+            now = datetime.now()
+            
+            # 만료까지 남은 시간 계산
+            time_left = (expire_time - now).total_seconds() / 60  # 분 단위
+            
+            if time_left <= 0:
+                self.logger.warning(f"토큰 만료됨 (만료일: {self.token_expires})")
+                return False
+            elif time_left <= margin_minutes:
+                self.logger.warning(f"토큰 만료 임박 ({time_left:.1f}분 남음) - 재발급 필요")
+                return False
+            else:
+                self.logger.debug(f"토큰 유효 (만료까지 {time_left:.1f}분 남음)")
+                return True
+                
+        except Exception as e:
+            self.logger.error(f"토큰 유효성 체크 실패: {e}")
+            return False
+
+    def EnsureTokenValid(self):
+        """
+        토큰 유효성 보장 (필요시 자동 재발급)
+        API 호출 전에 반드시 이 메서드를 호출해야 함
+        
+        Returns:
+            bool: 유효한 토큰 확보 성공 시 True, 실패 시 False
+        """
+        try:
+            # 1. 현재 토큰이 유효한지 체크
+            if self.IsTokenValid():
+                return True
+            
+            # 2. 토큰이 없거나 만료되었으면 재발급
+            self.logger.info("토큰 재발급 시작...")
+            
+            if self.GetAccessToken(force_refresh=True):
+                self.logger.info("✅ 토큰 재발급 성공")
+                return True
+            else:
+                self.logger.error("❌ 토큰 재발급 실패")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"토큰 유효성 보장 실패: {e}")
+            return False
+
     def GetAccessToken(self, force_refresh=False):
         """접근 토큰 발급 (au10001)"""
         try:
@@ -246,14 +309,33 @@ class Kiwoom_Common:
             headers["next-key"] = next_key
             
         return headers
-    
-    def CallAPI(self, url, api_id, body=None, method="POST"):
-        """API 공통 호출"""
+        
+    def CallAPI(self, url, api_id, body=None, method="POST", retry_on_auth_error=True):
+        """
+        API 공통 호출 (토큰 자동 관리 포함)
+        
+        Args:
+            url: API URL
+            api_id: API ID
+            body: 요청 body (POST인 경우)
+            method: HTTP 메서드 ("POST" 또는 "GET")
+            retry_on_auth_error: 인증 오류 시 재시도 여부
+        
+        Returns:
+            dict: API 응답 결과, 실패 시 None
+        """
         try:
+            # 🔥 1. API 호출 전 토큰 유효성 자동 체크 및 갱신
+            if not self.EnsureTokenValid():
+                self.logger.error(f"토큰 확보 실패 - API 호출 불가: {api_id}")
+                return None
+            
+            # 2. 헤더 생성
             headers = self.GetCommonHeaders(api_id)
             
             start_time = time.time()
             
+            # 3. API 호출
             if method == "POST":
                 response = requests.post(url, headers=headers, json=body, timeout=10)
             else:
@@ -261,11 +343,28 @@ class Kiwoom_Common:
             
             elapsed = time.time() - start_time
             
+            # 4. 응답 처리
             if response.status_code == 200:
                 self.logger.debug(f"API 호출 성공: {api_id} (응답시간: {elapsed:.3f}초)")
                 return response.json()
+            
+            # 🔥 5. 401 인증 오류 처리 (토큰 재발급 후 재시도)
+            elif response.status_code == 401 and retry_on_auth_error:
+                self.logger.warning(f"⚠️ 인증 오류 발생 ({api_id}) - 토큰 재발급 후 재시도")
+                
+                # 토큰 강제 재발급
+                if self.GetAccessToken(force_refresh=True):
+                    self.logger.info("🔄 토큰 재발급 완료 - API 재호출")
+                    
+                    # 재시도 (무한 루프 방지를 위해 retry_on_auth_error=False)
+                    return self.CallAPI(url, api_id, body, method, retry_on_auth_error=False)
+                else:
+                    self.logger.error(f"❌ 토큰 재발급 실패 - API 호출 중단: {api_id}")
+                    return None
+            
+            # 6. 기타 오류
             else:
-                self.logger.error(f"API 호출 실패 ({api_id}): {response.status_code}")
+                self.logger.error(f"API 호출 실패 ({api_id}): HTTP {response.status_code}")
                 self.logger.error(f"응답: {response.text[:200]}")
                 return None
                 
