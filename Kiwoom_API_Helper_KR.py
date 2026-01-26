@@ -586,7 +586,330 @@ class Kiwoom_Common:
             10: "10th"
         }
         return suffix_map.get(num, "fpr")
-    
+
+    def GetExecutionInfo(self, stock_code):
+        """
+        체결정보 조회 (ka10003)
+        실시간 체결가, 체결량, 체결강도 정보
+        
+        Args:
+            stock_code: 종목코드
+        
+        Returns:
+            dict: 체결정보 리스트 또는 None
+        """
+        try:
+            url = f"{self.GetBaseURL()}/api/dostk/stkinfo"
+            
+            body = {
+                "stk_cd": stock_code
+            }
+            
+            result = self.CallAPI(url, "ka10003", body)
+            
+            if result and result.get("return_code") == 0:
+                execution_list = []
+                
+                for item in result.get("cntr_infr", []):
+                    # +, - 부호 제거 함수
+                    def clean_number(value):
+                        if isinstance(value, str):
+                            return value.replace("+", "").replace("-", "").strip()
+                        return value
+                    
+                    execution_dict = {
+                        "Time": item.get("tm", ""),
+                        "CurrentPrice": int(clean_number(item.get("cur_prc", "0"))),
+                        "PrevDayDiff": int(clean_number(item.get("pred_pre", "0"))),
+                        "ChangeRate": float(item.get("pre_rt", "0")),
+                        "ExecutionQty": int(item.get("cntr_trde_qty", "0")),
+                        "AccumulatedQty": int(item.get("acc_trde_qty", "0")),
+                        "AccumulatedAmt": int(item.get("acc_trde_prica", "0")),
+                        "ExecutionStrength": float(item.get("cntr_str", "0")),
+                        "Sign": item.get("sign", ""),
+                        "TopSellPrice": int(clean_number(item.get("pri_sel_bid_unit", "0"))),
+                        "TopBuyPrice": int(clean_number(item.get("pri_buy_bid_unit", "0"))),
+                        "ExchangeType": item.get("stex_tp", "")
+                    }
+                    execution_list.append(execution_dict)
+                
+                self.logger.debug(f"체결정보 조회: {stock_code} - {len(execution_list)}건")
+                return {
+                    "ExecutionList": execution_list,
+                    "LatestExecution": execution_list[0] if execution_list else None
+                }
+            else:
+                self.logger.error(f"체결정보 조회 실패: {result.get('return_msg') if result else 'No response'}")
+                return None
+                
+        except Exception as e:
+            self.logger.error(f"체결정보 조회 예외: {e}")
+            return None
+
+    def GetInvestorTrading(self, start_date, end_date, trade_type="2", market_type="101", 
+                        investor_type="9000", exchange_type="3"):
+        """
+        투자자별 일별 매매 종목 조회 (ka10058)
+        기관/외인/개인 매수/매도 동향
+        
+        Args:
+            start_date: 시작일자 (YYYYMMDD)
+            end_date: 종료일자 (YYYYMMDD)
+            trade_type: 매매구분 (1:순매도, 2:순매수)
+            market_type: 시장구분 (001:코스피, 101:코스닥)
+            investor_type: 투자자구분
+                - 8000:개인, 9000:외국인, 1000:금융투자, 3000:투신
+                - 5000:기타금융, 4000:은행, 2000:보험, 6000:연기금
+                - 7000:국가, 7100:기타법인, 9999:기관계
+            exchange_type: 거래소구분 (1:KRX, 2:NXT, 3:통합)
+        
+        Returns:
+            list: 투자자별 매매 정보 리스트 또는 None
+        """
+        try:
+            url = f"{self.GetBaseURL()}/api/dostk/stkinfo"
+            
+            body = {
+                "strt_dt": start_date,
+                "end_dt": end_date,
+                "trde_tp": trade_type,
+                "mrkt_tp": market_type,
+                "invsr_tp": investor_type,
+                "stex_tp": exchange_type
+            }
+            
+            result = self.CallAPI(url, "ka10058", body)
+            
+            if result and result.get("return_code") == 0:
+                trading_list = []
+                
+                for item in result.get("invsr_daly_trde_stk", []):
+                    # +, - 부호 제거 함수
+                    def clean_number(value):
+                        if isinstance(value, str):
+                            return value.replace("+", "").replace("-", "").strip()
+                        return value
+                    
+                    trading_dict = {
+                        "StockCode": item.get("stk_cd", ""),
+                        "StockName": item.get("stk_nm", ""),
+                        "NetBuySellQty": int(clean_number(item.get("netslmt_qty", "0"))),
+                        "NetBuySellAmt": int(clean_number(item.get("netslmt_amt", "0"))),
+                        "AvgPrice": int(item.get("prsm_avg_pric", "0")),
+                        "CurrentPrice": int(clean_number(item.get("cur_prc", "0"))),
+                        "PrevDayDiff": int(clean_number(item.get("pred_pre", "0"))),
+                        "AvgPriceDiff": int(clean_number(item.get("avg_pric_pre", "0"))),
+                        "ChangeRate": float(item.get("pre_rt", "0")),
+                        "PeriodVolume": int(item.get("dt_trde_qty", "0")),
+                        "Sign": item.get("pre_sig", "")
+                    }
+                    trading_list.append(trading_dict)
+                
+                investor_name = {
+                    "8000": "개인", "9000": "외국인", "1000": "금융투자",
+                    "3000": "투신", "9999": "기관계"
+                }.get(investor_type, "투자자")
+                
+                self.logger.info(f"투자자별 매매 조회: {investor_name} - {len(trading_list)}건")
+                return trading_list
+            else:
+                self.logger.error(f"투자자별 매매 조회 실패: {result.get('return_msg') if result else 'No response'}")
+                return None
+                
+        except Exception as e:
+            self.logger.error(f"투자자별 매매 조회 예외: {e}")
+            return None
+
+    def GetRealtimeInvestorTrading(self, market_type="000", investor="6", 
+                                    foreign_all="0", exchange_type="3"):
+        """
+        장중 투자자별 매매 조회 (ka10063)
+        실시간 세력 매매 추적
+        
+        Args:
+            market_type: 시장구분 (000:전체, 001:코스피, 101:코스닥)
+            investor: 투자자별 (6:외국인, 7:기관계, 1:투신, 0:보험, 2:은행, 3:연기금, 4:국가, 5:기타법인)
+            foreign_all: 외국계전체 (1:체크, 0:미체크)
+            exchange_type: 거래소구분 (1:KRX, 2:NXT, 3:통합)
+        
+        Returns:
+            list: 장중 투자자별 매매 정보 또는 None
+        """
+        try:
+            url = f"{self.GetBaseURL()}/api/dostk/mrkcond"
+            
+            body = {
+                "mrkt_tp": market_type,
+                "amt_qty_tp": "1",  # 금액&수량
+                "invsr": investor,
+                "frgn_all": foreign_all,
+                "smtm_netprps_tp": "0",  # 동시순매수
+                "stex_tp": exchange_type
+            }
+            
+            result = self.CallAPI(url, "ka10063", body)
+            
+            if result and result.get("return_code") == 0:
+                trading_list = []
+                
+                for item in result.get("opmr_invsr_trde", []):
+                    # +, - 부호 제거 함수
+                    def clean_number(value):
+                        if isinstance(value, str):
+                            return value.replace("+", "").replace("-", "").strip()
+                        return value
+                    
+                    trading_dict = {
+                        "StockCode": item.get("stk_cd", ""),
+                        "StockName": item.get("stk_nm", ""),
+                        "CurrentPrice": int(clean_number(item.get("cur_prc", "0"))),
+                        "PrevDayDiff": int(clean_number(item.get("pred_pre", "0"))),
+                        "ChangeRate": float(item.get("flu_rt", "0")),
+                        "AccVolume": int(item.get("acc_trde_qty", "0")),
+                        # 금액 정보
+                        "NetBuyAmt": int(clean_number(item.get("netprps_amt", "0"))),
+                        "PrevNetBuyAmt": int(clean_number(item.get("prev_netprps_amt", "0"))),
+                        "BuyAmt": int(clean_number(item.get("buy_amt", "0"))),
+                        "SellAmt": int(clean_number(item.get("sell_amt", "0"))),
+                        "NetBuyAmtChange": int(clean_number(item.get("netprps_amt_irds", "0"))),
+                        # 수량 정보
+                        "NetBuyQty": int(clean_number(item.get("netprps_qty", "0"))),
+                        "PrevNetBuyQty": int(clean_number(item.get("prev_pot_netprps_qty", "0"))),
+                        "BuyQty": int(clean_number(item.get("buy_qty", "0"))),
+                        "SellQty": int(clean_number(item.get("sell_qty", "0"))),
+                        "NetBuyQtyChange": int(clean_number(item.get("netprps_irds", "0"))),
+                        "Sign": item.get("pre_sig", "")
+                    }
+                    trading_list.append(trading_dict)
+                
+                investor_name = {
+                    "6": "외국인", "7": "기관계", "1": "투신", 
+                    "0": "보험", "2": "은행", "3": "연기금"
+                }.get(investor, "투자자")
+                
+                self.logger.info(f"장중 {investor_name} 매매: {len(trading_list)}건")
+                return trading_list
+            else:
+                self.logger.error(f"장중 투자자별 매매 조회 실패: {result.get('return_msg') if result else 'No response'}")
+                return None
+                
+        except Exception as e:
+            self.logger.error(f"장중 투자자별 매매 조회 예외: {e}")
+            return None
+
+    def GetMinuteData(self, stock_code):
+        """
+        주식 시분 정보 조회 (ka10006)
+        분봉 데이터로 추세 파악
+        
+        Args:
+            stock_code: 종목코드
+        
+        Returns:
+            dict: 분봉 데이터 또는 None
+        """
+        try:
+            url = f"{self.GetBaseURL()}/api/dostk/mrkcond"
+            
+            body = {
+                "stk_cd": stock_code
+            }
+            
+            result = self.CallAPI(url, "ka10006", body)
+            
+            if result and result.get("return_code") == 0:
+                # +, - 부호 제거 함수
+                def clean_number(value):
+                    if isinstance(value, str):
+                        return value.replace("+", "").replace("-", "").strip()
+                    return value
+                
+                minute_data = {
+                    "Date": result.get("date", ""),
+                    "OpenPrice": int(clean_number(result.get("open_pric", "0"))),
+                    "HighPrice": int(clean_number(result.get("high_pric", "0"))),
+                    "LowPrice": int(clean_number(result.get("low_pric", "0"))),
+                    "ClosePrice": int(clean_number(result.get("close_pric", "0"))),
+                    "PrevDayDiff": int(clean_number(result.get("pre", "0"))),
+                    "ChangeRate": float(result.get("flu_rt", "0")),
+                    "Volume": int(result.get("trde_qty", "0")),
+                    "TradingValue": int(result.get("trde_prica", "0")),
+                    "ExecutionStrength": float(result.get("cntr_str", "0"))
+                }
+                
+                self.logger.debug(f"분봉 조회: {stock_code} - 종가: {minute_data['ClosePrice']:,}원")
+                return minute_data
+            else:
+                self.logger.error(f"분봉 조회 실패: {result.get('return_msg') if result else 'No response'}")
+                return None
+                
+        except Exception as e:
+            self.logger.error(f"분봉 조회 예외: {e}")
+            return None
+
+    def GetOrderBookRanking(self, market_type="101", sort_type="1", 
+                            volume_type="0000", exchange_type="1"):
+        """
+        호가잔량 상위 조회 (ka10020)
+        매수세/매도세 강도 비교
+        
+        Args:
+            market_type: 시장구분 (001:코스피, 101:코스닥)
+            sort_type: 정렬구분 (1:순매수잔량순, 2:순매도잔량순, 3:매수비율순, 4:매도비율순)
+            volume_type: 거래량구분 (0000:전체, 0010:만주이상, 0050:5만주이상, 00100:10만주이상)
+            exchange_type: 거래소구분 (1:KRX, 2:NXT, 3:통합)
+        
+        Returns:
+            list: 호가잔량 상위 종목 리스트 또는 None
+        """
+        try:
+            url = f"{self.GetBaseURL()}/api/dostk/rkinfo"
+            
+            body = {
+                "mrkt_tp": market_type,
+                "sort_tp": sort_type,
+                "trde_qty_tp": volume_type,
+                "stk_cnd": "0",  # 전체조회
+                "crd_cnd": "0",  # 전체조회
+                "stex_tp": exchange_type
+            }
+            
+            result = self.CallAPI(url, "ka10020", body)
+            
+            if result and result.get("return_code") == 0:
+                ranking_list = []
+                
+                for item in result.get("bid_req_upper", []):
+                    # +, - 부호 제거 함수
+                    def clean_number(value):
+                        if isinstance(value, str):
+                            return value.replace("+", "").replace("-", "").strip()
+                        return value
+                    
+                    ranking_dict = {
+                        "StockCode": item.get("stk_cd", ""),
+                        "StockName": item.get("stk_nm", ""),
+                        "CurrentPrice": int(clean_number(item.get("cur_prc", "0"))),
+                        "PrevDayDiff": int(clean_number(item.get("pred_pre", "0"))),
+                        "Volume": int(item.get("trde_qty", "0")),
+                        "TotalSellQty": int(item.get("tot_sel_req", "0")),
+                        "TotalBuyQty": int(item.get("tot_buy_req", "0")),
+                        "NetBuyQty": int(item.get("netprps_req", "0")),
+                        "BuyRatio": float(item.get("buy_rt", "0")),
+                        "Sign": item.get("pred_pre_sig", "")
+                    }
+                    ranking_list.append(ranking_dict)
+                
+                self.logger.info(f"호가잔량 상위: {len(ranking_list)}건")
+                return ranking_list
+            else:
+                self.logger.error(f"호가잔량 상위 조회 실패: {result.get('return_msg') if result else 'No response'}")
+                return None
+                
+        except Exception as e:
+            self.logger.error(f"호가잔량 상위 조회 예외: {e}")
+            return None
+
     def GetUnfilledOrders(self, stock_code="", exchange_type="0"):
         """미체결 조회 (ka10075)"""
         try:
