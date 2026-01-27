@@ -200,6 +200,12 @@ class SignalTradingBot:
     """신호 기반 자동매매 봇 (watchdog + 멀티스레드)"""
     
     def __init__(self):
+        # 🔥 파일 경로 먼저 설정 (load 함수들이 이걸 사용함)
+        self.signal_file = config.get("signal_file", "signal_history.json")
+        self.positions_file = config.get("positions_file", "trading_positions.json")
+        self.pending_orders_file = config.get("pending_orders_file", "trading_pending_orders.json")
+        self.cooldowns_file = config.get("cooldowns_file", "trading_cooldowns.json")
+
         self.positions = self.load_positions()
         self.pending_orders = self.load_pending_orders()
         self.cooldowns = self.load_cooldowns()
