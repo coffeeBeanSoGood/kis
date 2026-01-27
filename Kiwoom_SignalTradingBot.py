@@ -99,7 +99,16 @@ class ConfigManager:
             "trailing_stop_rate": 0.01,              # 1% 일반 트레일링 (2% 미만 구간)
             "sell_signals": ["SELL", "STRONG_SELL"],
             "emergency_stop_loss": -0.03,            # -3% 긴급 손절 (타이트)
-           
+
+            # 🔥🔥🔥 [추가] 동적 손절 설정 (ATR 기반)
+            "stop_loss_grace_period_minutes": 10,   # 매수 후 10분 유예
+            "extreme_stop_loss": -0.05,              # 극단적 손절 (-5%)
+            "atr_stop_multiplier": 2.0,              # ATR 배수 (2배)
+            "atr_min_stop_loss": 0.02,               # ATR 최소 손절 (2%)
+            "atr_max_stop_loss": 0.08,               # ATR 최대 손절 (8%)
+            "signal_override_buffer": 0.02,          # 신호 우선 버퍼 (2%)
+            "min_signal_confidence": 0.4,            # 최소 신호 신뢰도 (40%)
+
             # 🔥 스마트 스케줄링 설정
             "pending_order_timeout_minutes": 5,
             "check_pending_interval_seconds": 30,     # 30초마다 미체결 체크
@@ -998,31 +1007,21 @@ class SignalTradingBot:
 
     def check_sell_conditions(self, stock_code, current_signal=None):
         """
-        매도 조건 체크 (A안: 공격적 수익 보호)
+        매도 조건 체크 (개선 버전: ATR + 신호 통합)
         
         우선순위:
         1. 목표 수익 달성 (3%)
         2. 트레일링 스탑 발동
-        3. 손절 신호 (SELL, STRONG_SELL)
-        4. 긴급 손절 (-3%)
-        
-        Args:
-            stock_code: 종목코드
-            current_signal: 현재 신호 정보 (선택)
-        
-        Returns:
-            tuple: (매도 여부, 매도 사유)
+        3. 통합 손절 판단 (신호 + ATR)
         """
         try:
             with self.lock:
                 if stock_code not in self.positions:
                     return False, None
 
-                # 🔥 이미 매도 주문 중이면 스킵
                 if stock_code in self.pending_orders:
                     pending = self.pending_orders[stock_code]
                     if pending.get('order_type') == 'sell':
-                        logger.debug(f"⏭️ {stock_code} 이미 매도 주문 중")
                         return False, None
 
                 position = self.positions[stock_code].copy()
@@ -1033,13 +1032,19 @@ class SignalTradingBot:
             
             current_price = stock_info.get('CurrentPrice', 0)
             entry_price = position.get('entry_price', 0)
+            entry_time_str = position.get('entry_time', '')
             trailing_stop_price = position.get('trailing_stop_price', 0)
             
             profit_rate = (current_price - entry_price) / entry_price
             
-            # 🔥 매도 조건 체크 (우선순위 순서)
+            # 보유 시간 계산
+            try:
+                entry_time = datetime.strptime(entry_time_str, "%Y-%m-%d %H:%M:%S")
+                holding_minutes = (datetime.now() - entry_time).total_seconds() / 60
+            except:
+                holding_minutes = 0
             
-            # 1️⃣ 목표 수익 달성 (3%)
+            # 1️⃣ 목표 수익 달성
             target_profit_rate = config.get("target_profit_rate", 0.03)
             if profit_rate >= target_profit_rate:
                 reason = f"목표 수익 달성 ({profit_rate*100:+.2f}%)"
@@ -1053,29 +1058,218 @@ class SignalTradingBot:
                 logger.info(f"📉 {stock_code} {reason}")
                 return True, reason
             
-            # 3️⃣ 손절 신호 (SELL, STRONG_SELL)
-            sell_signals = config.get("sell_signals", ["SELL", "STRONG_SELL"])
-            if current_signal and current_signal.get('signal') in sell_signals:
-                confidence = current_signal.get('confidence', 0)
-                min_confidence = config.get("min_signal_confidence", 0.4)
-                
-                if confidence >= min_confidence:
-                    reason = f"손절 신호 ({current_signal.get('signal')}, 신뢰도: {confidence:.1%})"
-                    logger.info(f"🚨 {stock_code} {reason}")
-                    return True, reason
+            # 3️⃣ 통합 손절 판단
+            grace_period_minutes = config.get("stop_loss_grace_period_minutes", 10)
             
-            # 4️⃣ 긴급 손절 (-3%)
-            emergency_stop = config.get("emergency_stop_loss", -0.03)
-            if profit_rate <= emergency_stop:
-                reason = f"긴급 손절 ({profit_rate*100:+.2f}%)"
-                logger.warning(f"🚨 {stock_code} {reason}")
-                return True, reason
+            if holding_minutes < grace_period_minutes:
+                # 유예 기간: 극단 손절만
+                extreme_stop = config.get("extreme_stop_loss", -0.05)
+                if profit_rate <= extreme_stop:
+                    reason = f"극단 손절 ({profit_rate*100:+.2f}%, 보유 {holding_minutes:.0f}분)"
+                    logger.warning(f"🚨 {stock_code} {reason}")
+                    return True, reason
+                else:
+                    logger.debug(f"⏰ {stock_code} 유예 중 ({profit_rate*100:+.2f}%)")
+                    return False, None
+            
+            # ATR 기반 동적 손절선 계산
+            dynamic_stop = self._calculate_dynamic_stop_loss(stock_code, current_price)
+            
+            # 신호와 변동성 통합 판단
+            signal_type = current_signal.get('signal', 'HOLD') if current_signal else 'HOLD'
+            signal_confidence = current_signal.get('confidence', 0) if current_signal else 0
+            
+            should_stop, stop_reason = self._integrated_stop_decision(
+                stock_code,
+                profit_rate,
+                dynamic_stop,
+                signal_type,
+                signal_confidence
+            )
+            
+            if should_stop:
+                logger.warning(f"🚨 {stock_code} {stop_reason}")
+                return True, stop_reason
             
             return False, None
             
         except Exception as e:
             logger.error(f"매도 조건 체크 실패: {e}")
             return False, None
+
+
+    def _calculate_dynamic_stop_loss(self, stock_code, current_price):
+        """ATR 기반 동적 손절선 계산"""
+        try:
+            minute_data = KiwoomAPI.GetMinuteData(stock_code, "5", 20)
+            
+            if not minute_data or len(minute_data) < 14:
+                logger.debug(f"{stock_code} 분봉 데이터 부족, 기본 손절선 적용")
+                return self._get_default_stop_loss(stock_code)
+            
+            atr = self._calculate_atr(minute_data, period=14)
+            
+            if atr == 0:
+                logger.debug(f"{stock_code} ATR 계산 실패, 기본 손절선 적용")
+                return self._get_default_stop_loss(stock_code)
+            
+            atr_ratio = atr / current_price
+            base_multiplier = config.get("atr_stop_multiplier", 2.0)
+            dynamic_stop = -max(0.02, min(0.08, atr_ratio * base_multiplier))
+            
+            logger.info(f"📊 {stock_code} 동적 손절선:")
+            logger.info(f"   ATR: {atr:.0f}원 ({atr_ratio*100:.2f}%)")
+            logger.info(f"   손절선: {dynamic_stop*100:.2f}%")
+            
+            return dynamic_stop
+            
+        except Exception as e:
+            logger.error(f"동적 손절선 계산 실패: {e}")
+            return self._get_default_stop_loss(stock_code)
+
+
+    def _calculate_atr(self, minute_data, period=14):
+        """ATR 계산"""
+        try:
+            if len(minute_data) < period + 1:
+                return 0
+            
+            true_ranges = []
+            
+            for i in range(len(minute_data) - 1):
+                current = minute_data[i]
+                previous = minute_data[i + 1]
+                
+                high = float(current.get('HighPrice', 0))
+                low = float(current.get('LowPrice', 0))
+                prev_close = float(previous.get('ClosePrice', 0))
+                
+                tr1 = high - low
+                tr2 = abs(high - prev_close)
+                tr3 = abs(low - prev_close)
+                
+                true_range = max(tr1, tr2, tr3)
+                true_ranges.append(true_range)
+            
+            atr = sum(true_ranges[:period]) / period
+            return atr
+            
+        except Exception as e:
+            logger.error(f"ATR 계산 오류: {e}")
+            return 0
+
+
+    def _integrated_stop_decision(self, stock_code, profit_rate, dynamic_stop, signal_type, signal_confidence):
+        """신호와 변동성 통합 손절 판단"""
+        try:
+            min_confidence = config.get("min_signal_confidence", 0.4)
+            
+            # 상황 1: STRONG_SELL (최우선)
+            if signal_type == "STRONG_SELL" and signal_confidence >= min_confidence:
+                reason = f"강력 손절 신호 (STRONG_SELL, 신뢰도: {signal_confidence:.1%})"
+                logger.info(f"   🚨 강력 신호 - ATR 무시하고 즉시 손절")
+                return True, reason
+            
+            # 상황 2: ATR 손절선 도달
+            if profit_rate <= dynamic_stop:
+                # 강한 매수 신호 유지 시 추가 유예
+                if signal_type in ["STRONG_BUY", "BUY"] and signal_confidence >= 0.6:
+                    grace_buffer = config.get("signal_override_buffer", 0.02)
+                    final_stop = dynamic_stop - grace_buffer
+                    
+                    if profit_rate <= final_stop:
+                        reason = f"최종 손절 ({profit_rate*100:+.2f}%, {signal_type} 신호에도 불구)"
+                        logger.info(f"   ⚠️ 최종 손절선 도달")
+                        return True, reason
+                    else:
+                        logger.info(f"   🔄 ATR 손절 유예: {signal_type} 강세")
+                        logger.info(f"   현재: {profit_rate*100:+.2f}%, 최종: {final_stop*100:.1f}%")
+                        return False, None
+                
+                # 신호 없거나 약함 → 손절
+                reason = f"ATR 손절 ({profit_rate*100:+.2f}%, 기준: {dynamic_stop*100:.1f}%)"
+                logger.info(f"   📊 ATR 손절선 도달")
+                return True, reason
+            
+            # 상황 3: SELL 신호 + ATR 여유
+            if signal_type == "SELL" and signal_confidence >= min_confidence:
+                atr_buffer = dynamic_stop - profit_rate
+                atr_usage = (profit_rate / dynamic_stop) * 100 if dynamic_stop != 0 else 0
+                
+                logger.info(f"   🤔 SELL 신호 vs ATR 판단:")
+                logger.info(f"   손실: {profit_rate*100:+.2f}%, ATR: {dynamic_stop*100:.1f}%")
+                logger.info(f"   ATR 사용률: {atr_usage:.1f}%")
+                
+                # 고신뢰도 SELL → 즉시 손절
+                if signal_confidence >= 0.75:
+                    reason = f"고신뢰 SELL ({signal_confidence:.1%}, ATR 무시)"
+                    logger.info(f"   ✅ 신뢰도 매우 높음 → 즉시 손절")
+                    return True, reason
+                
+                # ATR 50% 이상 소진 + SELL → 손절
+                if atr_usage >= 50:
+                    reason = f"SELL+ATR 복합 손절 ({signal_confidence:.1%}, ATR {atr_usage:.0f}% 소진)"
+                    logger.info(f"   ✅ ATR 반 이상 소진 → 손절")
+                    return True, reason
+                
+                # ATR 여유 충분 → 관찰
+                logger.info(f"   🔄 SELL 신호 있지만 ATR 여유 → 관찰")
+                return False, None
+            
+            return False, None
+            
+        except Exception as e:
+            logger.error(f"통합 손절 판단 실패: {e}")
+            if profit_rate <= dynamic_stop:
+                return True, f"ATR 손절 (판단 실패)"
+            return False, None
+
+
+    def _get_default_stop_loss(self, stock_code):
+        """기본 손절선 (ATR 실패 시)"""
+        sector_volatility = {
+            "battery": -0.05,
+            "robot": -0.05,
+            "defense": -0.04,
+            "nuclear": -0.04,
+            "semiconductor": -0.03,
+            "lng": -0.04,
+            "shipbuilding": -0.04
+        }
+        
+        sector = self._get_stock_sector(stock_code)
+        return sector_volatility.get(sector, -0.04)
+
+    def _get_stock_sector(self, stock_code):
+        """종목 섹터 조회"""
+        sector_map = {
+            # 2차전지
+            "086520": "battery", "005490": "battery", "006400": "battery",
+            "373220": "battery", "348370": "battery", "078600": "battery",
+            "305720": "battery", "365340": "battery",
+            # 로봇
+            "030530": "robot", "058610": "robot", "182690": "robot",
+            "108490": "robot", "454910": "robot", "399720": "robot",
+            "140860": "robot", "056080": "robot",
+            # 방산
+            "272210": "defense", "064350": "defense", "079550": "defense",
+            "281990": "defense", "047810": "defense", "103140": "defense",
+            # 원전
+            "105840": "nuclear", "041960": "nuclear", "094820": "nuclear",
+            "034020": "nuclear", "000720": "nuclear", "051600": "nuclear",
+            # 반도체
+            "005930": "semiconductor", "000660": "semiconductor",
+            "000990": "semiconductor", "084370": "semiconductor",
+            "240810": "semiconductor", "095610": "semiconductor",
+            "046890": "semiconductor", "036540": "semiconductor",
+            "357780": "semiconductor",
+            # 조선
+            "042660": "shipbuilding", "010140": "shipbuilding",
+            # LNG
+            "033500": "lng", "017960": "lng"
+        }
+        
+        return sector_map.get(stock_code, "unknown")
 
     def execute_sell(self, stock_code, reason):
         """
