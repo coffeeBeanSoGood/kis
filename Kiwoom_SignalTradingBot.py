@@ -561,6 +561,9 @@ class SignalTradingBot:
     def check_pending_orders(self):
         """
         미체결 주문 체크 (매수 + 매도)
+        - 체결 확인: 실제 체결가(FilledPrice) 사용
+        - 재시도: 최대 3회
+        - 시장가 전환: 3회 실패 후
         """
         try:
             with self.lock:
@@ -606,64 +609,121 @@ class SignalTradingBot:
                     
                     if is_filled:
                         # ✅ 체결 완료!
+                        
+                        # 🔥 실제 체결가 가져오기
+                        filled_price = None
+                        filled_qty = None
+                        commission = 0
+                        tax = 0
+                        
+                        for order in filled_orders:
+                            if order.get('OrderNo') == order_no:
+                                filled_price = order.get('FilledPrice', 0)
+                                filled_qty = order.get('FilledQty', 0)
+                                commission = order.get('Commission', 0)
+                                tax = order.get('Tax', 0)
+                                break
+                        
+                        # 체결가 검증
+                        if not filled_price or filled_price <= 0:
+                            logger.warning(f"⚠️ {stock_name} 체결가 조회 실패, 주문가 사용")
+                            filled_price = pending['order_price']
+                            filled_qty = pending['order_quantity']
+                        
                         logger.info(f"✅ {stock_name} {order_type.upper()} 체결 완료!")
-
+                        logger.info(f"   주문가: {pending['order_price']:,}원 → 체결가: {filled_price:,}원")
+                        if commission > 0 or tax > 0:
+                            logger.info(f"   수수료: {commission:,}원, 세금: {tax:,}원")
+                        
                         with self.lock:
                             if order_type == 'buy':
                                 # 매수 체결: positions에 추가
-                                entry_price = pending['order_price']
                                 self.positions[stock_code] = {
                                     'stock_name': stock_name,
-                                    'entry_price': entry_price,
+                                    'entry_price': filled_price,  # ✅ 실제 체결가 사용
                                     'entry_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                    'quantity': pending['order_quantity'],
-                                    'highest_price': entry_price,
-                                    'trailing_stop_price': entry_price * (1 - config.get("trailing_stop_rate", 0.01)),
-                                    'target_profit_price': entry_price * (1 + config.get("target_profit_rate", 0.03)),
+                                    'quantity': filled_qty,       # ✅ 실제 체결수량
+                                    'highest_price': filled_price,
+                                    'trailing_stop_price': filled_price * (1 - config.get("trailing_stop_rate", 0.01)),
+                                    'target_profit_price': filled_price * (1 + config.get("target_profit_rate", 0.03)),
                                     'signal_score': pending.get('signal_score', 0),
                                     'signal_confidence': pending.get('signal_confidence', 0),
-                                    # 🔥 새로운 플래그 추가
-                                    'breakeven_protected': False,        # 본전 보호 활성화 여부
-                                    'tight_trailing_active': False       # 타이트 트레일링 활성화 여부
+                                    'breakeven_protected': False,
+                                    'tight_trailing_active': False,
+                                    # 🔥 추가 정보 기록
+                                    'order_price': pending['order_price'],  # 참고용
+                                    'commission': commission,
+                                    'tax': tax
                                 }
                                 
+                                price_diff = filled_price - pending['order_price']
                                 msg = f"✅ **매수 체결!**\n"
                                 msg += f"종목: {stock_name} ({stock_code})\n"
-                                msg += f"가격: {pending['order_price']:,}원 × {pending['order_quantity']}주\n"
-                                msg += f"목표가: {self.positions[stock_code]['target_profit_price']:,.0f}원 (+5%)\n"
+                                msg += f"체결가: {filled_price:,}원 × {filled_qty}주\n"
+                                if price_diff != 0:
+                                    emoji = "💰" if price_diff < 0 else "📊"
+                                    msg += f"{emoji} 주문가: {pending['order_price']:,}원 ({price_diff:+,}원)\n"
+                                msg += f"투자금: {filled_price * filled_qty:,}원\n"
+                                if commission > 0:
+                                    msg += f"수수료: {commission:,}원\n"
+                                msg += f"목표가: {self.positions[stock_code]['target_profit_price']:,.0f}원 (+3%)\n"
                                 msg += f"트레일링: {self.positions[stock_code]['trailing_stop_price']:,.0f}원 (-1%)"
                                 
                                 config.update_performance('total_trades', 1)
                                 
                             else:  # sell
-                                # 매도 체결: positions 삭제, cooldowns 추가
+                                # 🔥 매도 체결: 실제 체결가로 수익 재계산
                                 if stock_code in self.positions:
+                                    entry_price = self.positions[stock_code]['entry_price']
+                                    entry_commission = self.positions[stock_code].get('commission', 0)
+                                    
+                                    # 실제 수익 계산 (매수 수수료 + 매도 수수료 + 세금)
+                                    profit = (filled_price - entry_price) * filled_qty - entry_commission - commission - tax
+                                    profit_rate = (filled_price - entry_price) / entry_price
+                                    
                                     del self.positions[stock_code]
+                                else:
+                                    # positions에 없으면 pending_orders에서 가져옴
+                                    entry_price = pending.get('entry_price', 0)
+                                    profit = (filled_price - entry_price) * filled_qty - commission - tax
+                                    profit_rate = (filled_price - entry_price) / entry_price if entry_price > 0 else 0
+                                    entry_commission = 0
                                 
                                 cooldown_hours = config.get("cooldown_hours", 8)
                                 cooldown_until = datetime.now() + timedelta(hours=cooldown_hours)
-                                
-                                profit = pending.get('expected_profit', 0)
-                                profit_rate = pending.get('expected_profit_rate', 0)
                                 
                                 self.cooldowns[stock_code] = {
                                     'stock_name': stock_name,
                                     'sell_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                     'cooldown_until': cooldown_until.strftime("%Y-%m-%d %H:%M:%S"),
                                     'sell_reason': pending.get('sell_reason', ''),
-                                    'profit': profit,
-                                    'profit_rate': profit_rate
+                                    'entry_price': entry_price,
+                                    'sell_price': filled_price,  # ✅ 실제 매도가
+                                    'quantity': filled_qty,
+                                    'profit': profit,            # ✅ 실제 수익 (수수료 포함)
+                                    'profit_rate': profit_rate,  # ✅ 실제 수익률
+                                    'commission': commission,
+                                    'entry_commission': entry_commission,
+                                    'tax': tax
                                 }
                                 
                                 config.update_performance('total_profit', profit)
                                 if profit > 0:
                                     config.update_performance('winning_trades', 1)
                                 
+                                price_diff = filled_price - pending['order_price']
                                 emoji = "🎉" if profit > 0 else "😢"
                                 msg = f"{emoji} **매도 체결!**\n"
                                 msg += f"종목: {stock_name} ({stock_code})\n"
-                                msg += f"가격: {pending['order_price']:,}원 × {pending['order_quantity']}주\n"
+                                msg += f"체결가: {filled_price:,}원 × {filled_qty}주\n"
+                                if price_diff != 0:
+                                    price_emoji = "💰" if price_diff > 0 else "📊"
+                                    msg += f"{price_emoji} 주문가: {pending['order_price']:,}원 ({price_diff:+,}원)\n"
+                                msg += f"진입가: {entry_price:,}원\n"
                                 msg += f"수익: {profit:+,}원 ({profit_rate*100:+.2f}%)\n"
+                                if commission > 0 or entry_commission > 0 or tax > 0:
+                                    total_fee = entry_commission + commission + tax
+                                    msg += f"비용: {total_fee:,}원 (수수료 {entry_commission + commission:,}원 + 세금 {tax:,}원)\n"
                                 msg += f"사유: {pending.get('sell_reason', '')}\n"
                                 msg += f"쿨다운: {cooldown_hours}시간"
                             
