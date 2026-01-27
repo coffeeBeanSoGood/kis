@@ -76,65 +76,91 @@ except Exception as e:
 
 class ConfigManager:
     """통합 설정 관리자"""
-    
+
     def __init__(self, config_file='signal_trading_config.json'):
         self.config_file = config_file
         self.config = self.load_config()
         
         self.default_config = {
-            "bot_name": "SignalTradingBot_Kiwoom",
-            "daily_budget": 500000,
-            "max_positions": 3,
+            # ============================================
+            # 기본 설정
+            # ============================================
+            "bot_name": "SignalTradingBot_Kiwoom_v3.0",
             "use_discord_alert": True,
             
+            # ============================================
+            # 🔥🔥🔥 자산 관리 설정 (NEW!)
+            # ============================================
+            "initial_budget": 500000,           # 초기 자산 50만원
+            "min_asset_threshold": 400000,      # 최소 자산 40만원 (이하 시 매매 중지)
+            "max_positions": 3,                 # 최대 보유 종목 수
+            
+            # ============================================
             # 매수 설정
-            "buy_signals": ["STRONG_BUY"],
-            "signal_validity_minutes": 10,
+            # ============================================
+            "buy_signals": ["STRONG_BUY"],      # 매수 신호 종류
+            "signal_validity_minutes": 10,      # 신호 유효 시간 (분)
             
-            # 매도 설정    # 🔥 매도 설정 (A안: 공격적 수익 보호)
-            "target_profit_rate": 0.03,              # 3% 목표 (빠른 회전)
+            # ============================================
+            # 매도 설정 (A안: 공격적 수익 보호)
+            # ============================================
+            "target_profit_rate": 0.03,              # 3% 목표 수익
             "breakeven_protection_rate": 0.02,       # 2% 달성 시 본전 보호
-            "tight_trailing_threshold": 0.03,        # 3% 달성 시 타이트 트레일링 시작
+            "tight_trailing_threshold": 0.03,        # 3% 달성 시 타이트 트레일링
             "tight_trailing_rate": 0.005,            # 0.5% 타이트 트레일링
-            "trailing_stop_rate": 0.01,              # 1% 일반 트레일링 (2% 미만 구간)
-            "sell_signals": ["SELL", "STRONG_SELL"],
-            "emergency_stop_loss": -0.03,            # -3% 긴급 손절 (타이트)
-
-            # 🔥🔥🔥 [추가] 동적 손절 설정 (ATR 기반)
-            "stop_loss_grace_period_minutes": 10,   # 매수 후 10분 유예
-            "extreme_stop_loss": -0.05,              # 극단적 손절 (-5%)
-            "atr_stop_multiplier": 2.0,              # ATR 배수 (2배)
-            "atr_min_stop_loss": 0.02,               # ATR 최소 손절 (2%)
-            "atr_max_stop_loss": 0.08,               # ATR 최대 손절 (8%)
-            "signal_override_buffer": 0.02,          # 신호 우선 버퍼 (2%)
-            "min_signal_confidence": 0.4,            # 최소 신호 신뢰도 (40%)
-
-            # 🔥 스마트 스케줄링 설정
-            "pending_order_timeout_minutes": 5,
-            "check_pending_interval_seconds": 30,     # 30초마다 미체결 체크
-            "check_position_interval_seconds": 60,    # 60초마다 트레일링 체크
+            "trailing_stop_rate": 0.01,              # 1% 일반 트레일링
+            "sell_signals": ["SELL", "STRONG_SELL"], # 매도 신호 종류
+            "emergency_stop_loss": -0.03,            # -3% 긴급 손절
             
+            # ============================================
+            # 🔥 동적 손절 설정 (ATR 기반)
+            # ============================================
+            "stop_loss_grace_period_minutes": 10,    # 매수 후 10분 유예
+            "extreme_stop_loss": -0.05,              # -5% 극단 손절
+            "atr_stop_multiplier": 2.0,              # ATR 배수
+            "atr_min_stop_loss": 0.02,               # ATR 최소 손절 2%
+            "atr_max_stop_loss": 0.08,               # ATR 최대 손절 8%
+            "signal_override_buffer": 0.02,          # 신호 우선 버퍼 2%
+            "min_signal_confidence": 0.4,            # 최소 신호 신뢰도 40%
+            
+            # ============================================
+            # 스마트 스케줄링 설정
+            # ============================================
+            "pending_order_timeout_minutes": 5,      # 미체결 타임아웃 5분
+            "check_pending_interval_seconds": 30,    # 미체결 체크 주기 30초
+            "check_position_interval_seconds": 60,   # 포지션 체크 주기 60초
+            
+            # ============================================
             # 쿨다운 설정
-            "cooldown_hours": 8,
+            # ============================================
+            "cooldown_hours": 8,                     # 매도 후 재매수 금지 시간
             
+            # ============================================
             # 파일 경로
+            # ============================================
             "signal_file": "signal_history.json",
             "positions_file": "trading_positions.json",
             "pending_orders_file": "trading_pending_orders.json",
             "cooldowns_file": "trading_cooldowns.json",
             
+            # ============================================
             # 성과 추적
+            # ============================================
             "performance": {
-                "total_trades": 0,
-                "winning_trades": 0,
-                "total_profit": 0,
-                "canceled_orders": 0,
-                "start_date": datetime.now().strftime("%Y-%m-%d")
+                "initial_budget": 500000,            # 시작 자산
+                "current_asset": 500000,             # 현재 총 자산 (동적 업데이트)
+                "total_trades": 0,                   # 총 거래 횟수
+                "winning_trades": 0,                 # 수익 거래 횟수
+                "total_profit": 0,                   # 총 수익금
+                "total_loss": 0,                     # 총 손실금
+                "canceled_orders": 0,                # 취소된 주문 수
+                "start_date": datetime.now().strftime("%Y-%m-%d"),
+                "last_update": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
         }
         
         self._upgrade_config_if_needed()
-    
+
     def load_config(self):
         try:
             if os.path.exists(self.config_file):
@@ -395,39 +421,46 @@ class SignalTradingBot:
                     logger.debug(f"🚫 {stock_code} 이미 보유 중")
                     return False, "이미 보유 중"
                 
-                # 🔥 매도 중인 종목도 체크
+                # 매도 중인 종목도 체크
                 if stock_code in self.pending_orders:
                     pending = self.pending_orders[stock_code]
                     order_type = pending.get('order_type', 'buy')
-                    logger.debug(f"🚫 {stock_code} {order_type.upper()} 미체결 주문 중 (주문번호: {pending.get('order_no')})")
+                    logger.debug(f"🚫 {stock_code} {order_type.upper()} 미체결 주문 중")
                     return False, f"{order_type.upper()} 미체결 주문 중"
-               
+                
                 if self.is_in_cooldown(stock_code):
                     return False, "쿨다운 중"
+                
+                # 🔥🔥🔥 최소 자산 체크 (40만원)
+                asset_info = self.calculate_total_asset()
+                if not asset_info:
+                    return False, "자산 조회 실패"
+                
+                total_asset = asset_info['total_asset']
+                min_asset = config.get("min_asset_threshold", 400000)
+                
+                if total_asset < min_asset:
+                    logger.error(f"🚨 최소 자산 미달!")
+                    logger.error(f"   현재 자산: {total_asset:,}원")
+                    logger.error(f"   최소 기준: {min_asset:,}원")
+                    
+                    # 디스코드 긴급 알림
+                    if config.get("use_discord_alert", True):
+                        msg = f"🚨 **긴급! 최소 자산 미달**\n"
+                        msg += f"현재 자산: {total_asset:,}원\n"
+                        msg += f"최소 기준: {min_asset:,}원\n"
+                        msg += f"차액: {total_asset - min_asset:,}원\n"
+                        msg += f"⛔ 모든 매수 중지!"
+                        discord_alert.SendMessage(msg)
+                    
+                    return False, f"최소 자산 미달 ({total_asset:,}원 < {min_asset:,}원)"
                 
                 max_positions = config.get("max_positions", 3)
                 total_stocks = len(self.positions) + len(self.pending_orders)
                 
                 if total_stocks >= max_positions:
-                    logger.debug(f"🚫 최대 종목 수 도달 (보유: {len(self.positions)}, 미체결: {len(self.pending_orders)})")
+                    logger.debug(f"🚫 최대 종목 수 도달 ({total_stocks}/{max_positions})")
                     return False, f"최대 종목 수 도달 ({total_stocks}/{max_positions})"
-                
-                daily_budget = config.get("daily_budget", 500000)
-                used_budget = sum(
-                    pos.get('entry_price', 0) * pos.get('quantity', 0)
-                    for pos in self.positions.values()
-                )
-                
-                pending_budget = sum(
-                    pend.get('order_price', 0) * pend.get('order_quantity', 0)
-                    for pend in self.pending_orders.values()
-                )
-                
-                remaining_budget = daily_budget - used_budget - pending_budget
-                
-                if remaining_budget < 100000:
-                    logger.debug(f"🚫 잔여 예산 부족 ({remaining_budget:,}원)")
-                    return False, f"잔여 예산 부족 ({remaining_budget:,}원)"
                 
                 return True, "매수 가능"
             
@@ -499,6 +532,62 @@ class SignalTradingBot:
                 logger.warning(f"❌ 매수 불가: {reason}")
                 return False
             
+            # 🔥🔥🔥 1️⃣ 총 자산 계산
+            asset_info = self.calculate_total_asset()
+            if not asset_info:
+                logger.error(f"❌ 자산 조회 실패")
+                return False
+            
+            total_asset = asset_info['total_asset']
+            orderable_amt = asset_info['orderable_amt']
+            holding_value = asset_info['holding_value']
+            pending_value = asset_info['pending_value']
+            
+            logger.info(f"💰 자산 현황:")
+            logger.info(f"   총 자산: {total_asset:,}원")
+            logger.info(f"   현금: {orderable_amt:,}원")
+            logger.info(f"   보유주식: {holding_value:,}원")
+            logger.info(f"   미체결: {pending_value:,}원")
+            
+            # 🔥🔥🔥 2️⃣ 남은 슬롯 계산
+            max_positions = config.get("max_positions", 3)
+            current_stocks = len(self.positions) + len(self.pending_orders)
+            remaining_slots = max_positions - current_stocks
+            
+            logger.info(f"📊 포지션:")
+            logger.info(f"   현재: {current_stocks}종목")
+            logger.info(f"   남은 슬롯: {remaining_slots}개")
+            
+            # 🔥🔥🔥 3️⃣ 남은 자산 계산
+            used_asset = holding_value + pending_value
+            remaining_asset = total_asset - used_asset
+            
+            logger.info(f"💵 사용 가능 자산:")
+            logger.info(f"   전체: {total_asset:,}원")
+            logger.info(f"   사용 중: {used_asset:,}원")
+            logger.info(f"   남은 금액: {remaining_asset:,}원")
+            
+            # 🔥🔥🔥 4️⃣ 종목당 예산 계산 (남은 자산 균등배분)
+            if remaining_slots > 0:
+                budget_per_stock = remaining_asset / remaining_slots
+            else:
+                logger.warning(f"❌ 남은 슬롯 없음")
+                return False
+            
+            logger.info(f"🎯 이번 매수 예산: {budget_per_stock:,.0f}원")
+            logger.info(f"   ({remaining_asset:,}원 ÷ {remaining_slots}개)")
+            
+            # 최소 매수 금액 체크
+            if budget_per_stock < 10000:
+                logger.warning(f"❌ 매수 금액 부족 (최소 1만원 필요, 현재: {budget_per_stock:,.0f}원)")
+                return False
+            
+            # 실제 주문가능금액 체크
+            if budget_per_stock > orderable_amt:
+                logger.warning(f"⚠️ 예산 조정: {budget_per_stock:,.0f}원 → {orderable_amt:,}원 (현금 부족)")
+                budget_per_stock = orderable_amt
+            
+            # 현재가 조회
             stock_info = KiwoomAPI.GetStockInfo(stock_code)
             if not stock_info:
                 logger.error(f"❌ 현재가 조회 실패")
@@ -509,18 +598,19 @@ class SignalTradingBot:
             # 🔥 호가 단위 적용 (매수: 내림)
             adjusted_price = self.adjust_price_to_tick(current_price, is_buy=True)
             
-            daily_budget = config.get("daily_budget", 500000)
-            max_positions = config.get("max_positions", 3)
-            budget_per_stock = daily_budget / max_positions
-            
-            # 조정된 가격으로 수량 계산
+            # 🔥 5️⃣ 매수 수량 계산
             buy_quantity = int(budget_per_stock / adjusted_price)
             
             if buy_quantity < 1:
-                logger.warning(f"❌ 매수 수량 부족 (가격: {adjusted_price:,}원)")
+                logger.warning(f"❌ 매수 수량 부족 (가격: {adjusted_price:,}원, 예산: {budget_per_stock:,.0f}원)")
                 return False
             
-            logger.info(f"💰 매수 주문: {adjusted_price:,}원 × {buy_quantity}주 = {adjusted_price * buy_quantity:,}원")
+            # 실제 투자 금액
+            actual_investment = adjusted_price * buy_quantity
+            
+            logger.info(f"💰 매수 주문:")
+            logger.info(f"   가격: {adjusted_price:,}원 × {buy_quantity}주")
+            logger.info(f"   투자금: {actual_investment:,}원")
             if adjusted_price != current_price:
                 logger.info(f"   (원래가: {current_price:,}원 → 호가 조정: {adjusted_price:,}원)")
             
@@ -535,7 +625,7 @@ class SignalTradingBot:
                         'stock_name': stock_name,
                         'order_no': order_no,
                         'order_type': 'buy',
-                        'order_price': adjusted_price,  # 조정된 가격 저장
+                        'order_price': adjusted_price,
                         'order_quantity': buy_quantity,
                         'order_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         'status': 'pending',
@@ -546,12 +636,19 @@ class SignalTradingBot:
                 
                 self.save_pending_orders()
                 
+                # 매수 후 남은 슬롯
+                new_remaining_slots = remaining_slots - 1
+                
                 msg = f"🚀 **매수 주문 완료!**\n"
                 msg += f"종목: {stock_name} ({stock_code})\n"
                 msg += f"주문번호: {order_no}\n"
                 msg += f"가격: {adjusted_price:,}원 × {buy_quantity}주\n"
-                msg += f"투자금: {adjusted_price * buy_quantity:,}원\n"
-                msg += f"신호: {signal.get('signal')} (점수: {signal.get('score'):.1f})\n"
+                msg += f"투자금: {actual_investment:,}원\n"
+                msg += f"\n💰 **자산 현황**:\n"
+                msg += f"총 자산: {total_asset:,}원\n"
+                msg += f"사용 가능: {remaining_asset:,}원\n"
+                msg += f"남은 슬롯: {new_remaining_slots}개\n"
+                msg += f"\n📊 신호: {signal.get('signal')} (점수: {signal.get('score'):.1f})\n"
                 msg += f"⏰ 5분 내 미체결 시 자동 취소"
                 
                 logger.info(msg)
@@ -1535,6 +1632,73 @@ class SignalFileHandler(FileSystemEventHandler):
             
             # 신호 처리 실행
             self.bot.process_new_signals()
+
+    def calculate_total_asset(self):
+        """
+        총 자산 계산
+        = 주문가능금액 + 보유주식평가금액 + 미체결매수금액
+        
+        Returns:
+            dict: {
+                'total_asset': 총 자산,
+                'orderable_amt': 주문가능금액,
+                'holding_value': 보유주식평가금액,
+                'pending_value': 미체결매수금액
+            }
+        """
+        try:
+            # 1️⃣ 주문가능금액 조회
+            balance = KiwoomAPI.GetBalance()
+            if not balance:
+                logger.error("❌ 잔고 조회 실패")
+                return None
+            
+            orderable_amt = int(balance.get('OrderableAmt', 0))
+            
+            # 2️⃣ 보유 주식 평가금액 계산
+            holding_value = 0
+            
+            with self.lock:
+                for stock_code, position in self.positions.items():
+                    try:
+                        stock_info = KiwoomAPI.GetStockInfo(stock_code)
+                        if stock_info:
+                            current_price = stock_info.get('CurrentPrice', 0)
+                            quantity = position.get('quantity', 0)
+                            holding_value += current_price * quantity
+                    except Exception as e:
+                        logger.error(f"보유주식 평가 오류 ({stock_code}): {e}")
+            
+            # 3️⃣ 미체결 매수 주문 금액 계산
+            pending_value = 0
+            
+            with self.lock:
+                for stock_code, pending in self.pending_orders.items():
+                    if pending.get('order_type') == 'buy':
+                        order_price = pending.get('order_price', 0)
+                        order_quantity = pending.get('order_quantity', 0)
+                        pending_value += order_price * order_quantity
+            
+            # 4️⃣ 총 자산
+            total_asset = orderable_amt + holding_value + pending_value
+            
+            result = {
+                'total_asset': total_asset,
+                'orderable_amt': orderable_amt,
+                'holding_value': holding_value,
+                'pending_value': pending_value
+            }
+            
+            logger.debug(f"💰 총 자산: {total_asset:,}원")
+            logger.debug(f"   현금: {orderable_amt:,}원")
+            logger.debug(f"   보유: {holding_value:,}원")
+            logger.debug(f"   미체결: {pending_value:,}원")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"총 자산 계산 실패: {e}")
+            return None
 
 ################################### 메인 실행 ##################################
 
