@@ -122,7 +122,7 @@ TARGET_STOCKS = {
 }
 
 MONITOR_CONFIG = {
-    "check_interval_minutes": 10,    # 🔥 5분 → 10분으로 변경 (API 부하 감소)
+    "check_interval_minutes": 5,    # 🔥 5분
     "signal_threshold": 60,
     "trading_hours_only": True,
     "save_history": True,
