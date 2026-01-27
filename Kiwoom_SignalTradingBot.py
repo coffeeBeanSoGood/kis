@@ -214,7 +214,7 @@ BOT_NAME = config.get("bot_name", "SignalTradingBot_Kiwoom")
 
 logger.info("=" * 60)
 logger.info(f"🤖 {config.get('bot_name')} 초기화 v3.0 (watchdog 실시간)")
-logger.info(f"💰 초기 자산: {config.get('initial_budget', 500000):,}원")  # ✅ 수정!
+# logger.info(f"💰 초기 자산: {config.get('initial_budget', 500000):,}원")  # ✅ 수정!
 logger.info(f"⚠️ 최소 자산: {config.get('min_asset_threshold', 400000):,}원 (이하 시 매매 중지)")  # ✅ 추가!
 logger.info(f"📊 최대 종목: {config.get('max_positions')}개")
 logger.info("⚡ watchdog: 파일 변경 즉시 감지 (0초 지연)")
@@ -1611,30 +1611,6 @@ class SignalTradingBot:
         self.running = False
         logger.info("🛑 봇 중지 신호 전송")
 
-################################### Watchdog 핸들러 ##################################
-
-class SignalFileHandler(FileSystemEventHandler):
-    """신호 파일 변경 감지 핸들러"""
-    
-    def __init__(self, bot: SignalTradingBot):
-        self.bot = bot
-        self.signal_file = os.path.abspath(bot.signal_file)
-        logger.info(f"🔍 감시 대상: {self.signal_file}")
-    
-    def on_modified(self, event):
-        """파일 수정 이벤트"""
-        if event.is_directory:
-            return
-        
-        if os.path.abspath(event.src_path) == self.signal_file:
-            logger.info(f"🔔 신호 파일 변경 감지: {event.src_path}")
-            
-            # 약간의 지연 (파일 쓰기 완료 대기)
-            time.sleep(0.5)
-            
-            # 신호 처리 실행
-            self.bot.process_new_signals()
-
     def calculate_total_asset(self) -> dict:
         """
         총 자산 계산
@@ -1701,6 +1677,30 @@ class SignalFileHandler(FileSystemEventHandler):
         except Exception as e:
             logger.error(f"총 자산 계산 실패: {e}")
             return None
+
+################################### Watchdog 핸들러 ##################################
+
+class SignalFileHandler(FileSystemEventHandler):
+    """신호 파일 변경 감지 핸들러"""
+    
+    def __init__(self, bot: SignalTradingBot):
+        self.bot = bot
+        self.signal_file = os.path.abspath(bot.signal_file)
+        logger.info(f"🔍 감시 대상: {self.signal_file}")
+    
+    def on_modified(self, event):
+        """파일 수정 이벤트"""
+        if event.is_directory:
+            return
+        
+        if os.path.abspath(event.src_path) == self.signal_file:
+            logger.info(f"🔔 신호 파일 변경 감지: {event.src_path}")
+            
+            # 약간의 지연 (파일 쓰기 완료 대기)
+            time.sleep(0.5)
+            
+            # 신호 처리 실행
+            self.bot.process_new_signals()
 
 ################################### 메인 실행 ##################################
 
