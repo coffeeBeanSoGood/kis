@@ -884,7 +884,7 @@ class SignalMonitor:
             return None
 
     def get_investor_data_cached(self):
-        """외국인/기관 데이터 캐싱 (5분마다 갱신) - 디버그 강화 버전"""
+        """외국인/기관 데이터 캐싱 (5분마다 갱신) - 수정 버전"""
         try:
             now = datetime.now()
             
@@ -895,9 +895,15 @@ class SignalMonitor:
             
             logger.info("🔄 외국인/기관 데이터 갱신 중...")
             
-            # 외국인 데이터 조회
+            # 🔥 수정: 실제 존재하는 API 함수 호출
             logger.debug("📡 외국인 순매수 데이터 API 호출...")
-            foreign_data = self.api_call_with_throttle(self.kiwoom.GetForeignNetBuyList)
+            foreign_data = self.api_call_with_throttle(
+                self.kiwoom.GetRealtimeInvestorTrading,
+                market_type="000",
+                investor="6",
+                foreign_all="0",
+                exchange_type="3"
+            )
             
             # 🔥 디버그: API 응답 원본 확인
             if foreign_data is None:
@@ -910,9 +916,14 @@ class SignalMonitor:
                 for i, item in enumerate(foreign_data[:3]):
                     logger.debug(f"      [{i+1}] {item}")
             
-            # 기관 데이터 조회
             logger.debug("📡 기관 순매수 데이터 API 호출...")
-            institution_data = self.api_call_with_throttle(self.kiwoom.GetInstitutionNetBuyList)
+            institution_data = self.api_call_with_throttle(
+                self.kiwoom.GetRealtimeInvestorTrading,
+                market_type="000",
+                investor="7",
+                foreign_all="0",
+                exchange_type="3"
+            )
             
             # 🔥 디버그: API 응답 원본 확인
             if institution_data is None:
@@ -932,14 +943,12 @@ class SignalMonitor:
                     stock_code = item.get("StockCode", "")
                     net_buy = item.get("NetBuyQty", 0)
                     
-                    # 🔥 디버그: 파싱 과정 확인
                     if not stock_code:
                         logger.debug(f"   ⚠️ StockCode 누락: {item}")
                         continue
                     
                     self.foreign_cache[stock_code] = net_buy
                     
-                    # 🔥 디버그: 관심 종목만 상세 출력
                     if stock_code in TARGET_STOCKS:
                         stock_name = TARGET_STOCKS[stock_code]["name"]
                         logger.debug(f"   ✓ [{stock_name}] 외국인 순매수: {net_buy:+,}주")
@@ -951,14 +960,12 @@ class SignalMonitor:
                     stock_code = item.get("StockCode", "")
                     net_buy = item.get("NetBuyQty", 0)
                     
-                    # 🔥 디버그: 파싱 과정 확인
                     if not stock_code:
                         logger.debug(f"   ⚠️ StockCode 누락: {item}")
                         continue
                     
                     self.institution_cache[stock_code] = net_buy
                     
-                    # 🔥 디버그: 관심 종목만 상세 출력
                     if stock_code in TARGET_STOCKS:
                         stock_name = TARGET_STOCKS[stock_code]["name"]
                         logger.debug(f"   ✓ [{stock_name}] 기관 순매수: {net_buy:+,}주")
@@ -967,7 +974,7 @@ class SignalMonitor:
             
             logger.info(f"✅ 캐시 갱신 완료: 외국인 {len(self.foreign_cache)}종목, 기관 {len(self.institution_cache)}종목")
             
-            # 🔥 디버그: 관심 종목 캐시 상태 요약
+            # 관심 종목 캐시 상태 요약
             logger.info("📊 관심 종목 외국인/기관 데이터 요약:")
             for stock_code, stock_info in TARGET_STOCKS.items():
                 stock_name = stock_info["name"]
