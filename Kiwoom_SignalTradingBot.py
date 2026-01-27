@@ -9,6 +9,7 @@
 - 중복 주문 방지
 """
 
+from __future__ import annotations
 import Kiwoom_API_Helper_KR as KiwoomKR
 import discord_alert
 import json
@@ -232,20 +233,20 @@ class SignalTradingBot:
         self.pending_orders_file = config.get("pending_orders_file", "trading_pending_orders.json")
         self.cooldowns_file = config.get("cooldowns_file", "trading_cooldowns.json")
 
-        self.positions = self.load_positions()
-        self.pending_orders = self.load_pending_orders()
-        self.cooldowns = self.load_cooldowns()
+        self.positions: dict = self.load_positions()
+        self.pending_orders: dict = self.load_pending_orders()
+        self.cooldowns: dict = self.load_cooldowns()
         
         # 🔥 스레드 제어
-        self.running = True
-        self.lock = threading.Lock()  # 데이터 동시 접근 방지
+        self.running: bool = True
+        self.lock: threading.Lock = threading.Lock()  # 데이터 동시 접근 방지
         
         logger.info(f"봇 초기화 완료")
         logger.info(f"현재 보유 종목: {len(self.positions)}개")
         logger.info(f"미체결 주문: {len(self.pending_orders)}개")
         logger.info(f"쿨다운 중인 종목: {len(self.cooldowns)}개")
 
-    def load_positions(self):
+    def load_positions(self) -> dict:
             """보유 종목 로드"""
             try:
                 if os.path.exists(self.positions_file):
@@ -275,7 +276,7 @@ class SignalTradingBot:
         except Exception as e:
             logger.error(f"포지션 저장 실패: {e}")
     
-    def load_pending_orders(self):
+    def load_pending_orders(self) -> dict:
         try:
             pending_file = config.get("pending_orders_file", "trading_pending_orders.json")
             if os.path.exists(pending_file):
@@ -1614,7 +1615,7 @@ class SignalTradingBot:
 class SignalFileHandler(FileSystemEventHandler):
     """신호 파일 변경 감지 핸들러"""
     
-    def __init__(self, bot):
+    def __init__(self, bot: SignalTradingBot):
         self.bot = bot
         self.signal_file = os.path.abspath(bot.signal_file)
         logger.info(f"🔍 감시 대상: {self.signal_file}")
@@ -1633,7 +1634,7 @@ class SignalFileHandler(FileSystemEventHandler):
             # 신호 처리 실행
             self.bot.process_new_signals()
 
-    def calculate_total_asset(self):
+    def calculate_total_asset(self) -> dict:
         """
         총 자산 계산
         = 주문가능금액 + 보유주식평가금액 + 미체결매수금액
