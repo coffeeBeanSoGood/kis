@@ -1137,3 +1137,302 @@ class Kiwoom_Common:
             
         except Exception as e:
             self.logger.error(f"보유주식 출력 예외: {e}")
+
+    # ============================================
+    # 🔥 주문 함수들 (kt10000 ~ kt10003)
+    # ============================================
+    
+    def MakeBuyOrder(self, stock_code, quantity, price=None, order_type="limit", exchange_type="KRX"):
+        """
+        매수 주문 (kt10000)
+        
+        Args:
+            stock_code: 종목코드
+            quantity: 주문수량
+            price: 주문단가 (시장가일 경우 None)
+            order_type: 주문 유형
+                - "limit": 지정가 (trde_tp=0)
+                - "market": 시장가 (trde_tp=3)
+                - "best": 최유리지정가 (trde_tp=6)
+            exchange_type: 거래소 구분 (KRX, NXT, SOR)
+        
+        Returns:
+            dict: {'success': bool, 'order_no': str, 'msg': str}
+        """
+        try:
+            url = f"{self.GetBaseURL()}/api/dostk/ordr"
+            
+            # 주문 유형 매핑
+            order_type_map = {
+                "limit": "0",      # 보통(지정가)
+                "market": "3",     # 시장가
+                "best": "6",       # 최유리지정가
+                "ioc": "10",       # 보통(IOC)
+                "fok": "20"        # 보통(FOK)
+            }
+            
+            trde_tp = order_type_map.get(order_type.lower(), "0")
+            
+            # 시장가일 경우 ord_uv는 빈 문자열
+            ord_uv = "" if order_type.lower() == "market" else str(price)
+            
+            body = {
+                "dmst_stex_tp": exchange_type,
+                "stk_cd": stock_code,
+                "ord_qty": str(quantity),
+                "ord_uv": ord_uv,
+                "trde_tp": trde_tp,
+                "cond_uv": ""
+            }
+            
+            result = self.CallAPI(url, "kt10000", body)
+            
+            if result and result.get("return_code") == 0:
+                order_no = result.get("ord_no", "")
+                msg = result.get("return_msg", "매수주문 완료")
+                
+                self.logger.info(f"✅ 매수 주문 성공: {stock_code} {quantity}주 @ {price if price else '시장가'}")
+                self.logger.info(f"   주문번호: {order_no}")
+                
+                return {
+                    'success': True,
+                    'order_no': order_no,
+                    'msg': msg
+                }
+            else:
+                error_msg = result.get('return_msg', '알 수 없는 오류') if result else 'API 응답 없음'
+                self.logger.error(f"❌ 매수 주문 실패: {error_msg}")
+                
+                return {
+                    'success': False,
+                    'order_no': '',
+                    'msg': error_msg
+                }
+                
+        except Exception as e:
+            self.logger.error(f"매수 주문 예외: {e}")
+            return {
+                'success': False,
+                'order_no': '',
+                'msg': str(e)
+            }
+    
+    def MakeSellOrder(self, stock_code, quantity, price=None, order_type="limit", exchange_type="KRX"):
+        """
+        매도 주문 (kt10001)
+        
+        Args:
+            stock_code: 종목코드
+            quantity: 주문수량
+            price: 주문단가 (시장가일 경우 None)
+            order_type: 주문 유형
+                - "limit": 지정가 (trde_tp=0)
+                - "market": 시장가 (trde_tp=3)
+                - "best": 최유리지정가 (trde_tp=6)
+            exchange_type: 거래소 구분 (KRX, NXT, SOR)
+        
+        Returns:
+            dict: {'success': bool, 'order_no': str, 'msg': str}
+        """
+        try:
+            url = f"{self.GetBaseURL()}/api/dostk/ordr"
+            
+            # 주문 유형 매핑
+            order_type_map = {
+                "limit": "0",      # 보통(지정가)
+                "market": "3",     # 시장가
+                "best": "6",       # 최유리지정가
+                "ioc": "10",       # 보통(IOC)
+                "fok": "20"        # 보통(FOK)
+            }
+            
+            trde_tp = order_type_map.get(order_type.lower(), "0")
+            
+            # 시장가일 경우 ord_uv는 빈 문자열
+            ord_uv = "" if order_type.lower() == "market" else str(price)
+            
+            body = {
+                "dmst_stex_tp": exchange_type,
+                "stk_cd": stock_code,
+                "ord_qty": str(quantity),
+                "ord_uv": ord_uv,
+                "trde_tp": trde_tp,
+                "cond_uv": ""
+            }
+            
+            result = self.CallAPI(url, "kt10001", body)
+            
+            if result and result.get("return_code") == 0:
+                order_no = result.get("ord_no", "")
+                msg = result.get("return_msg", "매도주문 완료")
+                
+                self.logger.info(f"✅ 매도 주문 성공: {stock_code} {quantity}주 @ {price if price else '시장가'}")
+                self.logger.info(f"   주문번호: {order_no}")
+                
+                return {
+                    'success': True,
+                    'order_no': order_no,
+                    'msg': msg
+                }
+            else:
+                error_msg = result.get('return_msg', '알 수 없는 오류') if result else 'API 응답 없음'
+                self.logger.error(f"❌ 매도 주문 실패: {error_msg}")
+                
+                return {
+                    'success': False,
+                    'order_no': '',
+                    'msg': error_msg
+                }
+                
+        except Exception as e:
+            self.logger.error(f"매도 주문 예외: {e}")
+            return {
+                'success': False,
+                'order_no': '',
+                'msg': str(e)
+            }
+    
+    def ModifyOrder(self, original_order_no, stock_code, quantity, price, exchange_type="KRX"):
+        """
+        주문 정정 (kt10002)
+        
+        Args:
+            original_order_no: 원주문번호
+            stock_code: 종목코드
+            quantity: 정정수량
+            price: 정정단가
+            exchange_type: 거래소 구분 (KRX, NXT, SOR)
+        
+        Returns:
+            dict: {'success': bool, 'order_no': str, 'base_order_no': str, 'msg': str}
+        """
+        try:
+            url = f"{self.GetBaseURL()}/api/dostk/ordr"
+            
+            body = {
+                "dmst_stex_tp": exchange_type,
+                "orig_ord_no": original_order_no,
+                "stk_cd": stock_code,
+                "mdfy_qty": str(quantity),
+                "mdfy_uv": str(price),
+                "mdfy_cond_uv": ""
+            }
+            
+            result = self.CallAPI(url, "kt10002", body)
+            
+            if result and result.get("return_code") == 0:
+                order_no = result.get("ord_no", "")
+                base_order_no = result.get("base_orig_ord_no", "")
+                msg = result.get("return_msg", "정정주문 완료")
+                
+                self.logger.info(f"✅ 주문 정정 성공: {stock_code} {quantity}주 @ {price}")
+                self.logger.info(f"   원주문번호: {original_order_no} → 정정주문번호: {order_no}")
+                
+                return {
+                    'success': True,
+                    'order_no': order_no,
+                    'base_order_no': base_order_no,
+                    'msg': msg
+                }
+            else:
+                error_msg = result.get('return_msg', '알 수 없는 오류') if result else 'API 응답 없음'
+                self.logger.error(f"❌ 주문 정정 실패: {error_msg}")
+                
+                return {
+                    'success': False,
+                    'order_no': '',
+                    'base_order_no': '',
+                    'msg': error_msg
+                }
+                
+        except Exception as e:
+            self.logger.error(f"주문 정정 예외: {e}")
+            return {
+                'success': False,
+                'order_no': '',
+                'base_order_no': '',
+                'msg': str(e)
+            }
+    
+    def CancelOrder(self, original_order_no, stock_code, quantity=0, exchange_type="KRX"):
+        """
+        주문 취소 (kt10003)
+        
+        Args:
+            original_order_no: 원주문번호
+            stock_code: 종목코드
+            quantity: 취소수량 (0 입력 시 잔량 전부 취소)
+            exchange_type: 거래소 구분 (KRX, NXT, SOR)
+        
+        Returns:
+            dict: {'success': bool, 'order_no': str, 'base_order_no': str, 'msg': str}
+        """
+        try:
+            url = f"{self.GetBaseURL()}/api/dostk/ordr"
+            
+            body = {
+                "dmst_stex_tp": exchange_type,
+                "orig_ord_no": original_order_no,
+                "stk_cd": stock_code,
+                "cncl_qty": str(quantity)
+            }
+            
+            result = self.CallAPI(url, "kt10003", body)
+            
+            if result and result.get("return_code") == 0:
+                order_no = result.get("ord_no", "")
+                base_order_no = result.get("base_orig_ord_no", "")
+                canceled_qty = result.get("cncl_qty", "0")
+                msg = result.get("return_msg", "취소주문 완료")
+                
+                self.logger.info(f"✅ 주문 취소 성공: {stock_code} {canceled_qty}주")
+                self.logger.info(f"   원주문번호: {original_order_no} → 취소주문번호: {order_no}")
+                
+                return {
+                    'success': True,
+                    'order_no': order_no,
+                    'base_order_no': base_order_no,
+                    'canceled_qty': canceled_qty,
+                    'msg': msg
+                }
+            else:
+                error_msg = result.get('return_msg', '알 수 없는 오류') if result else 'API 응답 없음'
+                self.logger.error(f"❌ 주문 취소 실패: {error_msg}")
+                
+                return {
+                    'success': False,
+                    'order_no': '',
+                    'base_order_no': '',
+                    'canceled_qty': '0',
+                    'msg': error_msg
+                }
+                
+        except Exception as e:
+            self.logger.error(f"주문 취소 예외: {e}")
+            return {
+                'success': False,
+                'order_no': '',
+                'base_order_no': '',
+                'canceled_qty': '0',
+                'msg': str(e)
+            }
+    
+    # ============================================
+    # 🔥 편의 함수들 (간편 사용)
+    # ============================================
+    
+    def MakeBuyLimitOrder(self, stock_code, quantity, price, exchange_type="KRX"):
+        """지정가 매수 (편의 함수)"""
+        return self.MakeBuyOrder(stock_code, quantity, price, "limit", exchange_type)
+    
+    def MakeBuyMarketOrder(self, stock_code, quantity, exchange_type="KRX"):
+        """시장가 매수 (편의 함수)"""
+        return self.MakeBuyOrder(stock_code, quantity, None, "market", exchange_type)
+    
+    def MakeSellLimitOrder(self, stock_code, quantity, price, exchange_type="KRX"):
+        """지정가 매도 (편의 함수)"""
+        return self.MakeSellOrder(stock_code, quantity, price, "limit", exchange_type)
+    
+    def MakeSellMarketOrder(self, stock_code, quantity, exchange_type="KRX"):
+        """시장가 매도 (편의 함수)"""
+        return self.MakeSellOrder(stock_code, quantity, None, "market", exchange_type)           
