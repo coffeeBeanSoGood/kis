@@ -63,49 +63,73 @@ logger.addHandler(console_handler)
 
 ################################### 설정 ##################################
 
-# 섹터별 추천 종목 (20종목)
+# 섹터별 추천 종목 (41종목)
 TARGET_STOCKS = {
-    # 🤖 로봇 (4종목)
-    "056080": {"name": "유진로봇", "sector": "robot"},
-    "056190": {"name": "에스에프에이", "sector": "robot"},
-    "108490": {"name": "로보티즈", "sector": "robot"},
-    "117730": {"name": "티로보틱스", "sector": "robot"},
-    
-    # ⚡ 원전 (4종목)
-    "034020": {"name": "두산에너빌리티", "sector": "nuclear"},
-    "010140": {"name": "삼성중공업", "sector": "nuclear"},
-    "267250": {"name": "HD현대", "sector": "nuclear"},
-    "123700": {"name": "SJM홀딩스", "sector": "nuclear"},
-    
-    # 🚀 방산 (4종목)
-    "042660": {"name": "한화오션", "sector": "defense"},
-    "012450": {"name": "한화에어로스페이스", "sector": "defense"},
-    "272210": {"name": "한화시스템", "sector": "defense"},
-    "064960": {"name": "SNT모티브", "sector": "defense"},
-    
-    # 🔋 2차전지 (4종목)
-    "373220": {"name": "LG에너지솔루션", "sector": "battery"},
+    # 🔋 2차전지 (8종목)
+    "086520": {"name": "에코프로", "sector": "battery"},
+    "005490": {"name": "POSCO홀딩스", "sector": "battery"},
     "006400": {"name": "삼성SDI", "sector": "battery"},
-    "051910": {"name": "LG화학", "sector": "battery"},
-    "096770": {"name": "SK이노베이션", "sector": "battery"},
+    "373220": {"name": "LG에너지솔루션", "sector": "battery"},
+    "348370": {"name": "엔켐", "sector": "battery"},
+    "078600": {"name": "대주전자재료", "sector": "battery"},
+    "305720": {"name": "TIGER 2차전지소재Fn", "sector": "battery"},
+    "365340": {"name": "성일하이텍", "sector": "battery"},
     
-    # 💾 반도체 (4종목)
+    # 🔥 LNG (2종목)
+    "033500": {"name": "동성화인텍", "sector": "lng"},
+    "017960": {"name": "한국카본", "sector": "lng"},
+    
+    # 🚢 조선 (2종목)
+    "042660": {"name": "한화오션", "sector": "shipbuilding"},
+    "010140": {"name": "삼성중공업", "sector": "shipbuilding"},
+    
+    # ⚡ 원전 (6종목)
+    "105840": {"name": "우진", "sector": "nuclear"},
+    "041960": {"name": "우진엔텍", "sector": "nuclear"},
+    "094820": {"name": "일진파워", "sector": "nuclear"},
+    "034020": {"name": "두산에너빌리티", "sector": "nuclear"},
+    "000720": {"name": "현대건설", "sector": "nuclear"},
+    "051600": {"name": "한전KPS", "sector": "nuclear"},
+    
+    # 🚀 방산 (6종목)
+    "272210": {"name": "한화시스템", "sector": "defense"},
+    "064350": {"name": "현대로템", "sector": "defense"},
+    "079550": {"name": "LIG넥스원", "sector": "defense"},
+    "281990": {"name": "PLUS K방산", "sector": "defense"},
+    "047810": {"name": "한국항공우주", "sector": "defense"},
+    "103140": {"name": "풍산", "sector": "defense"},
+    
+    # 🤖 로봇 (8종목)
+    "030530": {"name": "원익홀딩스", "sector": "robot"},
+    "058610": {"name": "에스피지", "sector": "robot"},
+    "182690": {"name": "클로봇", "sector": "robot"},
+    "108490": {"name": "로보티즈", "sector": "robot"},
+    "454910": {"name": "두산로보틱스", "sector": "robot"},
+    "399720": {"name": "케이엔알시스템", "sector": "robot"},
+    "140860": {"name": "씨메스", "sector": "robot"},
+    "056080": {"name": "유진로봇", "sector": "robot"},
+    
+    # 💾 반도체 (9종목)
     "005930": {"name": "삼성전자", "sector": "semiconductor"},
     "000660": {"name": "SK하이닉스", "sector": "semiconductor"},
-    "000990": {"name": "DB하이텍", "sector": "semiconductor"},
-    "084370": {"name": "유진테크", "sector": "semiconductor"},
+    "131970": {"name": "두산테스나", "sector": "semiconductor"},
+    "403870": {"name": "HPSP", "sector": "semiconductor"},
+    "042700": {"name": "한미반도체", "sector": "semiconductor"},
+    "007660": {"name": "이수페타시스", "sector": "semiconductor"},
+    "058470": {"name": "리노공업", "sector": "semiconductor"},
+    "067310": {"name": "하나마이크론", "sector": "semiconductor"},
+    "039030": {"name": "이오테크닉스", "sector": "semiconductor"},
 }
 
-# 모니터링 설정
 MONITOR_CONFIG = {
-    "check_interval_minutes": 5,
+    "check_interval_minutes": 10,    # 🔥 5분 → 10분으로 변경 (API 부하 감소)
     "signal_threshold": 60,
     "trading_hours_only": True,
     "save_history": True,
     "history_file": "signal_history.json",
     "results_file": "signal_results.json",
     "use_discord": True,
-    "dashboard_url": "http://115.68.177.222:5000", # webdashboard
+    "dashboard_url": "http://115.68.177.222:5000",
     
     # 조용한 모드 설정
     "discord_only_strong_signals": True,
@@ -116,13 +140,13 @@ MONITOR_CONFIG = {
     "use_normalized_score": True,
     "min_required_indicators": 2,
     
-    # 🔥 단계2: API Rate Limit 설정
-    "api_max_calls_per_second": 5,  # 초당 최대 5회
+    # 🔥 API Rate Limit 설정 (조정 권장)
+    "api_max_calls_per_second": 3,  # 🔥 5 → 3으로 낮춤 (안정성 우선)
     "api_throttle_enabled": True,
     
-    # 🔥 단계3: 히스토리 관리 설정
-    "history_max_days": 7,  # 7일 이상 자동 삭제
-    "cache_max_size": 1000,  # 캐시 최대 항목 수
+    # 히스토리 관리 설정
+    "history_max_days": 7,
+    "cache_max_size": 2000,  # 🔥 1000 → 2000으로 증가 (종목 증가 대응)
 }
 
 # 지표별 가중치 설정
@@ -1031,293 +1055,420 @@ class SignalMonitor:
         except Exception as e:
             logger.error(f"추세 분석 실패: {e}")
             return 50, []
-    
-    def analyze_timing(self, stock_code, stock_info, foreign_cache, institution_cache):
-        """매수/매도 타이밍 종합 분석 (최종 버전)"""
+
+    def check_bottom_conditions(self, stock_code, stock_data):
+        """
+        저점 확인 (Gate Keeper)
+        - RSI < 40
+        - 당일 저가 근접 (하위 30%)
+        - 전일 대비 하락했던 구간 존재
+        - 현재 반등 중
+        
+        Returns:
+            tuple: (bool: 저점 여부, str: 사유)
+        """
         try:
-            stock_name = stock_info["name"]
-            sector = stock_info["sector"]
+            if not stock_data:
+                return False, "데이터 없음"
             
-            logger.info(f"=" * 60)
-            logger.info(f"📊 [{sector}] {stock_name} 타이밍 분석 시작")
-            logger.info(f"=" * 60)
+            current_price = stock_data.get("CurrentPrice", 0)
+            high_price = stock_data.get("HighPrice", 0)
+            low_price = stock_data.get("LowPrice", 0)
+            open_price = stock_data.get("OpenPrice", 0)
+            prev_close = stock_data.get("PrevClose", 0)
+            
+            if not all([current_price, high_price, low_price, prev_close]):
+                return False, "가격 데이터 부족"
+            
+            reasons = []
+            
+            # 1. RSI < 40 체크 (분봉 데이터에서)
+            minute_data = self.api_call_with_throttle(
+                self.kiwoom.GetMinuteData, 
+                stock_code, 
+                "5",  # 5분봉
+                20    # 20개 (RSI 계산용)
+            )
+            
+            if minute_data and len(minute_data) >= 14:
+                prices = [float(candle.get("ClosePrice", 0)) for candle in minute_data]
+                rsi = self.calculate_rsi(prices, 14)
+                
+                if rsi >= 40:
+                    return False, f"RSI 높음 ({rsi:.1f})"
+                
+                reasons.append(f"RSI 과매도 ({rsi:.1f})")
+                logger.debug(f"  ✓ RSI 조건 통과: {rsi:.1f}")
+            else:
+                logger.warning(f"  ⚠ RSI 계산 불가")
+                # RSI 없어도 다른 조건으로 진행
+            
+            # 2. 당일 저가 근접 (하위 30%)
+            if high_price > low_price:
+                price_position = (current_price - low_price) / (high_price - low_price)
+                
+                if price_position > 0.30:
+                    return False, f"저가 미근접 ({price_position*100:.1f}% 위치)"
+                
+                reasons.append(f"저가 근접 ({price_position*100:.1f}% 위치)")
+                logger.debug(f"  ✓ 저가 근접: {price_position*100:.1f}%")
+            
+            # 3. 전일 대비 하락했던 구간 존재
+            if prev_close > 0:
+                change_from_prev = (current_price - prev_close) / prev_close
+                low_from_prev = (low_price - prev_close) / prev_close
+                
+                if low_from_prev >= -0.005:  # -0.5% 이상 (하락 안 함)
+                    return False, f"하락 구간 없음 ({low_from_prev*100:+.2f}%)"
+                
+                reasons.append(f"하락 구간 존재 ({low_from_prev*100:+.2f}%)")
+                logger.debug(f"  ✓ 하락 구간: {low_from_prev*100:+.2f}%")
+            
+            # 4. 현재 반등 중 (시가 또는 저가 대비 +0.3% 이상)
+            rebound_from_low = (current_price - low_price) / low_price
+            rebound_from_open = (current_price - open_price) / open_price if open_price > 0 else 0
+            
+            if rebound_from_low < 0.003 and rebound_from_open < 0.003:
+                return False, f"반등 미확인 (저가대비 {rebound_from_low*100:+.2f}%)"
+            
+            reasons.append(f"반등 중 (저가대비 {rebound_from_low*100:+.2f}%)")
+            logger.debug(f"  ✓ 반등 확인: 저가대비 {rebound_from_low*100:+.2f}%")
+            
+            logger.info(f"✅ 저점 조건 통과: {', '.join(reasons)}")
+            return True, f"저점 확인 ({len(reasons)}개 조건)"
+            
+        except Exception as e:
+            logger.error(f"저점 확인 실패: {e}")
+            return False, f"오류: {str(e)}"
+
+    def analyze_candle_momentum(self, stock_code):
+        """
+        5분봉 모멘텀 분석
+        - 3연속 양봉 + 평균 0.5% 이상
+        
+        Returns:
+            tuple: (int: 점수, list: 이유)
+        """
+        try:
+            minute_data = self.api_call_with_throttle(
+                self.kiwoom.GetMinuteData,
+                stock_code,
+                "5",  # 5분봉
+                5     # 최근 5개
+            )
+            
+            if not minute_data or len(minute_data) < 3:
+                return 0, []
+            
+            # 최근 3개 캔들 분석
+            recent_candles = minute_data[:3]
+            
+            # 양봉 개수 카운트
+            bullish_count = 0
+            total_change = 0
+            
+            for candle in recent_candles:
+                close_price = float(candle.get("ClosePrice", 0))
+                open_price = float(candle.get("OpenPrice", 0))
+                
+                if close_price > open_price:
+                    bullish_count += 1
+                    change_rate = (close_price - open_price) / open_price
+                    total_change += change_rate
+            
+            avg_change = (total_change / 3) * 100 if bullish_count >= 3 else 0
+            
+            reasons = []
+            score = 0
+            
+            # 3연속 양봉
+            if bullish_count >= 3:
+                # 평균 상승률 체크
+                if avg_change >= 0.5:
+                    score = 20
+                    reasons.append(f"✅ 강한 양봉 (3연속, 평균 {avg_change:.2f}%)")
+                    logger.info(f"  ✅ 5분봉 강세: 3연속 양봉, 평균 {avg_change:.2f}%")
+                elif avg_change >= 0.3:
+                    score = 15
+                    reasons.append(f"✓ 양봉 (3연속, 평균 {avg_change:.2f}%)")
+                    logger.info(f"  ✓ 5분봉 양호: 3연속 양봉, 평균 {avg_change:.2f}%")
+                else:
+                    score = 5
+                    reasons.append(f"보통 양봉 (평균 {avg_change:.2f}%)")
+                    logger.debug(f"  - 5분봉 보통: 평균 {avg_change:.2f}%")
+            elif bullish_count >= 2:
+                score = 5
+                reasons.append(f"약한 양봉 ({bullish_count}/3)")
+                logger.debug(f"  - 5분봉 약세: {bullish_count}/3 양봉")
+            else:
+                reasons.append(f"양봉 부족 ({bullish_count}/3)")
+                logger.debug(f"  ✗ 5분봉 미달: {bullish_count}/3 양봉")
+            
+            return score, reasons
+            
+        except Exception as e:
+            logger.error(f"캔들 모멘텀 분석 실패: {e}")
+            return 0, []
+
+    def calculate_rsi(self, prices, period=14):
+        """RSI 계산"""
+        try:
+            if len(prices) < period + 1:
+                return 50
+            
+            deltas = [prices[i] - prices[i+1] for i in range(len(prices)-1)]
+            
+            gains = [d if d > 0 else 0 for d in deltas[:period]]
+            losses = [-d if d < 0 else 0 for d in deltas[:period]]
+            
+            avg_gain = sum(gains) / period
+            avg_loss = sum(losses) / period
+            
+            if avg_loss == 0:
+                return 100
+            
+            rs = avg_gain / avg_loss
+            rsi = 100 - (100 / (1 + rs))
+            
+            return rsi
+            
+        except Exception as e:
+            logger.error(f"RSI 계산 오류: {e}")
+            return 50
+
+    def analyze_timing(self, stock_code, stock_info, foreign_cache=None, institution_cache=None):
+        """
+        D안 Enhanced: 초고속 상승 포착 전략
+        
+        1단계: 저점 확인 (필수)
+        2단계: 폭발적 반등 신호 (60점)
+        3단계: 급등 모멘텀 확인 (40점)
+        """
+        try:
+            stock_name = stock_info.get("name", stock_code)
+            sector = stock_info.get("sector", "unknown")
+            
+            logger.info("=" * 60)
+            logger.info(f"📊 [{sector}] {stock_name} ({stock_code}) 분석 시작")
+            logger.info("=" * 60)
             
             analysis_result = {
                 "signal": "HOLD",
                 "score": 50,
                 "confidence": 0.0,
-                "reasons": [],
-                "details": {},
-                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "stock_code": stock_code,
                 "stock_name": stock_name,
-                "sector": sector
+                "sector": sector,
+                "reasons": [],
+                "details": {}
             }
             
-            indicator_scores = {}
-            available_indicators = []
+            # 🔥 1단계: 저점 확인 (Gate Keeper)
+            logger.info("🔍 [1/3] 저점 확인 (필수 조건)")
+            stock_data = self.api_call_with_throttle(self.kiwoom.GetStockInfo, stock_code)
+            
+            if not stock_data:
+                logger.warning("⚠️ 주가 데이터 없음")
+                return None
+            
+            is_bottom, bottom_reason = self.check_bottom_conditions(stock_code, stock_data)
+            
+            if not is_bottom:
+                logger.info(f"❌ 저점 조건 미달: {bottom_reason}")
+                logger.info("=" * 60)
+                return None
+            
+            logger.info(f"✅ 저점 확인 완료: {bottom_reason}")
+            
+            # 현재가 정보 저장
+            current_price = stock_data.get("CurrentPrice", 0)
+            change_rate = stock_data.get("ChangeRate", 0)
+            volume = stock_data.get("Volume", 0)
+            
+            analysis_result["details"]["stock_info"] = {
+                "current_price": current_price,
+                "change_rate": change_rate,
+                "volume": volume,
+                "high_price": stock_data.get("HighPrice", 0),
+                "low_price": stock_data.get("LowPrice", 0),
+            }
+            
+            # 🔥 2단계: 폭발적 반등 신호 (60점)
+            logger.info("🔍 [2/3] 폭발적 반등 신호 분석 (목표: 60점)")
+            
+            rebound_score = 0
             reasons = []
             
-            # 1️⃣ 호가 분석
-            logger.info("🔍 [1/5] 호가 분석 중...")
-            hoga_data = self.api_call_with_throttle(self.kiwoom.GetHoga, stock_code)
+            # 2-1. 5분봉 강도 (20점)
+            candle_score, candle_reasons = self.analyze_candle_momentum(stock_code)
+            rebound_score += candle_score
+            reasons.extend(candle_reasons)
             
-            if hoga_data:
-                total_sell_qty = hoga_data.get("TotalSellQty", 0)
-                total_buy_qty = hoga_data.get("TotalBuyQty", 0)
-                
-                if total_sell_qty > 0 and total_buy_qty > 0:
-                    buy_ratio = total_buy_qty / (total_buy_qty + total_sell_qty) * 100
-                    
-                    analysis_result["details"]["hoga"] = {
-                        "total_buy_qty": total_buy_qty,
-                        "total_sell_qty": total_sell_qty,
-                        "buy_ratio": round(buy_ratio, 2)
-                    }
-                    
-                    hoga_score = 50
-                    if buy_ratio >= 70:
-                        hoga_score = 80
-                        reasons.append(f"✅ 매수호가 우세 ({buy_ratio:.1f}%)")
-                        logger.info(f"   ✅ 매수호가 우세: {buy_ratio:.1f}%")
-                    elif buy_ratio >= 60:
-                        hoga_score = 65
-                        reasons.append(f"✓ 매수호가 다소 우세 ({buy_ratio:.1f}%)")
-                        logger.info(f"   ✓ 매수호가 다소 우세: {buy_ratio:.1f}%")
-                    elif buy_ratio <= 30:
-                        hoga_score = 20
-                        reasons.append(f"❌ 매도호가 우세 ({100-buy_ratio:.1f}%)")
-                        logger.info(f"   ❌ 매도호가 우세: {100-buy_ratio:.1f}%")
-                    elif buy_ratio <= 40:
-                        hoga_score = 35
-                        reasons.append(f"⚠ 매도호가 다소 우세 ({100-buy_ratio:.1f}%)")
-                        logger.info(f"   ⚠ 매도호가 다소 우세: {100-buy_ratio:.1f}%")
-                    else:
-                        logger.info(f"   ➖ 호가 균형: 매수 {buy_ratio:.1f}%")
-                    
-                    indicator_scores["hoga"] = hoga_score
-                    available_indicators.append("hoga")
-            
-            # 2️⃣ 체결 정보 분석
-            logger.info("🔍 [2/5] 체결 정보 분석 중...")
-            execution_data = self.api_call_with_throttle(self.kiwoom.GetExecutionInfo, stock_code)
-            
-            if execution_data and execution_data.get("LatestExecution"):
-                latest = execution_data["LatestExecution"]
-                exec_strength = latest.get("ExecutionStrength", 0)
-                
-                analysis_result["details"]["execution"] = {
-                    "strength": exec_strength,
-                    "latest_qty": latest.get("ExecutionQty", 0),
-                    "latest_price": latest.get("CurrentPrice", 0)
-                }
-                
-                exec_score = 50
-                if exec_strength >= 150:
-                    exec_score = 85
-                    reasons.append(f"✅ 체결강도 매우 강함 ({exec_strength:.1f}%)")
-                    logger.info(f"   ✅ 체결강도 매우 강함: {exec_strength:.1f}%")
-                elif exec_strength >= 120:
-                    exec_score = 65
-                    reasons.append(f"✓ 체결강도 강함 ({exec_strength:.1f}%)")
-                    logger.info(f"   ✓ 체결강도 강함: {exec_strength:.1f}%")
-                elif exec_strength <= 80 and exec_strength > 0:
-                    exec_score = 15
-                    reasons.append(f"❌ 체결강도 약함 ({exec_strength:.1f}%)")
-                    logger.info(f"   ❌ 체결강도 약함: {exec_strength:.1f}%")
-                elif exec_strength <= 90 and exec_strength > 0:
-                    exec_score = 35
-                    reasons.append(f"⚠ 체결강도 다소 약함 ({exec_strength:.1f}%)")
-                    logger.info(f"   ⚠ 체결강도 다소 약함: {exec_strength:.1f}%")
-                else:
-                    logger.info(f"   ➖ 체결강도 보통: {exec_strength:.1f}%")
-                
-                indicator_scores["execution"] = exec_score
-                available_indicators.append("execution")
-            
-            # 3️⃣ 외국인/기관 매매 동향 (캐시 사용)
-            logger.info("🔍 [3/5] 외국인/기관 매매 동향 분석 중...")
-            
-            foreign_net_buy = foreign_cache.get(stock_code, 0)
-            institution_net_buy = institution_cache.get(stock_code, 0)
+            # 2-2. 외국인/기관 지속 순매수 (20점)
+            foreign_net_buy = foreign_cache.get(stock_code, 0) if foreign_cache else 0
+            institution_net_buy = institution_cache.get(stock_code, 0) if institution_cache else 0
             
             if foreign_net_buy != 0 or institution_net_buy != 0:
                 analysis_result["details"]["foreign_net_buy"] = foreign_net_buy
                 analysis_result["details"]["institution_net_buy"] = institution_net_buy
                 
-                investor_score = 50
                 if foreign_net_buy > 0 and institution_net_buy > 0:
-                    investor_score = 85
+                    rebound_score += 20
                     reasons.append(f"✅ 외국인+기관 동반 순매수")
-                    logger.info(f"   ✅ 외국인+기관 동반 순매수")
+                    logger.info(f"  ✅ 외국인+기관 동반 순매수")
                 elif foreign_net_buy > 0 or institution_net_buy > 0:
-                    investor_score = 65
+                    rebound_score += 15
                     buyer = "외국인" if foreign_net_buy > 0 else "기관"
                     reasons.append(f"✓ {buyer} 순매수")
-                    logger.info(f"   ✓ {buyer} 순매수")
-                elif foreign_net_buy < 0 and institution_net_buy < 0:
-                    investor_score = 15
-                    reasons.append(f"❌ 외국인+기관 동반 순매도")
-                    logger.info(f"   ❌ 외국인+기관 동반 순매도")
-                elif foreign_net_buy < 0 or institution_net_buy < 0:
-                    investor_score = 35
-                    seller = "외국인" if foreign_net_buy < 0 else "기관"
-                    reasons.append(f"⚠ {seller} 순매도")
-                    logger.info(f"   ⚠ {seller} 순매도")
-                
-                indicator_scores["investor"] = investor_score
-                available_indicators.append("investor")
-            else:
-                logger.info(f"   ➖ 외국인/기관 매매 중립")
-            
-            # 4️⃣ 현재가 분석
-            logger.info("🔍 [4/5] 현재가 및 거래량 분석 중...")
-            stock_data = self.api_call_with_throttle(self.kiwoom.GetStockInfo, stock_code)
-            
-            if stock_data:
-                change_rate = stock_data.get("ChangeRate", 0)
-                volume = stock_data.get("Volume", 0)
-                
-                analysis_result["details"]["stock_info"] = {
-                    "current_price": stock_data.get("CurrentPrice", 0),
-                    "change_rate": change_rate,
-                    "volume": volume,
-                    "high_price": stock_data.get("HighPrice", 0),
-                    "low_price": stock_data.get("LowPrice", 0),
-                }
-                
-                price_score = 50
-                if change_rate >= 3.0:
-                    price_score = 80
-                    reasons.append(f"✅ 강한 상승세 (+{change_rate:.2f}%)")
-                    logger.info(f"   ✅ 강한 상승세: +{change_rate:.2f}%")
-                elif change_rate >= 1.0:
-                    price_score = 65
-                    reasons.append(f"✓ 상승세 (+{change_rate:.2f}%)")
-                    logger.info(f"   ✓ 상승세: +{change_rate:.2f}%")
-                elif change_rate <= -3.0:
-                    price_score = 20
-                    reasons.append(f"❌ 강한 하락세 ({change_rate:.2f}%)")
-                    logger.info(f"   ❌ 강한 하락세: {change_rate:.2f}%")
-                elif change_rate <= -1.0:
-                    price_score = 35
-                    reasons.append(f"⚠ 하락세 ({change_rate:.2f}%)")
-                    logger.info(f"   ⚠ 하락세: {change_rate:.2f}%")
+                    logger.info(f"  ✓ {buyer} 순매수")
                 else:
-                    logger.info(f"   ➖ 등락률 보통: {change_rate:+.2f}%")
-                
-                if volume >= 1000000:
-                    price_score = min(100, price_score + 10)
-                    reasons.append(f"✓ 거래량 활발 ({volume:,}주)")
-                    logger.info(f"   ✓ 거래량 활발: {volume:,}주")
-                
-                indicator_scores["price"] = price_score
-                available_indicators.append("price")
-                
-                # 🔥 5️⃣ 고급 추세 분석 (단계3)
-                logger.info("🔍 [5/5] 고급 추세 분석 중...")
-                trend_score, trend_reasons = self.analyze_trend_advanced(stock_code, stock_data)
-                
-                if trend_reasons:
-                    indicator_scores["trend"] = trend_score
-                    available_indicators.append("trend")
-                    reasons.extend(trend_reasons)
+                    rebound_score += 5
+                    reasons.append(f"약한 세력 (순매도)")
+                    logger.debug(f"  - 세력 순매도")
             
-            # 최소 필수 지표 체크
-            min_required = MONITOR_CONFIG.get("min_required_indicators", 2)
-            if len(available_indicators) < min_required:
-                logger.warning(f"⚠️ 사용 가능한 지표 부족: {len(available_indicators)}/{min_required}")
-                analysis_result["signal"] = "HOLD"
-                analysis_result["score"] = 50
-                analysis_result["confidence"] = 0.0
-                analysis_result["reasons"] = ["지표 부족 (신뢰도 낮음)"]
-                return analysis_result
+            # 2-3. 체결강도 120% 이상 (10점)
+            execution_data = self.api_call_with_throttle(self.kiwoom.GetExecutionInfo, stock_code)
             
-            # 정규화된 점수 계산
-            use_normalized = MONITOR_CONFIG.get("use_normalized_score", True)
+            if execution_data:
+                exec_strength = execution_data.get("strength", 0)
+                analysis_result["details"]["execution"] = {"strength": exec_strength}
+                
+                if exec_strength >= 120:
+                    rebound_score += 10
+                    reasons.append(f"✅ 체결강도 강함 ({exec_strength:.1f}%)")
+                    logger.info(f"  ✅ 체결강도: {exec_strength:.1f}%")
+                elif exec_strength >= 100:
+                    rebound_score += 5
+                    reasons.append(f"✓ 체결강도 보통 ({exec_strength:.1f}%)")
+                    logger.debug(f"  ✓ 체결강도: {exec_strength:.1f}%")
+                else:
+                    reasons.append(f"체결강도 약함 ({exec_strength:.1f}%)")
+                    logger.debug(f"  - 체결강도 약함: {exec_strength:.1f}%")
             
-            if use_normalized:
-                score, confidence = self.calculate_normalized_score(
-                    indicator_scores, 
-                    available_indicators
-                )
-            else:
-                score = sum(indicator_scores.values()) / len(indicator_scores) if indicator_scores else 50
-                confidence = len(available_indicators) / 5
+            # 2-4. 거래량 폭발 200% 이상 (10점)
+            # 평균 거래량 대비 계산 (간단 버전: 100만주 이상)
+            if volume >= 2000000:
+                rebound_score += 10
+                reasons.append(f"✅ 거래량 폭발 ({volume:,}주)")
+                logger.info(f"  ✅ 거래량 폭발: {volume:,}주")
+            elif volume >= 1000000:
+                rebound_score += 5
+                reasons.append(f"✓ 거래량 활발 ({volume:,}주)")
+                logger.debug(f"  ✓ 거래량 활발: {volume:,}주")
+            
+            logger.info(f"📊 폭발적 반등 점수: {rebound_score}/60점")
+            
+            # 🔥 3단계: 급등 모멘텀 확인 (40점)
+            logger.info("🔍 [3/3] 급등 모멘텀 확인 (목표: 40점)")
+            
+            momentum_score = 0
+            
+            # 3-1. 현재 상승률 1.5~2.5% (15점)
+            if 1.5 <= change_rate <= 2.5:
+                momentum_score += 15
+                reasons.append(f"✅ 최적 상승 구간 ({change_rate:+.2f}%)")
+                logger.info(f"  ✅ 최적 상승: {change_rate:+.2f}%")
+            elif 1.0 <= change_rate <= 3.0:
+                momentum_score += 10
+                reasons.append(f"✓ 상승 중 ({change_rate:+.2f}%)")
+                logger.info(f"  ✓ 상승 중: {change_rate:+.2f}%")
+            elif change_rate >= 0.5:
+                momentum_score += 5
+                reasons.append(f"약한 상승 ({change_rate:+.2f}%)")
+                logger.debug(f"  - 약한 상승: {change_rate:+.2f}%")
+            
+            # 3-2. 호가 압도 70% 이상 (10점)
+            hoga_data = self.api_call_with_throttle(self.kiwoom.GetHoga, stock_code)
+            
+            if hoga_data:
+                buy_ratio = hoga_data.get("buy_ratio", 50)
+                analysis_result["details"]["hoga"] = hoga_data
+                
+                if buy_ratio >= 70:
+                    momentum_score += 10
+                    reasons.append(f"✅ 호가 압도 ({buy_ratio:.1f}%)")
+                    logger.info(f"  ✅ 매수호가 압도: {buy_ratio:.1f}%")
+                elif buy_ratio >= 60:
+                    momentum_score += 5
+                    reasons.append(f"✓ 호가 우세 ({buy_ratio:.1f}%)")
+                    logger.debug(f"  ✓ 매수호가 우세: {buy_ratio:.1f}%")
+            
+            # 3-3. 가속도 체크 (10점) - 직전 5분 대비
+            minute_data = self.api_call_with_throttle(
+                self.kiwoom.GetMinuteData, stock_code, "5", 2
+            )
+            
+            if minute_data and len(minute_data) >= 2:
+                current_candle = minute_data[0]
+                prev_candle = minute_data[1]
+                
+                current_close = float(current_candle.get("ClosePrice", 0))
+                prev_close = float(prev_candle.get("ClosePrice", 0))
+                
+                if prev_close > 0:
+                    acceleration = (current_close - prev_close) / prev_close
+                    
+                    if acceleration >= 0.005:  # 0.5% 이상
+                        momentum_score += 10
+                        reasons.append(f"✅ 가속 중 ({acceleration*100:+.2f}%)")
+                        logger.info(f"  ✅ 가속도: {acceleration*100:+.2f}%")
+                    elif acceleration >= 0.003:  # 0.3% 이상
+                        momentum_score += 5
+                        reasons.append(f"✓ 상승세 ({acceleration*100:+.2f}%)")
+                        logger.debug(f"  ✓ 상승세: {acceleration*100:+.2f}%")
+            
+            # 3-4. 단기 이평 (5점) - 5분선 > 10분선
+            if minute_data and len(minute_data) >= 10:
+                ma5 = sum([float(c.get("ClosePrice", 0)) for c in minute_data[:5]]) / 5
+                ma10 = sum([float(c.get("ClosePrice", 0)) for c in minute_data[:10]]) / 10
+                
+                if ma5 > ma10:
+                    momentum_score += 5
+                    reasons.append(f"✓ 단기 상승세")
+                    logger.debug(f"  ✓ 5분선 > 10분선")
+            
+            logger.info(f"📊 급등 모멘텀 점수: {momentum_score}/40점")
+            
+            # 🔥 최종 점수 계산
+            total_score = rebound_score + momentum_score
+            confidence = 1.0  # D안 Enhanced는 모든 조건 체크하므로 신뢰도 100%
+            
+            logger.info("=" * 60)
+            logger.info(f"📊 최종 점수: {total_score}/100점 (신뢰도: {confidence*100:.0f}%)")
+            logger.info(f"   - 폭발적 반등: {rebound_score}/60점")
+            logger.info(f"   - 급등 모멘텀: {momentum_score}/40점")
+            logger.info("=" * 60)
             
             # 신호 판단
-            if score >= 75:
+            if total_score >= 75:
                 signal = "STRONG_BUY"
                 signal_emoji = "🔥💰"
-            elif score >= 60:
+            elif total_score >= 60:
                 signal = "BUY"
                 signal_emoji = "📈✅"
-            elif score >= 40:
+            elif total_score >= 40:
                 signal = "HOLD"
                 signal_emoji = "⏸️"
-            elif score >= 25:
+            elif total_score >= 25:
                 signal = "SELL"
                 signal_emoji = "⚠️📉"
             else:
                 signal = "STRONG_SELL"
                 signal_emoji = "🚨❌"
-
-            # ============================================
-            # 🔥🔥🔥 [추가] 신호 안정성 검증 적용
-            # ============================================
-            adjusted_confidence, stability_msg = self.check_signal_stability(
-                stock_code, signal, confidence
-            )
-            
-            # 신뢰도 업데이트
-            original_confidence = confidence
-            confidence = adjusted_confidence
-            
-            # 안정성 메시지를 reasons에 추가
-            if stability_msg:
-                reasons.append(stability_msg)
-            # ============================================
-            # 🔥🔥🔥 [추가] 시장 상황 필터 적용
-            # ============================================
-            signal, score, confidence, reasons = self.apply_market_filter(
-                signal, score, confidence, reasons, stock_info
-            )
-            # ============================================
-            analysis_result["signal"] = signal
-            analysis_result["score"] = round(score, 1)
-            analysis_result["confidence"] = round(confidence, 2)
-            analysis_result["reasons"] = reasons
-            analysis_result["available_indicators"] = available_indicators
-
-            # 신뢰도가 크게 낮아진 경우 로그
-            if confidence < original_confidence * 0.8:
-                logger.warning(f"  ⚠️ 신뢰도 하락: {original_confidence*100:.0f}% → {confidence*100:.0f}% (신호 불안정)")
-            # ============================================                
             
             analysis_result["signal"] = signal
-            analysis_result["score"] = round(score, 1)
-            analysis_result["confidence"] = round(confidence, 2)
+            analysis_result["score"] = total_score
+            analysis_result["confidence"] = confidence
             analysis_result["reasons"] = reasons
-            analysis_result["available_indicators"] = available_indicators
             
-            logger.info(f"")
-            logger.info(f"=" * 60)
-            logger.info(f"{signal_emoji} 최종 신호: {signal}")
-            logger.info(f"📊 점수: {score:.1f}/100 (신뢰도: {confidence*100:.0f}%)")
-            logger.info(f"📈 사용 지표: {len(available_indicators)}/5개")
-            logger.info(f"=" * 60)
-            
-            if reasons:
-                logger.info(f"📋 신호 발생 이유:")
-                for reason in reasons:
-                    logger.info(f"   {reason}")
-            
-            logger.info(f"=" * 60)
+            logger.info(f"{signal_emoji} 신호: {signal} ({total_score:.1f}점)")
+            logger.info("=" * 60)
+            logger.info("")
             
             return analysis_result
             
         except Exception as e:
-            logger.error(f"타이밍 분석 예외: {e}")
+            logger.error(f"매매 타이밍 분석 실패: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return None
