@@ -210,8 +210,6 @@ class SignalTradingBot:
         self.pending_orders = self.load_pending_orders()
         self.cooldowns = self.load_cooldowns()
         
-        self.signal_file = config.get("signal_file", "signal_history.json")
-        
         # 🔥 스레드 제어
         self.running = True
         self.lock = threading.Lock()  # 데이터 동시 접근 방지
