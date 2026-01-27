@@ -92,7 +92,7 @@ class ConfigManager:
             # ============================================
             # 🔥🔥🔥 자산 관리 설정 (NEW!)
             # ============================================
-            "initial_budget": 500000,           # 초기 자산 50만원
+            # "initial_budget": 500000,           # 초기 자산 50만원
             "min_asset_threshold": 400000,      # 최소 자산 40만원 (이하 시 매매 중지)
             "max_positions": 3,                 # 최대 보유 종목 수
             
@@ -148,8 +148,8 @@ class ConfigManager:
             # 성과 추적
             # ============================================
             "performance": {
-                "initial_budget": 500000,            # 시작 자산
-                "current_asset": 500000,             # 현재 총 자산 (동적 업데이트)
+                # "initial_budget": 500000,            # 시작 자산
+                # "current_asset": 500000,             # 현재 총 자산 (동적 업데이트)
                 "total_trades": 0,                   # 총 거래 횟수
                 "winning_trades": 0,                 # 수익 거래 횟수
                 "total_profit": 0,                   # 총 수익금
@@ -1711,23 +1711,39 @@ def main():
     logger.info(f"🤖 {BOT_NAME} 시작 v3.0 (watchdog)")
     logger.info("=" * 60)
 
+    # 🔥 실시간 자산 조회
+    asset_info = bot_instance.calculate_total_asset()
+    
+    if not asset_info:
+        logger.error("❌ 계좌 정보 조회 실패 - 봇 시작 불가")
+        return
+
     if config.get("use_discord_alert", True):
         start_msg = f"🚀 **{BOT_NAME} 시작 v3.0**\n"
         start_msg += f"{'─'*30}\n"
-        start_msg += f"💰 초기 자산: {config.get('initial_budget', 500000):,}원\n"  # ✅ 수정!
-        start_msg += f"⚠️ 최소 자산: {config.get('min_asset_threshold', 400000):,}원\n"  # ✅ 추가!
-        start_msg += f"📊 최대 종목: {config.get('max_positions')}개\n"
-        start_msg += f"⚡ watchdog: 실시간 감지 (0초 지연)\n"
-        start_msg += f"\n🔥 **동적 자산 관리 활성화**\n"
-        start_msg += f"• 총 자산 기준 예산 배분\n"
-        start_msg += f"• 40만원 미만 시 매매 중지\n"
+        start_msg += f"💰 **현재 자산 현황**\n"
+        start_msg += f"• 총 자산: {asset_info['total_asset']:,}원\n"
+        start_msg += f"  ├─ 현금: {asset_info['orderable_amt']:,}원\n"
+        start_msg += f"  ├─ 보유주: {asset_info['holding_value']:,}원\n"
+        start_msg += f"  └─ 미체결: {asset_info['pending_value']:,}원\n"
+        start_msg += f"\n⚙️ **운영 설정**\n"
+        start_msg += f"• 최소 자산: {config.get('min_asset_threshold', 400000):,}원 (이하 시 매매 중지)\n"
+        start_msg += f"• 최대 종목: {config.get('max_positions')}개\n"
+        start_msg += f"• watchdog: 실시간 감지 (0초 지연)\n"
+        start_msg += f"\n🔥 **동적 자산 관리**\n"
+        start_msg += f"• 남은 자산 ÷ 남은 슬롯 = 종목당 예산\n"
+        start_msg += f"• 총 자산 기준 실시간 배분\n"
         start_msg += f"• ATR 기반 동적 손절\n"
-        start_msg += f"\n📈 **매도 전략**:\n"
+        start_msg += f"\n📈 **매도 전략**\n"
         start_msg += f"• 목표 수익: +{config.get('target_profit_rate', 0.03)*100:.0f}%\n"
-        start_msg += f"• 트레일링: -{config.get('trailing_stop_rate', 0.01)*100:.0f}%\n"
+        start_msg += f"• 일반 트레일링: -{config.get('trailing_stop_rate', 0.01)*100:.0f}%\n"
+        start_msg += f"• 타이트 트레일링: -{config.get('tight_trailing_rate', 0.005)*100:.1f}% (+3% 달성 시)\n"
+        start_msg += f"• 본전 보호: +{config.get('breakeven_protection_rate', 0.02)*100:.0f}% 달성 시\n"
+        start_msg += f"• 긴급 손절: {config.get('emergency_stop_loss', -0.03)*100:.0f}%\n"
         start_msg += f"• 쿨다운: {config.get('cooldown_hours')}시간\n"
         start_msg += f"{'─'*30}\n"
         start_msg += "✅ 시스템 준비 완료!"
+        
         discord_alert.SendMessage(start_msg)
     
     # 백그라운드 스레드 시작
