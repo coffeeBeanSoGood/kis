@@ -882,60 +882,109 @@ class SignalMonitor:
         except Exception as e:
             logger.error(f"API 호출 실패: {e}")
             return None
-    
+
     def get_investor_data_cached(self):
-        """외국인/기관 데이터 캐싱"""
+        """외국인/기관 데이터 캐싱 (5분마다 갱신) - 디버그 강화 버전"""
         try:
             now = datetime.now()
             
-            # 캐시 유효성 체크
-            if self.cache_timestamp:
-                elapsed = (now - self.cache_timestamp).total_seconds()
-                if elapsed < self.cache_validity_seconds:
-                    logger.debug(f"💾 캐시 사용 (남은 시간: {self.cache_validity_seconds - elapsed:.0f}초)")
-                    return self.foreign_cache, self.institution_cache
+            # 캐시 유효 시간 체크
+            if self.cache_timestamp and (now - self.cache_timestamp).total_seconds() < 300:
+                logger.debug(f"✅ 캐시 사용 중 (갱신 후 {(now - self.cache_timestamp).total_seconds():.0f}초 경과)")
+                return self.foreign_cache, self.institution_cache
             
-            # 새로운 데이터 호출
             logger.info("🔄 외국인/기관 데이터 갱신 중...")
             
-            # 🔥 스로틀링 적용
-            foreign_data = self.api_call_with_throttle(
-                self.kiwoom.GetRealtimeInvestorTrading,
-                market_type="000", 
-                investor="6",
-                exchange_type="3"
-            )
+            # 외국인 데이터 조회
+            logger.debug("📡 외국인 순매수 데이터 API 호출...")
+            foreign_data = self.api_call_with_throttle(self.kiwoom.GetForeignNetBuyList)
             
-            institution_data = self.api_call_with_throttle(
-                self.kiwoom.GetRealtimeInvestorTrading,
-                market_type="000",
-                investor="7",
-                exchange_type="3"
-            )
+            # 🔥 디버그: API 응답 원본 확인
+            if foreign_data is None:
+                logger.warning("⚠️ 외국인 API 응답: None (데이터 없음)")
+            elif not foreign_data:
+                logger.warning("⚠️ 외국인 API 응답: 빈 리스트 (0건)")
+            else:
+                logger.info(f"✅ 외국인 API 응답: {len(foreign_data)}건 수신")
+                logger.debug(f"   📄 응답 샘플 (최대 3건):")
+                for i, item in enumerate(foreign_data[:3]):
+                    logger.debug(f"      [{i+1}] {item}")
             
-            # 딕셔너리로 변환
+            # 기관 데이터 조회
+            logger.debug("📡 기관 순매수 데이터 API 호출...")
+            institution_data = self.api_call_with_throttle(self.kiwoom.GetInstitutionNetBuyList)
+            
+            # 🔥 디버그: API 응답 원본 확인
+            if institution_data is None:
+                logger.warning("⚠️ 기관 API 응답: None (데이터 없음)")
+            elif not institution_data:
+                logger.warning("⚠️ 기관 API 응답: 빈 리스트 (0건)")
+            else:
+                logger.info(f"✅ 기관 API 응답: {len(institution_data)}건 수신")
+                logger.debug(f"   📄 응답 샘플 (최대 3건):")
+                for i, item in enumerate(institution_data[:3]):
+                    logger.debug(f"      [{i+1}] {item}")
+            
+            # 외국인 캐시 구성
             self.foreign_cache = {}
             if foreign_data:
                 for item in foreign_data:
                     stock_code = item.get("StockCode", "")
                     net_buy = item.get("NetBuyQty", 0)
+                    
+                    # 🔥 디버그: 파싱 과정 확인
+                    if not stock_code:
+                        logger.debug(f"   ⚠️ StockCode 누락: {item}")
+                        continue
+                    
                     self.foreign_cache[stock_code] = net_buy
+                    
+                    # 🔥 디버그: 관심 종목만 상세 출력
+                    if stock_code in TARGET_STOCKS:
+                        stock_name = TARGET_STOCKS[stock_code]["name"]
+                        logger.debug(f"   ✓ [{stock_name}] 외국인 순매수: {net_buy:+,}주")
             
+            # 기관 캐시 구성
             self.institution_cache = {}
             if institution_data:
                 for item in institution_data:
                     stock_code = item.get("StockCode", "")
                     net_buy = item.get("NetBuyQty", 0)
+                    
+                    # 🔥 디버그: 파싱 과정 확인
+                    if not stock_code:
+                        logger.debug(f"   ⚠️ StockCode 누락: {item}")
+                        continue
+                    
                     self.institution_cache[stock_code] = net_buy
+                    
+                    # 🔥 디버그: 관심 종목만 상세 출력
+                    if stock_code in TARGET_STOCKS:
+                        stock_name = TARGET_STOCKS[stock_code]["name"]
+                        logger.debug(f"   ✓ [{stock_name}] 기관 순매수: {net_buy:+,}주")
             
             self.cache_timestamp = now
             
             logger.info(f"✅ 캐시 갱신 완료: 외국인 {len(self.foreign_cache)}종목, 기관 {len(self.institution_cache)}종목")
             
+            # 🔥 디버그: 관심 종목 캐시 상태 요약
+            logger.info("📊 관심 종목 외국인/기관 데이터 요약:")
+            for stock_code, stock_info in TARGET_STOCKS.items():
+                stock_name = stock_info["name"]
+                foreign = self.foreign_cache.get(stock_code, 0)
+                institution = self.institution_cache.get(stock_code, 0)
+                
+                if foreign != 0 or institution != 0:
+                    logger.info(f"   [{stock_name}] 외국인:{foreign:+,}주, 기관:{institution:+,}주")
+                else:
+                    logger.debug(f"   [{stock_name}] 외국인/기관 데이터 없음 (0)")
+            
             return self.foreign_cache, self.institution_cache
             
         except Exception as e:
             logger.error(f"외국인/기관 데이터 캐싱 실패: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return {}, {}
     
     def calculate_normalized_score(self, indicator_scores, available_indicators):
@@ -1164,7 +1213,12 @@ class SignalMonitor:
             
             foreign_net_buy = foreign_cache.get(stock_code, 0)
             institution_net_buy = institution_cache.get(stock_code, 0)
-            
+
+            # 🔥 디버그: 개별 종목 조회 결과 확인
+            logger.debug(f"   📍 종목코드: {stock_code}")
+            logger.debug(f"   📍 캐시 조회 결과 - 외국인: {foreign_net_buy}, 기관: {institution_net_buy}")
+            logger.debug(f"   📍 캐시 존재 여부 - 외국인: {stock_code in foreign_cache}, 기관: {stock_code in institution_cache}")
+
             if foreign_net_buy != 0 or institution_net_buy != 0:
                 analysis_result["details"]["foreign_net_buy"] = foreign_net_buy
                 analysis_result["details"]["institution_net_buy"] = institution_net_buy
@@ -1173,26 +1227,32 @@ class SignalMonitor:
                 if foreign_net_buy > 0 and institution_net_buy > 0:
                     investor_score = 85
                     reasons.append(f"✅ 외국인+기관 동반 순매수")
-                    logger.info(f"   ✅ 외국인+기관 동반 순매수")
+                    logger.info(f"   ✅ 외국인+기관 동반 순매수 (외:{foreign_net_buy:+,}주, 기:{institution_net_buy:+,}주)")
                 elif foreign_net_buy > 0 or institution_net_buy > 0:
                     investor_score = 65
                     buyer = "외국인" if foreign_net_buy > 0 else "기관"
+                    amount = foreign_net_buy if foreign_net_buy > 0 else institution_net_buy
                     reasons.append(f"✓ {buyer} 순매수")
-                    logger.info(f"   ✓ {buyer} 순매수")
+                    logger.info(f"   ✓ {buyer} 순매수 ({amount:+,}주)")
                 elif foreign_net_buy < 0 and institution_net_buy < 0:
                     investor_score = 15
                     reasons.append(f"❌ 외국인+기관 동반 순매도")
-                    logger.info(f"   ❌ 외국인+기관 동반 순매도")
+                    logger.info(f"   ❌ 외국인+기관 동반 순매도 (외:{foreign_net_buy:+,}주, 기:{institution_net_buy:+,}주)")
                 elif foreign_net_buy < 0 or institution_net_buy < 0:
                     investor_score = 35
                     seller = "외국인" if foreign_net_buy < 0 else "기관"
+                    amount = foreign_net_buy if foreign_net_buy < 0 else institution_net_buy
                     reasons.append(f"⚠ {seller} 순매도")
-                    logger.info(f"   ⚠ {seller} 순매도")
+                    logger.info(f"   ⚠ {seller} 순매도 ({amount:+,}주)")
                 
                 indicator_scores["investor"] = investor_score
                 available_indicators.append("investor")
             else:
-                logger.info(f"   ➖ 외국인/기관 매매 중립")
+                # 🔥 디버그: 중립으로 판단된 이유 상세 출력
+                if stock_code not in foreign_cache and stock_code not in institution_cache:
+                    logger.warning(f"   ⚠️ 외국인/기관 캐시에 종목 없음 (API 미제공 가능성)")
+                else:
+                    logger.info(f"   ➖ 외국인/기관 매매 중립 (외:{foreign_net_buy}, 기:{institution_net_buy})")
             
             # 4️⃣ 현재가 분석
             logger.info("🔍 [4/5] 현재가 및 거래량 분석 중...")
