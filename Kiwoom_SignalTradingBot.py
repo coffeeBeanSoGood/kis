@@ -213,10 +213,11 @@ config = ConfigManager()
 BOT_NAME = config.get("bot_name", "SignalTradingBot_Kiwoom")
 
 logger.info("=" * 60)
-logger.info(f"🤖 {BOT_NAME} 초기화 v3.0 (watchdog 실시간)")
-logger.info(f"💰 일일 예산: {config.get('daily_budget'):,}원")
+logger.info(f"🤖 {config.get('bot_name')} 초기화 v3.0 (watchdog 실시간)")
+logger.info(f"💰 초기 자산: {config.get('initial_budget', 500000):,}원")  # ✅ 수정!
+logger.info(f"⚠️ 최소 자산: {config.get('min_asset_threshold', 400000):,}원 (이하 시 매매 중지)")  # ✅ 추가!
 logger.info(f"📊 최대 종목: {config.get('max_positions')}개")
-logger.info(f"⚡ watchdog: 파일 변경 즉시 감지 (0초 지연)")
+logger.info("⚡ watchdog: 파일 변경 즉시 감지 (0초 지연)")
 logger.info(f"🔄 미체결 체크: {config.get('check_pending_interval_seconds')}초마다")
 logger.info(f"📈 트레일링 체크: {config.get('check_position_interval_seconds')}초마다")
 logger.info("=" * 60)
