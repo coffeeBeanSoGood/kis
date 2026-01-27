@@ -297,7 +297,7 @@ class SignalTradingBot:
         except Exception as e:
             logger.error(f"미체결 주문 저장 실패: {e}")
     
-    def load_cooldowns(self):
+    def load_cooldowns(self) -> dict:
         try:
             cooldowns_file = config.get("cooldowns_file", "trading_cooldowns.json")
             if os.path.exists(cooldowns_file):
