@@ -1710,17 +1710,24 @@ def main():
     logger.info("=" * 60)
     logger.info(f"🤖 {BOT_NAME} 시작 v3.0 (watchdog)")
     logger.info("=" * 60)
-    
+
     if config.get("use_discord_alert", True):
         start_msg = f"🚀 **{BOT_NAME} 시작 v3.0**\n"
-        start_msg += f"💰 일일 예산: {config.get('daily_budget'):,}원\n"
+        start_msg += f"{'─'*30}\n"
+        start_msg += f"💰 초기 자산: {config.get('initial_budget', 500000):,}원\n"  # ✅ 수정!
+        start_msg += f"⚠️ 최소 자산: {config.get('min_asset_threshold', 400000):,}원\n"  # ✅ 추가!
         start_msg += f"📊 최대 종목: {config.get('max_positions')}개\n"
-        start_msg += f"🎯 매수 신호: {', '.join(config.get('buy_signals', []))}\n"
-        start_msg += f"📈 목표 수익: +{config.get('target_profit_rate', 0.05)*100:.0f}%\n"
-        start_msg += f"📉 트레일링: -{config.get('trailing_stop_rate', 0.01)*100:.0f}%\n"
-        start_msg += f"⏰ 쿨다운: {config.get('cooldown_hours')}시간\n"
-        start_msg += f"⏱️ 미체결 타임아웃: {config.get('pending_order_timeout_minutes')}분\n"
-        start_msg += f"⚡ **watchdog 실시간 모드**: 0초 지연!"
+        start_msg += f"⚡ watchdog: 실시간 감지 (0초 지연)\n"
+        start_msg += f"\n🔥 **동적 자산 관리 활성화**\n"
+        start_msg += f"• 총 자산 기준 예산 배분\n"
+        start_msg += f"• 40만원 미만 시 매매 중지\n"
+        start_msg += f"• ATR 기반 동적 손절\n"
+        start_msg += f"\n📈 **매도 전략**:\n"
+        start_msg += f"• 목표 수익: +{config.get('target_profit_rate', 0.03)*100:.0f}%\n"
+        start_msg += f"• 트레일링: -{config.get('trailing_stop_rate', 0.01)*100:.0f}%\n"
+        start_msg += f"• 쿨다운: {config.get('cooldown_hours')}시간\n"
+        start_msg += f"{'─'*30}\n"
+        start_msg += "✅ 시스템 준비 완료!"
         discord_alert.SendMessage(start_msg)
     
     # 백그라운드 스레드 시작
