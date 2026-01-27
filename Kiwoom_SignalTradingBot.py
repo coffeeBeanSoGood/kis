@@ -148,15 +148,32 @@ class ConfigManager:
             # 성과 추적
             # ============================================
             "performance": {
-                # "initial_budget": 500000,            # 시작 자산
-                # "current_asset": 500000,             # 현재 총 자산 (동적 업데이트)
+                # 📌 수동 관리 (입금/출금 시 사용자가 직접 수정!)
+                "baseline_asset": 500000,            # 기준 자산 (입금 시 수동 업데이트)
+                "baseline_date": datetime.now().strftime("%Y-%m-%d"),
+                "baseline_note": "추가 입금 시 baseline_asset을 수동으로 업데이트하세요",
+                
+                # ✅ 자동 계산 (봇이 관리)
+                "total_realized_profit": 0,          # 실현 수익 누적
+                "total_realized_loss": 0,            # 실현 손실 누적
+                "net_realized_profit": 0,            # 순 실현 수익
+                
+                # 📊 거래 통계
                 "total_trades": 0,                   # 총 거래 횟수
                 "winning_trades": 0,                 # 수익 거래 횟수
-                "total_profit": 0,                   # 총 수익금
-                "total_loss": 0,                     # 총 손실금
+                "losing_trades": 0,                  # 손실 거래 횟수
                 "canceled_orders": 0,                # 취소된 주문 수
-                "start_date": datetime.now().strftime("%Y-%m-%d"),
-                "last_update": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                "win_rate": 0.0,                     # 승률
+                
+                # 🏆 최고/최저 기록
+                "best_performance_rate": 0.0,        # 최고 수익률
+                "best_performance_date": "",         # 최고 수익 날짜
+                "worst_performance_rate": 0.0,       # 최저 수익률
+                "worst_performance_date": "",        # 최저 수익 날짜
+                
+                # 📅 일일 기록
+                "last_report_date": "",              # 마지막 리포트 날짜
+                "start_date": datetime.now().strftime("%Y-%m-%d")
             }
         }
         
@@ -721,6 +738,7 @@ class SignalTradingBot:
                     
                     if is_filled:
                         # ✅ 체결 완료!
+                        logger.info(f"✅ {stock_name} {order_type.upper()} 주문 체결 확인")
                         
                         # 🔥 실제 체결가 가져오기
                         filled_price = None
@@ -764,8 +782,7 @@ class SignalTradingBot:
                                     'tight_trailing_active': False,
                                     # 🔥 추가 정보 기록
                                     'order_price': pending['order_price'],  # 참고용
-                                    'commission': commission,
-                                    'tax': tax
+                                    'entry_commission': commission
                                 }
                                 
                                 price_diff = filled_price - pending['order_price']
@@ -781,13 +798,11 @@ class SignalTradingBot:
                                 msg += f"목표가: {self.positions[stock_code]['target_profit_price']:,.0f}원 (+3%)\n"
                                 msg += f"트레일링: {self.positions[stock_code]['trailing_stop_price']:,.0f}원 (-1%)"
                                 
-                                config.update_performance('total_trades', 1)
-                                
                             else:  # sell
                                 # 🔥 매도 체결: 실제 체결가로 수익 재계산
                                 if stock_code in self.positions:
                                     entry_price = self.positions[stock_code]['entry_price']
-                                    entry_commission = self.positions[stock_code].get('commission', 0)
+                                    entry_commission = self.positions[stock_code].get('entry_commission', 0)
                                     
                                     # 실제 수익 계산 (매수 수수료 + 매도 수수료 + 세금)
                                     profit = (filled_price - entry_price) * filled_qty - entry_commission - commission - tax
@@ -810,40 +825,57 @@ class SignalTradingBot:
                                     'cooldown_until': cooldown_until.strftime("%Y-%m-%d %H:%M:%S"),
                                     'sell_reason': pending.get('sell_reason', ''),
                                     'entry_price': entry_price,
-                                    'sell_price': filled_price,  # ✅ 실제 매도가
+                                    'sell_price': filled_price,
                                     'quantity': filled_qty,
-                                    'profit': profit,            # ✅ 실제 수익 (수수료 포함)
-                                    'profit_rate': profit_rate,  # ✅ 실제 수익률
+                                    'profit': profit,
+                                    'profit_rate': profit_rate,
                                     'commission': commission,
                                     'entry_commission': entry_commission,
                                     'tax': tax
                                 }
                                 
-                                config.update_performance('total_profit', profit)
+                                # 🔥🔥🔥 성과 기록 업데이트 (여기가 핵심!)
+                                config.update_performance('total_trades', 1)
+                                
                                 if profit > 0:
+                                    config.update_performance('total_realized_profit', profit)
                                     config.update_performance('winning_trades', 1)
+                                else:
+                                    config.update_performance('total_realized_loss', abs(profit))
+                                    config.update_performance('losing_trades', 1)
+                                
+                                # 순 실현 수익 계산
+                                perf = config.get('performance', {})
+                                total_profit = perf.get('total_realized_profit', 0)
+                                total_loss = perf.get('total_realized_loss', 0)
+                                net_profit = total_profit - total_loss
+                                config.set('performance.net_realized_profit', net_profit)
+                                
+                                # 승률 계산
+                                total_trades = perf.get('total_trades', 0)
+                                winning_trades = perf.get('winning_trades', 0)
+                                win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+                                config.set('performance.win_rate', win_rate)
                                 
                                 price_diff = filled_price - pending['order_price']
                                 emoji = "🎉" if profit > 0 else "😢"
                                 msg = f"{emoji} **매도 체결!**\n"
                                 msg += f"종목: {stock_name} ({stock_code})\n"
+                                msg += f"주문번호: {order_no}\n"
                                 msg += f"체결가: {filled_price:,}원 × {filled_qty}주\n"
                                 if price_diff != 0:
-                                    price_emoji = "💰" if price_diff > 0 else "📊"
-                                    msg += f"{price_emoji} 주문가: {pending['order_price']:,}원 ({price_diff:+,}원)\n"
-                                msg += f"진입가: {entry_price:,}원\n"
-                                msg += f"수익: {profit:+,}원 ({profit_rate*100:+.2f}%)\n"
-                                if commission > 0 or entry_commission > 0 or tax > 0:
-                                    total_fee = entry_commission + commission + tax
-                                    msg += f"비용: {total_fee:,}원 (수수료 {entry_commission + commission:,}원 + 세금 {tax:,}원)\n"
+                                    emoji2 = "💰" if price_diff > 0 else "📊"
+                                    msg += f"{emoji2} 주문가: {pending['order_price']:,}원 ({price_diff:+,}원)\n"
+                                msg += f"실현 수익: {profit:+,}원 ({profit_rate*100:+.2f}%)\n"
                                 msg += f"사유: {pending.get('sell_reason', '')}\n"
-                                msg += f"쿨다운: {cooldown_hours}시간"
+                                msg += f"💰 누적 순수익: {net_profit:+,}원\n"
+                                msg += f"📊 승률: {win_rate:.1f}% ({winning_trades}/{total_trades})"
                             
                             del self.pending_orders[stock_code]
                         
                         self.save_positions()
-                        self.save_pending_orders()
                         self.save_cooldowns()
+                        self.save_pending_orders()
                         
                         logger.info(msg)
                         
@@ -852,28 +884,11 @@ class SignalTradingBot:
                         
                         continue
                     else:
-                        # ❌ 주문 취소됨 (미체결도 아니고 체결도 아님)
-                        logger.warning(f"❌ {stock_name} {order_type.upper()} 주문 취소됨 (주문번호: {order_no})")
-                        
-                        with self.lock:
-                            if stock_code in self.pending_orders:
-                                del self.pending_orders[stock_code]
-                        
-                        self.save_pending_orders()
-                        
-                        msg = f"❌ **주문 취소 감지**\n"
-                        msg += f"종목: {stock_name} ({stock_code})\n"
-                        msg += f"타입: {order_type.upper()}\n"
-                        msg += f"사유: 외부 취소 또는 오류"
-                        
-                        logger.warning(msg)
-                        
-                        if config.get("use_discord_alert", True):
-                            discord_alert.SendMessage(msg)
-                        
+                        # ❓ 미체결도 체결도 아님 (API 지연 가능성)
+                        logger.debug(f"🤔 {stock_name} 주문 상태 불명확 - 다음 체크 대기")
                         continue
                 
-                # 🔥 3단계: 타임아웃 체크 (아직 미체결 상태)
+                # 🔥 3단계: 타임아웃 체크 (미체결 상태)
                 order_time_str = pending.get('order_time', '')
                 try:
                     order_time = datetime.strptime(order_time_str, "%Y-%m-%d %H:%M:%S")
@@ -882,117 +897,84 @@ class SignalTradingBot:
                 
                 elapsed_minutes = (now - order_time).total_seconds() / 60
                 
-                if elapsed_minutes >= timeout_minutes:
+                if elapsed_minutes > timeout_minutes:
                     retry_count = pending.get('retry_count', 0)
                     
-                    logger.warning(f"⏰ {stock_name} {order_type.upper()} 미체결 타임아웃 ({elapsed_minutes:.1f}분 경과, 재시도: {retry_count}/{max_retry})")
+                    logger.warning(f"⚠️ {stock_name} 미체결 타임아웃 ({elapsed_minutes:.1f}분)")
                     
-                    # 기존 주문 취소
-                    cancel_result = KiwoomAPI.CancelOrder(order_no, stock_code, 0)
-                    
-                    if not cancel_result.get('success', False):
-                        logger.error(f"❌ 주문 취소 실패: {cancel_result.get('msg', '알 수 없는 오류')}")
+                    if retry_count >= max_retry:
+                        logger.error(f"❌ {stock_name} 최대 재시도 초과 - 주문 취소")
+                        
+                        cancel_result = KiwoomAPI.CancelOrder(order_no, stock_code)
+                        
+                        with self.lock:
+                            if stock_code in self.pending_orders:
+                                del self.pending_orders[stock_code]
+                        
+                        self.save_pending_orders()
+                        
+                        config.update_performance('canceled_orders', 1)
+                        
+                        msg = f"❌ **주문 취소**\n"
+                        msg += f"종목: {stock_name} ({stock_code})\n"
+                        msg += f"사유: 미체결 타임아웃 (재시도 {retry_count}회)\n"
+                        msg += f"주문가: {pending['order_price']:,}원"
+                        
+                        logger.warning(msg)
+                        
+                        if config.get("use_discord_alert", True):
+                            discord_alert.SendMessage(msg)
+                        
                         continue
                     
-                    logger.info(f"✅ 주문 취소 완료")
+                    # 재주문 시도
+                    logger.info(f"🔄 {stock_name} 재주문 시도 ({retry_count + 1}/{max_retry})")
                     
-                    # 🔥 A 방식: 재시도 (최대 3회)
-                    if retry_count < max_retry:
-                        logger.info(f"🔄 재시도 {retry_count + 1}/{max_retry} - 현재가로 재주문")
-                        
-                        # 현재가 조회
-                        stock_info = KiwoomAPI.GetStockInfo(stock_code)
-                        if not stock_info:
-                            logger.error(f"❌ 현재가 조회 실패 - 재시도 중단")
-                            with self.lock:
-                                if stock_code in self.pending_orders:
-                                    del self.pending_orders[stock_code]
-                            self.save_pending_orders()
-                            continue
-                        
-                        current_price = stock_info.get('CurrentPrice', 0)
-                        adjusted_price = self.adjust_price_to_tick(current_price, is_buy=(order_type=='buy'))
-                        
-                        quantity = pending['order_quantity']
-                        
-                        # 재주문
-                        if order_type == 'buy':
-                            retry_result = KiwoomAPI.MakeBuyLimitOrder(stock_code, quantity, adjusted_price)
-                        else:
-                            retry_result = KiwoomAPI.MakeSellLimitOrder(stock_code, quantity, adjusted_price)
-                        
-                        if retry_result.get('success', False):
-                            new_order_no = retry_result.get('order_no', '')
-                            
-                            with self.lock:
-                                self.pending_orders[stock_code]['order_no'] = new_order_no
-                                self.pending_orders[stock_code]['order_price'] = adjusted_price
-                                self.pending_orders[stock_code]['order_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                self.pending_orders[stock_code]['retry_count'] = retry_count + 1
-                                
-                                # 매도인 경우 예상 수익 재계산
-                                if order_type == 'sell':
-                                    entry_price = pending['entry_price']
-                                    profit = (adjusted_price - entry_price) * quantity
-                                    profit_rate = (adjusted_price - entry_price) / entry_price
-                                    self.pending_orders[stock_code]['expected_profit'] = profit
-                                    self.pending_orders[stock_code]['expected_profit_rate'] = profit_rate
-                            
-                            self.save_pending_orders()
-                            
-                            logger.info(f"✅ 재주문 완료 (가격: {adjusted_price:,}원, 주문번호: {new_order_no})")
-                            
-                            msg = f"🔄 **재주문 완료** ({retry_count + 1}/{max_retry})\n"
-                            msg += f"종목: {stock_name} ({stock_code})\n"
-                            msg += f"타입: {order_type.upper()}\n"
-                            msg += f"가격: {adjusted_price:,}원 × {quantity}주"
-                            
-                            if config.get("use_discord_alert", True):
-                                discord_alert.SendMessage(msg)
-                        else:
-                            logger.error(f"❌ 재주문 실패: {retry_result.get('msg', '알 수 없는 오류')}")
+                    cancel_result = KiwoomAPI.CancelOrder(order_no, stock_code)
+                    time.sleep(1)
                     
+                    stock_info = KiwoomAPI.GetStockInfo(stock_code)
+                    if not stock_info:
+                        logger.error(f"❌ 현재가 조회 실패 - 재시도 중단")
+                        with self.lock:
+                            if stock_code in self.pending_orders:
+                                del self.pending_orders[stock_code]
+                        self.save_pending_orders()
+                        continue
+                    
+                    current_price = stock_info.get('CurrentPrice', 0)
+                    adjusted_price = self.adjust_price_to_tick(current_price, is_buy=(order_type=='buy'))
+                    
+                    quantity = pending['order_quantity']
+                    
+                    # 재주문
+                    if order_type == 'buy':
+                        retry_result = KiwoomAPI.MakeBuyLimitOrder(stock_code, quantity, adjusted_price)
                     else:
-                        # 🔥 3회 재시도 실패 → 시장가 전환
-                        logger.warning(f"🚨 {stock_name} {order_type.upper()} 재시도 {max_retry}회 실패 → 시장가 주문")
+                        retry_result = KiwoomAPI.MakeSellLimitOrder(stock_code, quantity, adjusted_price)
+                    
+                    if retry_result.get('success', False):
+                        new_order_no = retry_result.get('order_no', '')
                         
-                        quantity = pending['order_quantity']
+                        with self.lock:
+                            self.pending_orders[stock_code]['order_no'] = new_order_no
+                            self.pending_orders[stock_code]['order_price'] = adjusted_price
+                            self.pending_orders[stock_code]['order_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            self.pending_orders[stock_code]['retry_count'] = retry_count + 1
+                            
+                            # 매도인 경우 예상 수익 재계산
+                            if order_type == 'sell':
+                                entry_price = pending['entry_price']
+                                profit = (adjusted_price - entry_price) * quantity
+                                profit_rate = (adjusted_price - entry_price) / entry_price if entry_price > 0 else 0
+                                self.pending_orders[stock_code]['expected_profit'] = profit
+                                self.pending_orders[stock_code]['expected_profit_rate'] = profit_rate
                         
-                        # 시장가 주문
-                        if order_type == 'buy':
-                            market_result = KiwoomAPI.MakeBuyMarketOrder(stock_code, quantity)
-                        else:
-                            market_result = KiwoomAPI.MakeSellMarketOrder(stock_code, quantity)
+                        self.save_pending_orders()
                         
-                        if market_result.get('success', False):
-                            logger.info(f"✅ 시장가 주문 완료")
-                            
-                            msg = f"🚨 **시장가 전환!**\n"
-                            msg += f"종목: {stock_name} ({stock_code})\n"
-                            msg += f"타입: {order_type.upper()}\n"
-                            msg += f"수량: {quantity}주\n"
-                            msg += f"사유: {max_retry}회 재시도 실패"
-                            
-                            if config.get("use_discord_alert", True):
-                                discord_alert.SendMessage(msg)
-                            
-                            # pending_orders는 유지 (체결 확인 대기)
-                            with self.lock:
-                                self.pending_orders[stock_code]['order_no'] = market_result.get('order_no', '')
-                                self.pending_orders[stock_code]['order_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                self.pending_orders[stock_code]['retry_count'] = max_retry + 1
-                            
-                            self.save_pending_orders()
-                        else:
-                            logger.error(f"❌ 시장가 주문 실패: {market_result.get('msg', '알 수 없는 오류')}")
-                            
-                            # 완전 실패 → pending_orders에서 삭제
-                            with self.lock:
-                                if stock_code in self.pending_orders:
-                                    del self.pending_orders[stock_code]
-                            
-                            self.save_pending_orders()
-                            config.update_performance('canceled_orders', 1)
+                        logger.info(f"✅ {stock_name} 재주문 완료 (새 주문번호: {new_order_no})")
+                    else:
+                        logger.error(f"❌ {stock_name} 재주문 실패")
             
         except Exception as e:
             logger.error(f"미체결 주문 체크 실패: {e}")
@@ -1200,6 +1182,128 @@ class SignalTradingBot:
             logger.error(f"매도 조건 체크 실패: {e}")
             return False, None
 
+    def calculate_unrealized_profit(self):
+        """미실현 손익 계산"""
+        try:
+            total_unrealized = 0
+            
+            with self.lock:
+                for stock_code, position in self.positions.items():
+                    stock_info = KiwoomAPI.GetStockInfo(stock_code)
+                    if not stock_info:
+                        continue
+                    
+                    current_price = stock_info.get('CurrentPrice', 0)
+                    entry_price = position.get('entry_price', 0)
+                    quantity = position.get('quantity', 0)
+                    
+                    if current_price > 0 and entry_price > 0:
+                        unrealized = (current_price - entry_price) * quantity
+                        total_unrealized += unrealized
+            
+            return total_unrealized
+            
+        except Exception as e:
+            logger.error(f"미실현 손익 계산 실패: {e}")
+            return 0
+    
+    def send_daily_report(self):
+        """일일 리포트 전송 (장 마감 후)"""
+        try:
+            logger.info("=" * 60)
+            logger.info("📊 일일 리포트 생성 중...")
+            logger.info("=" * 60)
+            
+            # 1️⃣ 성과 데이터 가져오기
+            perf = config.get('performance', {})
+            total_trades = perf.get('total_trades', 0)
+            winning_trades = perf.get('winning_trades', 0)
+            total_profit = perf.get('total_profit', 0)
+            total_loss = perf.get('total_loss', 0)
+            canceled_orders = perf.get('canceled_orders', 0)
+            
+            # 2️⃣ 현재 자산 계산
+            asset_info = self.calculate_total_asset()
+            if not asset_info:
+                logger.warning("⚠️ 자산 정보 조회 실패")
+                return
+            
+            total_asset = asset_info['total_asset']
+            orderable_amt = asset_info['orderable_amt']
+            holding_value = asset_info['holding_value']
+            pending_value = asset_info['pending_value']
+            
+            # 3️⃣ 미실현 손익 계산
+            unrealized_profit = self.calculate_unrealized_profit()
+            
+            # 4️⃣ 승률 계산
+            win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+            net_profit = total_profit + total_loss  # total_loss는 음수
+            
+            # 5️⃣ 보유 종목 상세
+            holdings_detail = ""
+            with self.lock:
+                if self.positions:
+                    holdings_detail = "\n**📈 보유 종목:**\n"
+                    for stock_code, position in self.positions.items():
+                        stock_name = position.get('stock_name', '')
+                        quantity = position.get('quantity', 0)
+                        entry_price = position.get('entry_price', 0)
+                        
+                        stock_info = KiwoomAPI.GetStockInfo(stock_code)
+                        current_price = stock_info.get('CurrentPrice', 0) if stock_info else 0
+                        
+                        if current_price > 0:
+                            profit_rate = ((current_price - entry_price) / entry_price) * 100
+                            profit_amt = (current_price - entry_price) * quantity
+                            holdings_detail += f"• {stock_name} ({stock_code})\n"
+                            holdings_detail += f"  └─ {quantity}주, {profit_rate:+.2f}% ({profit_amt:+,}원)\n"
+                else:
+                    holdings_detail = "\n**📈 보유 종목:** 없음\n"
+            
+            # 6️⃣ 디스코드 메시지 생성
+            msg = f"📊 **{BOT_NAME} 일일 리포트**\n"
+            msg += f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+            msg += "=" * 30 + "\n\n"
+            
+            msg += "**💰 자산 현황**\n"
+            msg += f"• 총 자산: {total_asset:,}원\n"
+            msg += f"• 현금: {orderable_amt:,}원\n"
+            msg += f"• 보유 평가: {holding_value:,}원\n"
+            msg += f"• 미체결: {pending_value:,}원\n"
+            msg += f"• 미실현 손익: {unrealized_profit:+,}원\n\n"
+            
+            msg += "**📈 거래 성과**\n"
+            msg += f"• 총 거래: {total_trades}회\n"
+            msg += f"• 승률: {win_rate:.1f}% ({winning_trades}승/{total_trades-winning_trades}패)\n"
+            msg += f"• 실현 수익: {total_profit:+,}원\n"
+            msg += f"• 실현 손실: {total_loss:+,}원\n"
+            msg += f"• 순 손익: {net_profit:+,}원\n"
+            msg += f"• 취소 주문: {canceled_orders}회\n"
+            
+            msg += holdings_detail
+            
+            msg += f"\n**🔄 쿨다운 종목**\n"
+            with self.lock:
+                if self.cooldowns:
+                    for stock_code, cooldown in self.cooldowns.items():
+                        stock_name = cooldown.get('stock_name', '')
+                        cooldown_until = cooldown.get('cooldown_until', '')
+                        msg += f"• {stock_name} ({stock_code}): {cooldown_until}까지\n"
+                else:
+                    msg += "• 없음\n"
+            
+            # 7️⃣ 전송
+            logger.info(msg)
+            
+            if config.get("use_discord_alert", True):
+                discord_alert.SendMessage(msg)
+                logger.info("✅ 일일 리포트 전송 완료")
+            
+        except Exception as e:
+            logger.error(f"일일 리포트 생성 실패: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
 
     def _calculate_dynamic_stop_loss(self, stock_code, current_price):
         """ATR 기반 동적 손절선 계산"""
@@ -1565,7 +1669,7 @@ class SignalTradingBot:
             logger.error(f"신호 처리 오류: {e}")
             import traceback
             logger.error(traceback.format_exc())
-    
+
     def start_background_threads(self):
         """백그라운드 스레드 시작"""
         
@@ -1595,17 +1699,45 @@ class SignalTradingBot:
                 
                 time.sleep(interval)
         
+        # 🔥🔥🔥 여기부터 새로 추가 🔥🔥🔥
+        def daily_report_checker():
+            """일일 리포트 체크 스레드 (15:20~15:30 사이 1회 실행)"""
+            report_sent_date = None  # 마지막 전송 날짜
+            
+            while self.running:
+                try:
+                    now = datetime.now()
+                    
+                    # 15:20~15:30 사이인지 확인
+                    if now.hour == 15 and 20 <= now.minute <= 30:
+                        # 오늘 아직 전송 안했으면 전송
+                        if report_sent_date != now.date():
+                            logger.info("📊 일일 리포트 시간 도달")
+                            self.send_daily_report()
+                            report_sent_date = now.date()
+                            logger.info(f"✅ 일일 리포트 전송 완료 - 다음: {(now + timedelta(days=1)).date()}")
+                    
+                except Exception as e:
+                    logger.error(f"일일 리포트 체크 스레드 오류: {e}")
+                
+                # 1분마다 체크
+                time.sleep(60)
+        # 🔥🔥🔥 여기까지 추가 🔥🔥🔥
+        
         # 스레드 시작
         pending_thread = threading.Thread(target=pending_checker, daemon=True)
         position_thread = threading.Thread(target=position_checker, daemon=True)
+        report_thread = threading.Thread(target=daily_report_checker, daemon=True)  # 🔥 추가!
         
         pending_thread.start()
         position_thread.start()
+        report_thread.start()  # 🔥 추가!
         
         logger.info("✅ 백그라운드 스레드 시작 완료")
         logger.info(f"   - 미체결 체크: {config.get('check_pending_interval_seconds')}초마다")
         logger.info(f"   - 보유 종목 체크: {config.get('check_position_interval_seconds')}초마다")
-    
+        logger.info(f"   - 일일 리포트: 15:20~15:30 (장 마감 후)")  # 🔥 추가!
+
     def stop(self):
         """봇 중지"""
         self.running = False
@@ -1677,6 +1809,165 @@ class SignalTradingBot:
         except Exception as e:
             logger.error(f"총 자산 계산 실패: {e}")
             return None
+
+    def calculate_unrealized_profit(self) -> dict:
+        """
+        미실현 손익 계산
+        
+        Returns:
+            dict: {
+                'unrealized_profit': 미실현 손익,
+                'unrealized_rate': 미실현 수익률,
+                'total_invested': 총 투자금액,
+                'current_value': 현재 평가금액
+            }
+        """
+        try:
+            total_invested = 0
+            current_value = 0
+            
+            with self.lock:
+                for stock_code, position in self.positions.items():
+                    entry_price = position.get('entry_price', 0)
+                    quantity = position.get('quantity', 0)
+                    entry_commission = position.get('entry_commission', 0)
+                    
+                    # 매수 금액
+                    invested = (entry_price * quantity) + entry_commission
+                    total_invested += invested
+                    
+                    # 현재 평가 금액
+                    stock_info = KiwoomAPI.GetStockInfo(stock_code)
+                    if stock_info:
+                        current_price = stock_info.get('CurrentPrice', 0)
+                        value = current_price * quantity
+                        current_value += value
+            
+            unrealized_profit = current_value - total_invested
+            unrealized_rate = (unrealized_profit / total_invested * 100) if total_invested > 0 else 0
+            
+            return {
+                'unrealized_profit': unrealized_profit,
+                'unrealized_rate': unrealized_rate,
+                'total_invested': total_invested,
+                'current_value': current_value
+            }
+            
+        except Exception as e:
+            logger.error(f"미실현 손익 계산 실패: {e}")
+            return {
+                'unrealized_profit': 0,
+                'unrealized_rate': 0,
+                'total_invested': 0,
+                'current_value': 0
+            }
+
+    def send_daily_report(self):
+        """일일 성과 리포트 발송 (장 마감 후)"""
+        try:
+            logger.info("=" * 60)
+            logger.info("📊 일일 성과 리포트 생성 중...")
+            logger.info("=" * 60)
+            
+            # 1. 현재 자산 조회
+            asset_info = self.calculate_total_asset()
+            if not asset_info:
+                logger.error("❌ 자산 조회 실패 - 리포트 생성 중단")
+                return
+            
+            current_asset = asset_info['total_asset']
+            
+            # 2. 성과 데이터 로드
+            perf = config.get('performance', {})
+            baseline_asset = perf.get('baseline_asset', 500000)
+            baseline_date = perf.get('baseline_date', '')
+            
+            net_realized_profit = perf.get('net_realized_profit', 0)
+            total_trades = perf.get('total_trades', 0)
+            winning_trades = perf.get('winning_trades', 0)
+            losing_trades = perf.get('losing_trades', 0)
+            win_rate = perf.get('win_rate', 0)
+            
+            # 3. 미실현 손익 계산
+            unrealized_info = self.calculate_unrealized_profit()
+            unrealized_profit = unrealized_info['unrealized_profit']
+            
+            # 4. 총 수익 계산
+            total_profit = net_realized_profit + unrealized_profit
+            total_profit_rate = (total_profit / baseline_asset * 100) if baseline_asset > 0 else 0
+            
+            # 5. 계좌 증감
+            account_change = current_asset - baseline_asset
+            account_change_rate = (account_change / baseline_asset * 100) if baseline_asset > 0 else 0
+            
+            # 6. 최고/최저 기록 업데이트
+            best_rate = perf.get('best_performance_rate', 0)
+            worst_rate = perf.get('worst_performance_rate', 0)
+            
+            if total_profit_rate > best_rate:
+                config.set('performance.best_performance_rate', total_profit_rate)
+                config.set('performance.best_performance_date', datetime.now().strftime("%Y-%m-%d"))
+                best_rate = total_profit_rate
+            
+            if worst_rate == 0 or total_profit_rate < worst_rate:
+                config.set('performance.worst_performance_rate', total_profit_rate)
+                config.set('performance.worst_performance_date', datetime.now().strftime("%Y-%m-%d"))
+                worst_rate = total_profit_rate
+            
+            # 7. 오늘 실적 계산 (어제 대비)
+            last_report_date = perf.get('last_report_date', '')
+            today_date = datetime.now().strftime("%Y-%m-%d")
+            
+            # 오늘 날짜로 업데이트
+            config.set('performance.last_report_date', today_date)
+            
+            # 8. 리포트 메시지 생성
+            today_str = datetime.now().strftime("%Y-%m-%d (%a)")
+            
+            msg = f"📊 **일일 매매 성과 리포트**\n"
+            msg += f"{'━'*30}\n"
+            msg += f"📅 {today_str}\n\n"
+            
+            msg += f"💰 **자산 현황**\n"
+            msg += f"• 기준 자산: {baseline_asset:,}원 ({baseline_date} 기준)\n"
+            msg += f"• 현재 자산: {current_asset:,}원\n"
+            msg += f"• 계좌 증감: {account_change:+,}원 ({account_change_rate:+.2f}%)\n\n"
+            
+            msg += f"🎯 **실제 봇 성과** (거래 기반)\n"
+            msg += f"• 실현 수익: {net_realized_profit:+,}원\n"
+            msg += f"• 미실현 수익: {unrealized_profit:+,}원\n"
+            msg += f"• 순 수익: {total_profit:+,}원\n"
+            msg += f"• 수익률: {total_profit_rate:+.2f}%\n\n"
+            
+            msg += f"📈 **거래 통계** (누적)\n"
+            msg += f"• 총 거래: {total_trades}회\n"
+            msg += f"• 수익 거래: {winning_trades}회\n"
+            msg += f"• 손실 거래: {losing_trades}회\n"
+            msg += f"• 승률: {win_rate:.1f}%\n\n"
+            
+            msg += f"🏆 **역대 기록**\n"
+            best_date = perf.get('best_performance_date', '')
+            worst_date = perf.get('worst_performance_date', '')
+            
+            if best_rate > 0:
+                msg += f"• 최고 수익률: {best_rate:+.2f}% ({best_date})\n"
+            if worst_rate < 0:
+                msg += f"• 최저 수익률: {worst_rate:+.2f}% ({worst_date})\n"
+            
+            msg += f"\n{'━'*30}\n"
+            msg += f"💡 추가 입금 시 config 파일에서\n"
+            msg += f"   baseline_asset을 수동 업데이트하세요."
+            
+            logger.info("✅ 일일 리포트 생성 완료")
+            logger.info(msg)
+            
+            if config.get("use_discord_alert", True):
+                discord_alert.SendMessage(msg)
+            
+        except Exception as e:
+            logger.error(f"일일 리포트 생성 실패: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
 
 ################################### Watchdog 핸들러 ##################################
 
