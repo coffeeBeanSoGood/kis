@@ -1764,54 +1764,66 @@ class SignalMonitor:
             
             signals_found = []
             alerts_sent = []
-            
+
             only_strong_signals = MONITOR_CONFIG.get("discord_only_strong_signals", True)
-            
+
             for stock_code, stock_info in TARGET_STOCKS.items():
                 try:
                     result = self.analyze_timing(
-                        stock_code, 
+                        stock_code,
                         stock_info,
                         foreign_cache,
                         institution_cache
                     )
-                    
+
                     if result:
                         self.signal_cache[stock_code] = result
-                        
+
                         signal = result["signal"]
                         score = result["score"]
                         confidence = result.get("confidence", 0)
                         threshold = MONITOR_CONFIG["signal_threshold"]
-                        
+
+                        # ✅ 수정: 히스토리 저장 조건 (점수 기준)
                         should_track = False
                         
-                        if only_strong_signals:
-                            if signal in ["STRONG_BUY", "STRONG_SELL"]:
-                                should_track = True
-                        else:
-                            if score >= threshold or signal in ["SELL", "STRONG_SELL"]:
-                                should_track = True
-                        
+                        if score >= threshold or signal in ["SELL", "STRONG_SELL"]:
+                            should_track = True
+
                         # 신뢰도 필터링
                         if should_track and confidence < 0.4:
                             logger.warning(f"⚠️ {stock_info['name']}: 신뢰도 낮음 ({confidence*100:.0f}%) - 신호 제외")
                             should_track = False
-                        
+
                         if should_track:
                             signals_found.append(result)
-                            
+
+                            # ✅ 히스토리는 모든 신호 저장
                             if MONITOR_CONFIG["save_history"]:
                                 self.signal_history.append(result)
+
+                            # ✅ 수정: 알림 발송은 설정에 따라 제한
+                            should_alert = False
                             
-                            if self.should_send_alert(stock_code, result):
+                            if only_strong_signals:
+                                # STRONG 신호만 알림
+                                if signal in ["STRONG_BUY", "STRONG_SELL"]:
+                                    should_alert = True
+                            else:
+                                # 모든 신호 알림
+                                should_alert = True
+                            
+                            if should_alert and self.should_send_alert(stock_code, result):
                                 self.send_signal_alert(result)
                                 alerts_sent.append(result)
                             else:
-                                logger.debug(f"중복 알림 스킵: {stock_info['name']} - {signal}")
-                    
+                                if should_alert:
+                                    logger.debug(f"중복 알림 스킵: {stock_info['name']} - {signal}")
+                                else:
+                                    logger.debug(f"STRONG 신호 아님 - 알림 스킵: {stock_info['name']} - {signal}")
+
                     time.sleep(0.5)
-                    
+
                 except Exception as stock_e:
                     logger.error(f"{stock_info['name']} 분석 실패: {stock_e}")
                     continue
