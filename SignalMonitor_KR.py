@@ -884,7 +884,7 @@ class SignalMonitor:
             return None
 
     def get_investor_data_cached(self):
-        """외국인/기관 데이터 캐싱 (5분마다 갱신) - 수정 버전"""
+        """외국인/기관 데이터 캐싱 (5분마다 갱신) - API Raw Data 진단"""
         try:
             now = datetime.now()
             
@@ -893,107 +893,245 @@ class SignalMonitor:
                 logger.debug(f"✅ 캐시 사용 중 (갱신 후 {(now - self.cache_timestamp).total_seconds():.0f}초 경과)")
                 return self.foreign_cache, self.institution_cache
             
-            logger.info("🔄 외국인/기관 데이터 갱신 중...")
+            logger.info("=" * 60)
+            logger.info("🔄 외국인/기관 데이터 API 갱신 시작")
+            logger.info("=" * 60)
             
-            # 🔥 수정: 실제 존재하는 API 함수 호출
-            logger.debug("📡 외국인 순매수 데이터 API 호출...")
-            foreign_data = self.api_call_with_throttle(
-                self.kiwoom.GetRealtimeInvestorTrading,
-                market_type="000",
-                investor="6",
-                foreign_all="0",
-                exchange_type="3"
-            )
+            # ============================================
+            # 🔥🔥🔥 외국인 순매수 데이터 API 호출 + Raw Data 분석
+            # ============================================
+            logger.info("📡 [1/2] 외국인 순매수 데이터 API 호출 중...")
+            logger.debug(f"   파라미터: market_type=000, investor=6, foreign_all=0, exchange_type=3")
             
-            # 🔥 디버그: API 응답 원본 확인
-            if foreign_data is None:
-                logger.warning("⚠️ 외국인 API 응답: None (데이터 없음)")
-            elif not foreign_data:
-                logger.warning("⚠️ 외국인 API 응답: 빈 리스트 (0건)")
-            else:
-                logger.info(f"✅ 외국인 API 응답: {len(foreign_data)}건 수신")
-                logger.debug(f"   📄 응답 샘플 (최대 3건):")
-                for i, item in enumerate(foreign_data[:3]):
-                    logger.debug(f"      [{i+1}] {item}")
+            # 🔥 Kiwoom API Helper의 GetRealtimeInvestorTrading 직접 호출하여 raw result 확인
+            try:
+                # API 호출 - 내부 구현 확인 필요
+                foreign_result_raw = self.kiwoom.GetRealtimeInvestorTrading(
+                    market_type="000",
+                    investor="6",
+                    foreign_all="0",
+                    exchange_type="3"
+                )
+                
+                # 🔥 Raw 응답 전체 출력
+                logger.info("=" * 60)
+                logger.info("🔍 외국인 API Raw Response 분석:")
+                logger.info(f"   응답 타입: {type(foreign_result_raw)}")
+                
+                if foreign_result_raw is None:
+                    logger.error("   ❌ 응답: None (API 호출 실패)")
+                    foreign_data = None
+                    foreign_valid = False
+                    
+                elif isinstance(foreign_result_raw, list):
+                    logger.info(f"   ✅ 응답: 리스트 (길이 {len(foreign_result_raw)})")
+                    
+                    if len(foreign_result_raw) == 0:
+                        logger.warning("   ⚠️ 빈 리스트 (데이터 0건)")
+                        foreign_valid = False
+                    else:
+                        logger.info(f"   📊 수신 데이터: {len(foreign_result_raw)}건")
+                        logger.info(f"   📄 첫 번째 항목 샘플:")
+                        logger.info(f"      {foreign_result_raw[0]}")
+                        foreign_valid = True
+                        
+                    foreign_data = foreign_result_raw
+                    
+                elif isinstance(foreign_result_raw, dict):
+                    logger.info(f"   ⚠️ 응답: 딕셔너리 (예상과 다름)")
+                    logger.info(f"   📄 딕셔너리 키 목록: {list(foreign_result_raw.keys())}")
+                    logger.info(f"   📄 전체 내용:")
+                    logger.info(f"      {foreign_result_raw}")
+                    
+                    # 혹시 딕셔너리 안에 데이터 배열이 있는지 확인
+                    for key, value in foreign_result_raw.items():
+                        if isinstance(value, list) and len(value) > 0:
+                            logger.info(f"   🔍 발견: '{key}' 키에 리스트 데이터 {len(value)}건 존재")
+                            logger.info(f"      샘플: {value[0]}")
+                    
+                    foreign_data = []
+                    foreign_valid = False
+                    
+                else:
+                    logger.error(f"   ❌ 예상치 못한 응답 타입: {type(foreign_result_raw)}")
+                    logger.error(f"      내용: {foreign_result_raw}")
+                    foreign_data = None
+                    foreign_valid = False
+                    
+                logger.info("=" * 60)
+                
+            except Exception as api_error:
+                logger.error(f"❌ 외국인 API 호출 중 예외 발생: {api_error}")
+                import traceback
+                logger.error(traceback.format_exc())
+                foreign_data = None
+                foreign_valid = False
             
-            logger.debug("📡 기관 순매수 데이터 API 호출...")
-            institution_data = self.api_call_with_throttle(
-                self.kiwoom.GetRealtimeInvestorTrading,
-                market_type="000",
-                investor="7",
-                foreign_all="0",
-                exchange_type="3"
-            )
+            # ============================================
+            # 🔥🔥🔥 기관 순매수 데이터 API 호출 + Raw Data 분석
+            # ============================================
+            logger.info("📡 [2/2] 기관 순매수 데이터 API 호출 중...")
+            logger.debug(f"   파라미터: market_type=000, investor=7, foreign_all=0, exchange_type=3")
             
-            # 🔥 디버그: API 응답 원본 확인
-            if institution_data is None:
-                logger.warning("⚠️ 기관 API 응답: None (데이터 없음)")
-            elif not institution_data:
-                logger.warning("⚠️ 기관 API 응답: 빈 리스트 (0건)")
-            else:
-                logger.info(f"✅ 기관 API 응답: {len(institution_data)}건 수신")
-                logger.debug(f"   📄 응답 샘플 (최대 3건):")
-                for i, item in enumerate(institution_data[:3]):
-                    logger.debug(f"      [{i+1}] {item}")
+            try:
+                institution_result_raw = self.kiwoom.GetRealtimeInvestorTrading(
+                    market_type="000",
+                    investor="7",
+                    foreign_all="0",
+                    exchange_type="3"
+                )
+                
+                # 🔥 Raw 응답 전체 출력
+                logger.info("=" * 60)
+                logger.info("🔍 기관 API Raw Response 분석:")
+                logger.info(f"   응답 타입: {type(institution_result_raw)}")
+                
+                if institution_result_raw is None:
+                    logger.error("   ❌ 응답: None (API 호출 실패)")
+                    institution_data = None
+                    institution_valid = False
+                    
+                elif isinstance(institution_result_raw, list):
+                    logger.info(f"   ✅ 응답: 리스트 (길이 {len(institution_result_raw)})")
+                    
+                    if len(institution_result_raw) == 0:
+                        logger.warning("   ⚠️ 빈 리스트 (데이터 0건)")
+                        institution_valid = False
+                    else:
+                        logger.info(f"   📊 수신 데이터: {len(institution_result_raw)}건")
+                        logger.info(f"   📄 첫 번째 항목 샘플:")
+                        logger.info(f"      {institution_result_raw[0]}")
+                        institution_valid = True
+                        
+                    institution_data = institution_result_raw
+                    
+                elif isinstance(institution_result_raw, dict):
+                    logger.info(f"   ⚠️ 응답: 딕셔너리 (예상과 다름)")
+                    logger.info(f"   📄 딕셔너리 키 목록: {list(institution_result_raw.keys())}")
+                    logger.info(f"   📄 전체 내용:")
+                    logger.info(f"      {institution_result_raw}")
+                    
+                    # 혹시 딕셔너리 안에 데이터 배열이 있는지 확인
+                    for key, value in institution_result_raw.items():
+                        if isinstance(value, list) and len(value) > 0:
+                            logger.info(f"   🔍 발견: '{key}' 키에 리스트 데이터 {len(value)}건 존재")
+                            logger.info(f"      샘플: {value[0]}")
+                    
+                    institution_data = []
+                    institution_valid = False
+                    
+                else:
+                    logger.error(f"   ❌ 예상치 못한 응답 타입: {type(institution_result_raw)}")
+                    logger.error(f"      내용: {institution_result_raw}")
+                    institution_data = None
+                    institution_valid = False
+                    
+                logger.info("=" * 60)
+                
+            except Exception as api_error:
+                logger.error(f"❌ 기관 API 호출 중 예외 발생: {api_error}")
+                import traceback
+                logger.error(traceback.format_exc())
+                institution_data = None
+                institution_valid = False
             
-            # 외국인 캐시 구성
+            logger.info("-" * 60)
+            
+            # ============================================
+            # 🔥🔥🔥 외국인 캐시 구성 (종목코드 정규화 추가)
+            # ============================================
             self.foreign_cache = {}
-            if foreign_data:
+            if foreign_valid and foreign_data:
                 for item in foreign_data:
-                    stock_code = item.get("StockCode", "")
+                    stock_code_raw = item.get("StockCode", "")  # 🔥 수정: stock_code → stock_code_raw
                     net_buy = item.get("NetBuyQty", 0)
                     
-                    if not stock_code:
-                        logger.debug(f"   ⚠️ StockCode 누락: {item}")
+                    if not stock_code_raw:  # 🔥 수정
                         continue
+                    
+                    # 🔥🔥🔥 [추가] 종목코드 정규화: _AL, _KS, _KQ 등 접미사 제거
+                    stock_code = stock_code_raw.split("_")[0].strip()
                     
                     self.foreign_cache[stock_code] = net_buy
-                    
-                    if stock_code in TARGET_STOCKS:
-                        stock_name = TARGET_STOCKS[stock_code]["name"]
-                        logger.debug(f"   ✓ [{stock_name}] 외국인 순매수: {net_buy:+,}주")
             
-            # 기관 캐시 구성
+            # ============================================
+            # 🔥🔥🔥 기관 캐시 구성 (종목코드 정규화 추가)
+            # ============================================
             self.institution_cache = {}
-            if institution_data:
+            if institution_valid and institution_data:
                 for item in institution_data:
-                    stock_code = item.get("StockCode", "")
+                    stock_code_raw = item.get("StockCode", "")  # 🔥 수정: stock_code → stock_code_raw
                     net_buy = item.get("NetBuyQty", 0)
                     
-                    if not stock_code:
-                        logger.debug(f"   ⚠️ StockCode 누락: {item}")
+                    if not stock_code_raw:  # 🔥 수정
                         continue
                     
-                    self.institution_cache[stock_code] = net_buy
+                    # 🔥🔥🔥 [추가] 종목코드 정규화: _AL, _KS, _KQ 등 접미사 제거
+                    stock_code = stock_code_raw.split("_")[0].strip()
                     
-                    if stock_code in TARGET_STOCKS:
-                        stock_name = TARGET_STOCKS[stock_code]["name"]
-                        logger.debug(f"   ✓ [{stock_name}] 기관 순매수: {net_buy:+,}주")
+                    self.institution_cache[stock_code] = net_buy
             
-            self.cache_timestamp = now
+            # ============================================
+            # 캐시 구성 완료 보고
+            # ============================================
+            logger.info("📦 캐시 구성 완료:")
+            logger.info(f"   - 외국인 캐시: {len(self.foreign_cache)}종목")
+            logger.info(f"   - 기관 캐시: {len(self.institution_cache)}종목")
             
-            logger.info(f"✅ 캐시 갱신 완료: 외국인 {len(self.foreign_cache)}종목, 기관 {len(self.institution_cache)}종목")
+            # ============================================
+            # 🔥 관심 종목 데이터 매칭 확인
+            # ============================================
+            logger.info("-" * 60)
+            logger.info(f"🎯 관심종목 데이터 매칭 확인 (총 {len(TARGET_STOCKS)}종목):")
             
-            # 관심 종목 캐시 상태 요약
-            logger.info("📊 관심 종목 외국인/기관 데이터 요약:")
+            found_count = 0
+            missing_stocks = []
+            
             for stock_code, stock_info in TARGET_STOCKS.items():
                 stock_name = stock_info["name"]
-                foreign = self.foreign_cache.get(stock_code, 0)
-                institution = self.institution_cache.get(stock_code, 0)
+                foreign = self.foreign_cache.get(stock_code, None)
+                institution = self.institution_cache.get(stock_code, None)
                 
-                if foreign != 0 or institution != 0:
-                    logger.info(f"   [{stock_name}] 외국인:{foreign:+,}주, 기관:{institution:+,}주")
+                # 외국인 또는 기관 데이터가 하나라도 있으면 "있음"으로 판정
+                if foreign is not None or institution is not None:
+                    found_count += 1
+                    foreign_str = f"{foreign:+,}주" if foreign is not None else "N/A"
+                    institution_str = f"{institution:+,}주" if institution is not None else "N/A"
+                    logger.info(f"   ✅ [{stock_name}] 외국인:{foreign_str}, 기관:{institution_str}")
                 else:
-                    logger.debug(f"   [{stock_name}] 외국인/기관 데이터 없음 (0)")
+                    missing_stocks.append(f"{stock_name}({stock_code})")
+            
+            # 통계 요약
+            logger.info("-" * 60)
+            logger.info(f"📊 매칭 결과:")
+            logger.info(f"   ✅ 데이터 있음: {found_count}종목")
+            logger.info(f"   ⚠️ 데이터 없음: {len(missing_stocks)}종목")
+            
+            if len(self.foreign_cache) == 0 and len(self.institution_cache) == 0:
+                logger.error("=" * 60)
+                logger.error("🚨 심각한 문제: API에서 모든 종목 데이터가 0건입니다!")
+                logger.error("🔍 가능한 원인:")
+                logger.error("   1. API 파라미터 오류 (market_type, investor 값 확인)")
+                logger.error("   2. API 응답 구조 변경 (키움증권 API 업데이트)")
+                logger.error("   3. API 인증/권한 문제")
+                logger.error("   4. 장 시작 전이거나 데이터 수집 시간대 문제")
+                logger.error("=" * 60)
+            elif missing_stocks:
+                logger.warning(f"   🔍 데이터 없는 종목: {', '.join(missing_stocks)}")
+                logger.warning(f"   💡 원인: API 응답에 해당 종목 미포함 (거래량 부족 또는 종목코드 불일치)")
+            
+            # 캐시 타임스탬프 갱신
+            self.cache_timestamp = now
+            logger.info("=" * 60)
             
             return self.foreign_cache, self.institution_cache
             
         except Exception as e:
-            logger.error(f"외국인/기관 데이터 캐싱 실패: {e}")
+            logger.error(f"❌ 외국인/기관 데이터 캐싱 실패: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return {}, {}
-    
+            
     def calculate_normalized_score(self, indicator_scores, available_indicators):
         """신호 점수 정규화"""
         try:
