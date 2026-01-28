@@ -184,17 +184,21 @@ class ContinuousBuyTracker:
             sig for sig in self.buy_history[stock_code]
             if sig['timestamp'] > cutoff_time
         ]
-    
+
     def check_continuous_buy(self, stock_code, stock_name):
         """
-        연속 BUY 검증
+        연속 BUY 검증 (안전 필터 추가 버전)
         
         조건:
         1. 최근 20분 이내 BUY 신호 3회 이상
         2. 다음 중 하나 이상 만족:
-           A) 체결강도 150% 이상이 2회 이상
-           B) 상승 모멘텀 +3% 이상이 2회 이상  
-           C) 외국인+기관 동반 순매수 1회 이상
+        A) 체결강도 150% 이상이 2회 이상
+        B) 상승 모멘텀 +3% 이상이 2회 이상  
+        C) 외국인+기관 동반 순매수 1회 이상
+        3. 🔥 [신규] 안전 필터 통과:
+        - 시장 급락이 아닐 것
+        - 가격 하락 추세가 아닐 것
+        - 최종 신호가 충분히 강할 것
         """
         if stock_code in self.confirmed_stocks:
             return None  # 이미 확정된 종목
@@ -205,7 +209,74 @@ class ContinuousBuyTracker:
         if len(signals) < 3:
             return None
         
-        # 패턴 분석
+        # ============================================
+        # 🔥 [신규 추가 1] 시장 급락 필터
+        # ============================================
+        try:
+            # SignalMonitor 인스턴스의 get_market_condition() 사용
+            # (ContinuousBuyTracker가 SignalMonitor의 메서드로 접근 가능하도록 수정 필요)
+            # 임시로 간단한 체크만 수행
+            
+            # signals의 details에서 시장 정보 확인
+            recent_signal = signals[-1]
+            reasons = recent_signal.get('reasons', [])
+            
+            # reasons에 시장 급락 경고가 있는지 확인
+            has_market_warning = any('시장 급락' in r or '🚨' in r for r in reasons)
+            
+            if has_market_warning:
+                logger.warning(f"  ⚠️ {stock_name}: 시장 급락으로 CONFIRMED_BUY 생성 제한")
+                return None
+                
+        except Exception as e:
+            logger.debug(f"시장 상황 체크 중 오류 (계속 진행): {e}")
+        
+        # ============================================
+        # 🔥 [신규 추가 2] 가격 추세 확인
+        # ============================================
+        try:
+            # 최근 3개 BUY 신호의 등락률 확인
+            change_rates = []
+            for sig in signals[-3:]:
+                details = sig.get('details', {})
+                price_info = details.get('price', {})
+                change_rate = price_info.get('change_rate', 0)
+                change_rates.append(change_rate)
+            
+            # 연속 하락 추세 체크 (3회 연속 하락)
+            if len(change_rates) >= 3:
+                if change_rates[2] < change_rates[1] < change_rates[0]:
+                    logger.warning(f"  ⚠️ {stock_name}: 가격 하락 추세로 CONFIRMED_BUY 제한")
+                    logger.warning(f"     추세: {change_rates[0]:+.2f}% → {change_rates[1]:+.2f}% → {change_rates[2]:+.2f}%")
+                    return None
+            
+            # 최종 등락률이 마이너스면 제외
+            if change_rates and change_rates[-1] < -0.5:
+                logger.warning(f"  ⚠️ {stock_name}: 최근 등락률 마이너스 ({change_rates[-1]:+.2f}%)")
+                return None
+                
+        except Exception as e:
+            logger.debug(f"가격 추세 체크 중 오류 (계속 진행): {e}")
+        
+        # ============================================
+        # 🔥 [신규 추가 3] 최종 신호 강도 확인
+        # ============================================
+        last_signal = signals[-1]
+        last_score = last_signal.get('score', 0)
+        
+        if last_score < 58:  # 마지막 BUY가 너무 약하면 제외
+            logger.warning(f"  ⚠️ {stock_name}: 최근 BUY 신호 약화 ({last_score:.1f}점 < 58점)")
+            return None
+        
+        # 평균 점수도 체크
+        avg_score = sum(s['score'] for s in signals) / len(signals)
+        if avg_score < 60:  # 평균이 60점 미만이면 제외
+            logger.warning(f"  ⚠️ {stock_name}: 평균 점수 낮음 ({avg_score:.1f}점 < 60점)")
+            return None
+        
+        # ============================================
+        # 기존 패턴 분석
+        # ============================================
         strong_execution_count = 0  # 체결강도 150% 이상
         strong_momentum_count = 0   # 상승 모멘텀 +3% 이상
         has_foreign_institution = False  # 외국인+기관 동반 순매수
@@ -226,7 +297,8 @@ class ContinuousBuyTracker:
                     break
                 elif '상승 모멘텀' in reason:
                     # "+X%" 형식에서 숫자 추출
-                    match = re.search(r'\+(\d+\.?\d*)', reason)
+                    import re
+                    match = re.search(r'\+(\d+\.\d*)', reason)
                     if match and float(match.group(1)) >= 3.0:
                         strong_momentum_count += 1
                         break
@@ -257,8 +329,25 @@ class ContinuousBuyTracker:
             # 확정 종목으로 등록
             self.confirmed_stocks.add(stock_code)
             
-            # 평균 점수 계산
-            avg_score = sum(s['score'] for s in signals) / len(signals)
+            # ============================================
+            # 🔥 [신규 추가 4] 확정 근거에 필터 통과 정보 추가
+            # ============================================
+            try:
+                # 시장 정상
+                if not has_market_warning:
+                    confirmation_reason.append("✅ 시장 정상 (급락 없음)")
+                
+                # 가격 추세
+                if change_rates and change_rates[-1] >= 0:
+                    confirmation_reason.append(f"✅ 가격 상승 유지 ({change_rates[-1]:+.2f}%)")
+                
+                # 신호 강도
+                confirmation_reason.append(f"✅ 신호 강도 양호 (최근 {last_score:.1f}점, 평균 {avg_score:.1f}점)")
+                
+            except Exception as e:
+                logger.debug(f"확정 근거 추가 중 오류: {e}")
+            
+            logger.info(f"  🔥 {stock_name}: CONFIRMED_BUY 생성 (모든 필터 통과)")
             
             return {
                 'signal': 'CONFIRMED_BUY',
@@ -272,7 +361,7 @@ class ContinuousBuyTracker:
             }
         
         return None
-    
+   
     def cleanup_old_data(self):
         """1시간 이상 된 데이터 정리"""
         cutoff_time = datetime.now() - timedelta(hours=1)
