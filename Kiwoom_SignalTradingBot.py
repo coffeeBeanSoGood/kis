@@ -1903,10 +1903,10 @@ class SignalTradingBot:
         """
         try:
             logger.info(f"💰 자산 계산 시작 (시도: {retry_count + 1}/{max_retry + 1})")
-            
+
             # 1️⃣ 주문가능금액 조회 (타임아웃 10초)
             logger.debug("   → 1단계: 잔고 조회 시작...")
-            
+
             try:
                 balance = call_with_timeout(KiwoomAPI.GetBalance, timeout=10)
             except TimeoutError as e:
@@ -1919,7 +1919,7 @@ class SignalTradingBot:
                 else:
                     logger.error(f"❌ 최대 재시도 초과 - 자산 계산 실패")
                     return None
-            
+
             if not balance:
                 logger.error("❌ 잔고 조회 실패 (응답 없음)")
                 
@@ -1928,11 +1928,23 @@ class SignalTradingBot:
                     time.sleep(retry_count + 1)
                     return self.calculate_total_asset(retry_count + 1, max_retry)
                 else:
+                    logger.error(f"❌ 최대 재시도 초과 - 자산 계산 실패")
                     return None
-            
-            orderable_amt = int(balance.get('OrderableAmt', 0))
-            logger.debug(f"   ✅ 1단계 완료: 주문가능금액 {orderable_amt:,}원")
-            
+
+            # 🔥🔥🔥 개선: D+2 예수금 우선 사용 (정산 반영된 실제 금액)
+            orderable_amt = balance.get('OrderableAmt', 0)
+            d2_deposit = balance.get('D2_Deposit', 0)
+
+            # D+2 예수금이 주문가능금액보다 크면 D+2 사용 (매도 체결 반영)
+            if d2_deposit > orderable_amt:
+                logger.info(f"   💡 D+2 예수금 사용: {d2_deposit:,}원 (주문가능: {orderable_amt:,}원)")
+                logger.info(f"   → 정산 반영된 실제 금액으로 계산")
+                orderable_amt = d2_deposit
+            else:
+                logger.debug(f"   ✅ 주문가능금액 사용: {orderable_amt:,}원")
+
+            logger.debug(f"   ✅ 1단계 완료: 현금 {orderable_amt:,}원")
+
             # 2️⃣ 보유 주식 평가금액 계산
             logger.debug("   → 2단계: 보유주식 평가 시작...")
             holding_value = 0
