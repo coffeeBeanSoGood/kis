@@ -241,6 +241,52 @@ logger.info("=" * 60)
 
 ################################### 신호 기반 자동매매 봇 v3.0 ##################################
 
+# ============================================
+# 🔥 1. API 타임아웃 래퍼 함수 추가 (파일 상단에 추가)
+# ============================================
+
+class TimeoutError(Exception):
+    """타임아웃 예외"""
+    pass
+
+def call_with_timeout(func, timeout=10, *args, **kwargs):
+    """
+    함수를 타임아웃과 함께 실행
+    
+    Args:
+        func: 실행할 함수
+        timeout: 타임아웃 시간(초)
+        *args, **kwargs: 함수 인자
+    
+    Returns:
+        함수 실행 결과 또는 None (타임아웃 시)
+    
+    Raises:
+        TimeoutError: 타임아웃 발생 시
+    """
+    result = [None]
+    exception = [None]
+    
+    def target():
+        try:
+            result[0] = func(*args, **kwargs)
+        except Exception as e:
+            exception[0] = e
+    
+    thread = threading.Thread(target=target)
+    thread.daemon = True
+    thread.start()
+    thread.join(timeout)
+    
+    if thread.is_alive():
+        raise TimeoutError(f"{func.__name__} 타임아웃 ({timeout}초 초과)")
+    
+    if exception[0]:
+        raise exception[0]
+    
+    return result[0]
+
+
 class SignalTradingBot:
     """신호 기반 자동매매 봇 (watchdog + 멀티스레드)"""
     
@@ -434,57 +480,113 @@ class SignalTradingBot:
             return False
 
     def can_buy(self, stock_code):
+        """
+        매수 가능 여부 체크 (상세 로깅 추가)
+        
+        Returns:
+            tuple: (bool, str) - (매수가능여부, 사유)
+        """
         try:
+            logger.info(f"🔍 매수 가능 여부 체크 시작: {stock_code}")
+            
+            # 1️⃣ 보유 중 체크
+            logger.debug("   → 1단계: 보유 여부 확인...")
             with self.lock:
                 if stock_code in self.positions:
-                    logger.debug(f"🚫 {stock_code} 이미 보유 중")
+                    logger.debug(f"   ❌ 이미 보유 중")
                     return False, "이미 보유 중"
-                
-                # 매도 중인 종목도 체크
+            logger.debug("   ✅ 미보유 확인")
+            
+            # 2️⃣ 미체결 주문 체크
+            logger.debug("   → 2단계: 미체결 주문 확인...")
+            with self.lock:
                 if stock_code in self.pending_orders:
-                    pending = self.pending_orders[stock_code]
-                    order_type = pending.get('order_type', 'buy')
-                    logger.debug(f"🚫 {stock_code} {order_type.upper()} 미체결 주문 중")
-                    return False, f"{order_type.upper()} 미체결 주문 중"
-                
-                if self.is_in_cooldown(stock_code):
-                    return False, "쿨다운 중"
-                
-                # 🔥🔥🔥 최소 자산 체크 (40만원)
-                asset_info = self.calculate_total_asset()
-                if not asset_info:
-                    return False, "자산 조회 실패"
-                
-                total_asset = asset_info['total_asset']
-                min_asset = config.get("min_asset_threshold", 400000)
-                
-                if total_asset < min_asset:
-                    logger.error(f"🚨 최소 자산 미달!")
-                    logger.error(f"   현재 자산: {total_asset:,}원")
-                    logger.error(f"   최소 기준: {min_asset:,}원")
+                    logger.debug(f"   ❌ 미체결 주문 존재")
+                    return False, "미체결 주문 있음"
+            logger.debug("   ✅ 미체결 주문 없음")
+            
+            # 3️⃣ 쿨다운 체크
+            logger.debug("   → 3단계: 쿨다운 확인...")
+            with self.lock:
+                if stock_code in self.cooldowns:
+                    cooldown_until = self.cooldowns[stock_code].get('cooldown_until', '')
                     
-                    # 디스코드 긴급 알림
-                    if config.get("use_discord_alert", True):
-                        msg = f"🚨 **긴급! 최소 자산 미달**\n"
-                        msg += f"현재 자산: {total_asset:,}원\n"
-                        msg += f"최소 기준: {min_asset:,}원\n"
-                        msg += f"차액: {total_asset - min_asset:,}원\n"
-                        msg += f"⛔ 모든 매수 중지!"
-                        discord_alert.SendMessage(msg)
-                    
-                    return False, f"최소 자산 미달 ({total_asset:,}원 < {min_asset:,}원)"
+                    if cooldown_until:
+                        try:
+                            cooldown_dt = datetime.strptime(cooldown_until, "%Y-%m-%d %H:%M:%S")
+                            now = datetime.now()
+                            
+                            if now < cooldown_dt:
+                                remaining = (cooldown_dt - now).total_seconds() / 3600
+                                logger.debug(f"   ❌ 쿨다운 중 (남은 시간: {remaining:.1f}시간)")
+                                return False, f"쿨다운 중 ({remaining:.1f}시간 남음)"
+                            else:
+                                # 쿨다운 만료 - 삭제
+                                logger.debug(f"   ✅ 쿨다운 만료 - 삭제")
+                                del self.cooldowns[stock_code]
+                                self.save_cooldowns()
+                        except Exception as e:
+                            logger.error(f"   ⚠️ 쿨다운 파싱 오류: {e}")
+            logger.debug("   ✅ 쿨다운 없음")
+            
+            # 4️⃣ 총 자산 계산 (타임아웃 적용)
+            logger.debug("   → 4단계: 자산 계산...")
+            
+            try:
+                asset_info = call_with_timeout(
+                    self.calculate_total_asset,
+                    timeout=30  # 전체 자산 계산은 30초 타임아웃
+                )
+            except TimeoutError as e:
+                logger.error(f"   ❌ 자산 계산 타임아웃: {e}")
+                return False, "자산 조회 타임아웃"
+            
+            if not asset_info:
+                logger.error(f"   ❌ 자산 조회 실패")
+                return False, "자산 조회 실패"
+            
+            total_asset = asset_info['total_asset']
+            logger.debug(f"   ✅ 자산 조회 완료: {total_asset:,}원")
+            
+            # 5️⃣ 최소 자산 체크
+            logger.debug("   → 5단계: 최소 자산 확인...")
+            min_asset = config.get('min_asset_threshold', 400000)
+            
+            if total_asset < min_asset:
+                logger.error(f"   ❌ 최소 자산 미달")
+                logger.error(f"      현재 자산: {total_asset:,}원")
+                logger.error(f"      최소 기준: {min_asset:,}원")
                 
-                max_positions = config.get("max_positions", 3)
+                if config.get("use_discord_alert", True):
+                    msg = f"🚨 **긴급! 최소 자산 미달**\n"
+                    msg += f"현재 자산: {total_asset:,}원\n"
+                    msg += f"최소 기준: {min_asset:,}원\n"
+                    msg += f"차액: {total_asset - min_asset:,}원\n"
+                    msg += f"⛔ 모든 매수 중지!"
+                    discord_alert.SendMessage(msg)
+                
+                return False, f"최소 자산 미달 ({total_asset:,}원 < {min_asset:,}원)"
+            logger.debug(f"   ✅ 최소 자산 충족")
+            
+            # 6️⃣ 최대 종목 수 체크
+            logger.debug("   → 6단계: 최대 종목 수 확인...")
+            max_positions = config.get("max_positions", 3)
+            
+            with self.lock:
                 total_stocks = len(self.positions) + len(self.pending_orders)
-                
-                if total_stocks >= max_positions:
-                    logger.debug(f"🚫 최대 종목 수 도달 ({total_stocks}/{max_positions})")
-                    return False, f"최대 종목 수 도달 ({total_stocks}/{max_positions})"
-                
-                return True, "매수 가능"
+            
+            if total_stocks >= max_positions:
+                logger.debug(f"   ❌ 최대 종목 수 도달 ({total_stocks}/{max_positions})")
+                return False, f"최대 종목 수 도달 ({total_stocks}/{max_positions})"
+            logger.debug(f"   ✅ 종목 수 여유 있음 ({total_stocks}/{max_positions})")
+            
+            logger.info("✅ 매수 가능 여부 체크 완료: 매수 가능!")
+            return True, "매수 가능"
             
         except Exception as e:
-            logger.error(f"매수 가능 여부 체크 실패: {e}")
+            logger.error(f"❌ 매수 가능 여부 체크 실패: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False, str(e)
 
     def adjust_price_to_tick(self, price, is_buy=True):
@@ -538,18 +640,38 @@ class SignalTradingBot:
                 return price
 
     def execute_buy(self, signal):
+        """매수 실행 (개선된 버전)"""
         try:
             stock_code = signal.get('stock_code', '')
             stock_name = signal.get('stock_name', '')
             
+            logger.info("")
             logger.info("=" * 60)
-            logger.info(f"🚀 {stock_name} 매수 시도")
+            logger.info(f"🚀 {stock_name}({stock_code}) 매수 시도 시작")
+            logger.info(f"   신호: {signal.get('signal')} (점수: {signal.get('score'):.1f})")
+            logger.info(f"   시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             logger.info("=" * 60)
+
+            # 🔥 매수 가능 여부 체크 (타임아웃 적용)
+            logger.info("📋 1단계: 매수 가능 여부 체크")
             
-            can_buy, reason = self.can_buy(stock_code)
+            try:
+                can_buy, reason = call_with_timeout(
+                    self.can_buy,
+                    timeout=40,  # can_buy 전체는 40초 타임아웃
+                    stock_code=stock_code
+                )
+            except TimeoutError as e:
+                logger.error(f"❌ 매수 가능 여부 체크 타임아웃: {e}")
+                logger.error(f"   API 응답 지연 - 이번 매수 건너뜀")
+                return False
+
             if not can_buy:
                 logger.warning(f"❌ 매수 불가: {reason}")
+                logger.warning(f"   매수 프로세스 중단")
                 return False
+            
+            logger.info(f"✅ 매수 가능 확인: {reason}")
             
             # 🔥🔥🔥 1️⃣ 총 자산 계산
             asset_info = self.calculate_total_asset()
@@ -1743,10 +1865,14 @@ class SignalTradingBot:
         self.running = False
         logger.info("🛑 봇 중지 신호 전송")
 
-    def calculate_total_asset(self) -> dict:
+    def calculate_total_asset(self, retry_count=0, max_retry=3) -> dict:
         """
-        총 자산 계산
+        총 자산 계산 (타임아웃 및 재시도 추가)
         = 주문가능금액 + 보유주식평가금액 + 미체결매수금액
+        
+        Args:
+            retry_count: 현재 재시도 횟수
+            max_retry: 최대 재시도 횟수
         
         Returns:
             dict: {
@@ -1757,37 +1883,88 @@ class SignalTradingBot:
             }
         """
         try:
-            # 1️⃣ 주문가능금액 조회
-            balance = KiwoomAPI.GetBalance()
+            logger.info(f"💰 자산 계산 시작 (시도: {retry_count + 1}/{max_retry + 1})")
+            
+            # 1️⃣ 주문가능금액 조회 (타임아웃 10초)
+            logger.debug("   → 1단계: 잔고 조회 시작...")
+            
+            try:
+                balance = call_with_timeout(KiwoomAPI.GetBalance, timeout=10)
+            except TimeoutError as e:
+                logger.error(f"❌ 잔고 조회 타임아웃: {e}")
+                
+                if retry_count < max_retry:
+                    logger.warning(f"🔄 {retry_count + 1}초 후 재시도...")
+                    time.sleep(retry_count + 1)
+                    return self.calculate_total_asset(retry_count + 1, max_retry)
+                else:
+                    logger.error(f"❌ 최대 재시도 초과 - 자산 계산 실패")
+                    return None
+            
             if not balance:
-                logger.error("❌ 잔고 조회 실패")
-                return None
+                logger.error("❌ 잔고 조회 실패 (응답 없음)")
+                
+                if retry_count < max_retry:
+                    logger.warning(f"🔄 {retry_count + 1}초 후 재시도...")
+                    time.sleep(retry_count + 1)
+                    return self.calculate_total_asset(retry_count + 1, max_retry)
+                else:
+                    return None
             
             orderable_amt = int(balance.get('OrderableAmt', 0))
+            logger.debug(f"   ✅ 1단계 완료: 주문가능금액 {orderable_amt:,}원")
             
             # 2️⃣ 보유 주식 평가금액 계산
+            logger.debug("   → 2단계: 보유주식 평가 시작...")
             holding_value = 0
             
             with self.lock:
-                for stock_code, position in self.positions.items():
+                position_count = len(self.positions)
+                logger.debug(f"      보유 종목 수: {position_count}개")
+                
+                for idx, (stock_code, position) in enumerate(self.positions.items(), 1):
                     try:
-                        stock_info = KiwoomAPI.GetStockInfo(stock_code)
+                        logger.debug(f"      {idx}/{position_count} - {stock_code} 평가 중...")
+                        
+                        stock_info = call_with_timeout(
+                            KiwoomAPI.GetStockInfo, 
+                            timeout=10,
+                            stock_code=stock_code
+                        )
+                        
                         if stock_info:
                             current_price = stock_info.get('CurrentPrice', 0)
                             quantity = position.get('quantity', 0)
-                            holding_value += current_price * quantity
+                            value = current_price * quantity
+                            holding_value += value
+                            logger.debug(f"         {current_price:,}원 × {quantity}주 = {value:,}원")
+                        else:
+                            logger.warning(f"      ⚠️ {stock_code} 현재가 조회 실패 - 스킵")
+                            
+                    except TimeoutError:
+                        logger.warning(f"      ⚠️ {stock_code} 현재가 조회 타임아웃 - 스킵")
                     except Exception as e:
-                        logger.error(f"보유주식 평가 오류 ({stock_code}): {e}")
+                        logger.error(f"      ❌ {stock_code} 평가 오류: {e}")
+            
+            logger.debug(f"   ✅ 2단계 완료: 보유주식 {holding_value:,}원")
             
             # 3️⃣ 미체결 매수 주문 금액 계산
+            logger.debug("   → 3단계: 미체결 주문 계산 시작...")
             pending_value = 0
             
             with self.lock:
+                pending_count = len(self.pending_orders)
+                logger.debug(f"      미체결 주문 수: {pending_count}개")
+                
                 for stock_code, pending in self.pending_orders.items():
                     if pending.get('order_type') == 'buy':
                         order_price = pending.get('order_price', 0)
                         order_quantity = pending.get('order_quantity', 0)
-                        pending_value += order_price * order_quantity
+                        value = order_price * order_quantity
+                        pending_value += value
+                        logger.debug(f"      {stock_code}: {order_price:,}원 × {order_quantity}주 = {value:,}원")
+            
+            logger.debug(f"   ✅ 3단계 완료: 미체결 {pending_value:,}원")
             
             # 4️⃣ 총 자산
             total_asset = orderable_amt + holding_value + pending_value
@@ -1799,15 +1976,24 @@ class SignalTradingBot:
                 'pending_value': pending_value
             }
             
-            logger.debug(f"💰 총 자산: {total_asset:,}원")
-            logger.debug(f"   현금: {orderable_amt:,}원")
-            logger.debug(f"   보유: {holding_value:,}원")
-            logger.debug(f"   미체결: {pending_value:,}원")
+            logger.info(f"✅ 자산 계산 완료!")
+            logger.info(f"   💰 총 자산: {total_asset:,}원")
+            logger.info(f"      현금: {orderable_amt:,}원")
+            logger.info(f"      보유: {holding_value:,}원")
+            logger.info(f"      미체결: {pending_value:,}원")
             
             return result
             
         except Exception as e:
-            logger.error(f"총 자산 계산 실패: {e}")
+            logger.error(f"❌ 총 자산 계산 예외: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            
+            if retry_count < max_retry:
+                logger.warning(f"🔄 {retry_count + 1}초 후 재시도...")
+                time.sleep(retry_count + 1)
+                return self.calculate_total_asset(retry_count + 1, max_retry)
+            
             return None
 
     def calculate_unrealized_profit(self) -> dict:
