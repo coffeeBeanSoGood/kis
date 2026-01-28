@@ -17,6 +17,8 @@ import pandas as pd
 import os
 import schedule
 from collections import deque
+from collections import defaultdict
+import re
 
 ################################### 로깅 처리 ##################################
 import logging
@@ -158,6 +160,132 @@ INDICATOR_WEIGHTS = {
     "trend": 0.15,       # 🔥 추세 분석 (15%)
 }
 
+################################### 연속 BUY 신호 추적 및 검증 클래스 ##################################
+class ContinuousBuyTracker:
+    """
+    연속 BUY 신호 추적 및 검증 시스템
+    """
+    def __init__(self):
+        self.buy_history = defaultdict(list)  # {stock_code: [신호 정보]}
+        self.confirmed_stocks = set()  # 이미 확정된 종목
+        
+    def add_buy_signal(self, stock_code, signal_data):
+        """BUY 신호 기록"""
+        self.buy_history[stock_code].append({
+            'timestamp': datetime.now(),
+            'score': signal_data.get('score', 0),
+            'reasons': signal_data.get('reasons', []),
+            'details': signal_data.get('details', {})
+        })
+        
+        # 20분 이상 오래된 신호 제거
+        cutoff_time = datetime.now() - timedelta(minutes=20)
+        self.buy_history[stock_code] = [
+            sig for sig in self.buy_history[stock_code]
+            if sig['timestamp'] > cutoff_time
+        ]
+    
+    def check_continuous_buy(self, stock_code, stock_name):
+        """
+        연속 BUY 검증
+        
+        조건:
+        1. 최근 20분 이내 BUY 신호 3회 이상
+        2. 다음 중 하나 이상 만족:
+           A) 체결강도 150% 이상이 2회 이상
+           B) 상승 모멘텀 +3% 이상이 2회 이상  
+           C) 외국인+기관 동반 순매수 1회 이상
+        """
+        if stock_code in self.confirmed_stocks:
+            return None  # 이미 확정된 종목
+        
+        signals = self.buy_history.get(stock_code, [])
+        
+        # 조건 1: 3회 이상
+        if len(signals) < 3:
+            return None
+        
+        # 패턴 분석
+        strong_execution_count = 0  # 체결강도 150% 이상
+        strong_momentum_count = 0   # 상승 모멘텀 +3% 이상
+        has_foreign_institution = False  # 외국인+기관 동반 순매수
+        
+        for sig in signals:
+            reasons = sig.get('reasons', [])
+            details = sig.get('details', {})
+            
+            # 체결강도 체크
+            execution = details.get('execution', {})
+            if execution.get('strength', 0) >= 150:
+                strong_execution_count += 1
+            
+            # 상승 모멘텀 체크 (reasons에서 추출)
+            for reason in reasons:
+                if '강한 상승 모멘텀' in reason and '+3' in reason:
+                    strong_momentum_count += 1
+                    break
+                elif '상승 모멘텀' in reason:
+                    # "+X%" 형식에서 숫자 추출
+                    match = re.search(r'\+(\d+\.?\d*)', reason)
+                    if match and float(match.group(1)) >= 3.0:
+                        strong_momentum_count += 1
+                        break
+            
+            # 외국인+기관 동반 순매수 체크
+            for reason in reasons:
+                if '외국인+기관 동반 순매수' in reason:
+                    has_foreign_institution = True
+                    break
+        
+        # 조건 2: 패턴 검증
+        pattern_matched = False
+        confirmation_reason = []
+        
+        if strong_execution_count >= 2:
+            pattern_matched = True
+            confirmation_reason.append(f"✅ 강력한 체결강도 ({strong_execution_count}회/150%+)")
+        
+        if strong_momentum_count >= 2:
+            pattern_matched = True
+            confirmation_reason.append(f"✅ 강력한 상승 모멘텀 ({strong_momentum_count}회/+3%+)")
+        
+        if has_foreign_institution:
+            pattern_matched = True
+            confirmation_reason.append("✅ 외국인+기관 동반 순매수")
+        
+        if pattern_matched:
+            # 확정 종목으로 등록
+            self.confirmed_stocks.add(stock_code)
+            
+            # 평균 점수 계산
+            avg_score = sum(s['score'] for s in signals) / len(signals)
+            
+            return {
+                'signal': 'CONFIRMED_BUY',
+                'stock_code': stock_code,
+                'stock_name': stock_name,
+                'count': len(signals),
+                'avg_score': avg_score,
+                'confirmation_reasons': confirmation_reason,
+                'first_time': signals[0]['timestamp'],
+                'last_time': signals[-1]['timestamp']
+            }
+        
+        return None
+    
+    def cleanup_old_data(self):
+        """1시간 이상 된 데이터 정리"""
+        cutoff_time = datetime.now() - timedelta(hours=1)
+        
+        for stock_code in list(self.buy_history.keys()):
+            self.buy_history[stock_code] = [
+                sig for sig in self.buy_history[stock_code]
+                if sig['timestamp'] > cutoff_time
+            ]
+            
+            if not self.buy_history[stock_code]:
+                del self.buy_history[stock_code]
+
 ################################### API 스로틀링 클래스 ##################################
 
 class APIThrottler:
@@ -251,6 +379,9 @@ class SignalMonitor:
         # 종목별 최근 신호 기록 (최대 3개)
         self.signal_stability_cache = {}  # {stock_code: [신호1, 신호2, 신호3]}
         # ============================================
+
+        # 🔥 [여기에 추가!] 연속 BUY 추적기
+        self.continuous_buy_tracker = ContinuousBuyTracker()
 
         self.load_history()
         self.initialize_api()
@@ -1736,7 +1867,78 @@ class SignalMonitor:
         except Exception as e:
             logger.error(f"알림 발송 여부 판단 실패: {e}")
             return True
-    
+
+    def send_confirmed_buy_alert(self, result):
+        """
+        연속 BUY 확정 알림 발송
+        기존 send_signal_alert() 방식 활용
+        """
+        try:
+            stock_code = result["stock_code"]
+            stock_name = result["stock_name"]
+            sector = result["sector"]
+            score = result["score"]
+            confidence = result.get("confidence", 0)
+            reasons = result.get("reasons", [])
+            details = result.get("details", {})
+            
+            sector_emoji_map = {
+                "robot": "🤖",
+                "nuclear": "⚡",
+                "defense": "🚀",
+                "battery": "🔋",
+                "semiconductor": "💾"
+            }
+            sector_emoji = sector_emoji_map.get(sector, "📊")
+            
+            # 콘솔 메시지
+            console_msg = f"\n{'='*50}\n"
+            console_msg += f"🔥💰 연속 BUY 확정!\n"
+            console_msg += f"{'='*50}\n"
+            console_msg += f"종목: [{sector}] {stock_name} ({stock_code})\n"
+            console_msg += f"신호: CONFIRMED_BUY (평균: {score:.1f}/100)\n"
+            console_msg += f"신뢰도: {confidence*100:.0f}% (연속 검증)\n"
+            console_msg += f"발생 횟수: {details.get('continuous_count', 0)}회\n"
+            console_msg += f"시간대: {details.get('time_range', 'N/A')}\n"
+            console_msg += f"\n📋 확정 근거:\n"
+            
+            for reason in reasons:
+                console_msg += f"  • {reason}\n"
+            
+            console_msg += f"{'='*50}\n"
+            
+            logger.info(console_msg)
+            
+            # 디스코드 메시지
+            if MONITOR_CONFIG.get("use_discord", True):
+                discord_msg = f"🔥💰 **연속 BUY 확정!**\n"
+                discord_msg += f"{'─'*30}\n"
+                discord_msg += f"**종목**: {sector_emoji} [{sector}] {stock_name}\n"
+                discord_msg += f"**코드**: `{stock_code}`\n"
+                discord_msg += f"**신호**: `CONFIRMED_BUY` (평균: **{score:.1f}**/100)\n"
+                discord_msg += f"**신뢰도**: `{int(confidence * 100)}%` (연속 검증)\n"
+                discord_msg += f"**발생 정보**:\n"
+                discord_msg += f"• 연속 횟수: `{details.get('continuous_count', 0)}회`\n"
+                discord_msg += f"• 시간대: `{details.get('time_range', 'N/A')}`\n"
+                discord_msg += f"\n**📋 확정 근거**:\n"
+                
+                for i, reason in enumerate(reasons, 1):
+                    discord_msg += f"`{i}.` {reason}\n"
+                
+                discord_msg += f"\n{'─'*30}\n"
+                discord_msg += f"🔔 SignalMonitor_KR v1.4 (연속 BUY 검증)"
+
+                try:
+                    discord_alert.SendMessage(discord_msg)
+                    logger.info(f"✅ 디스코드 알림 전송 완료: {stock_name} (CONFIRMED_BUY)")
+                except Exception as discord_e:
+                    logger.error(f"❌ 디스코드 알림 전송 실패: {discord_e}")
+            
+        except Exception as e:
+            logger.error(f"연속 BUY 알림 발송 실패: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
     def check_all_stocks(self):
         """전체 종목 체크 (최종 버전)"""
         try:
@@ -1802,6 +2004,18 @@ class SignalMonitor:
                             if MONITOR_CONFIG["save_history"]:
                                 self.signal_history.append(result)
 
+                            # 🔥🔥🔥 [여기에 추가 1] BUY 신호면 추적기에 기록
+                            if signal == "BUY":
+                                self.continuous_buy_tracker.add_buy_signal(
+                                    stock_code,
+                                    {
+                                        'score': score,
+                                        'reasons': result.get('reasons', []),
+                                        'details': result.get('details', {})
+                                    }
+                                )
+                            # 🔥🔥🔥 [추가 끝]
+
                             # ✅ 수정: 알림 발송은 설정에 따라 제한
                             should_alert = False
                             
@@ -1827,7 +2041,61 @@ class SignalMonitor:
                 except Exception as stock_e:
                     logger.error(f"{stock_info['name']} 분석 실패: {stock_e}")
                     continue
+
+            # 🔥🔥🔥 [여기에 추가 2] 연속 BUY 검증 (for 루프 끝난 직후)
+            logger.info("")
+            logger.info("=" * 60)
+            logger.info("🔍 연속 BUY 신호 검증 중...")
+            logger.info("=" * 60)
             
+            confirmed_count = 0
+            for stock_code, stock_info in TARGET_STOCKS.items():
+                confirmed = self.continuous_buy_tracker.check_continuous_buy(
+                    stock_code,
+                    stock_info['name']
+                )
+                
+                if confirmed:
+                    confirmed_count += 1
+                    logger.info(f"🔥 연속 BUY 확정: {stock_info['name']}")
+                    logger.info(f"   발생 횟수: {confirmed['count']}회")
+                    logger.info(f"   시간대: {confirmed['first_time'].strftime('%H:%M')} ~ {confirmed['last_time'].strftime('%H:%M')}")
+                    logger.info(f"   평균 점수: {confirmed['avg_score']:.1f}점")
+                    
+                    for reason in confirmed['confirmation_reasons']:
+                        logger.info(f"   {reason}")
+                    
+                    # CONFIRMED_BUY 신호로 변환
+                    confirmed_result = {
+                        'signal': 'CONFIRMED_BUY',
+                        'stock_code': stock_code,
+                        'stock_name': stock_info['name'],
+                        'sector': stock_info['sector'],
+                        'score': confirmed['avg_score'],
+                        'confidence': 0.9,
+                        'reasons': confirmed['confirmation_reasons'],
+                        'details': {
+                            'continuous_count': confirmed['count'],
+                            'time_range': f"{confirmed['first_time'].strftime('%H:%M')} ~ {confirmed['last_time'].strftime('%H:%M')}"
+                        }
+                    }
+                    
+                    # 히스토리 저장
+                    self.add_to_history(confirmed_result)
+                    
+                    # 디스코드 알림 발송
+                    self.send_confirmed_buy_alert(confirmed_result)
+                    alerts_sent.append(confirmed_result)
+            
+            if confirmed_count > 0:
+                logger.info(f"✅ 연속 BUY 확정: {confirmed_count}건")
+            else:
+                logger.info("ℹ️ 연속 BUY 확정 없음")
+            
+            # 오래된 데이터 정리
+            self.continuous_buy_tracker.cleanup_old_data()
+            # 🔥🔥🔥 [추가 끝]
+
             # 요약
             logger.info("")
             logger.info("=" * 60)
