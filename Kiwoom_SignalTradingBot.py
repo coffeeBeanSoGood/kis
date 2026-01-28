@@ -1428,14 +1428,16 @@ class SignalTradingBot:
             logger.error(traceback.format_exc())
 
     def _calculate_dynamic_stop_loss(self, stock_code, current_price):
-        """ATR 기반 동적 손절선 계산"""
+        """ATR 기반 동적 손절선 계산 (Kiwoom API 연속조회 활용)"""
         try:
-            minute_data = KiwoomAPI.GetMinuteData(stock_code, "5", 20)
+            # 🔥 이제 20개 분봉 리스트를 받아옴!
+            minute_data = KiwoomAPI.GetMinuteData(stock_code, count=20)
             
             if not minute_data or len(minute_data) < 14:
-                logger.debug(f"{stock_code} 분봉 데이터 부족, 기본 손절선 적용")
+                logger.debug(f"{stock_code} 분봉 데이터 부족 ({len(minute_data) if minute_data else 0}개), 기본 손절선 적용")
                 return self._get_default_stop_loss(stock_code)
             
+            # ATR 계산
             atr = self._calculate_atr(minute_data, period=14)
             
             if atr == 0:
@@ -1447,6 +1449,8 @@ class SignalTradingBot:
             dynamic_stop = -max(0.02, min(0.08, atr_ratio * base_multiplier))
             
             logger.info(f"📊 {stock_code} 동적 손절선:")
+            logger.info(f"   현재가: {current_price:,}원")
+            logger.info(f"   분봉 데이터: {len(minute_data)}개")
             logger.info(f"   ATR: {atr:.0f}원 ({atr_ratio*100:.2f}%)")
             logger.info(f"   손절선: {dynamic_stop*100:.2f}%")
             
@@ -1454,17 +1458,28 @@ class SignalTradingBot:
             
         except Exception as e:
             logger.error(f"동적 손절선 계산 실패: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return self._get_default_stop_loss(stock_code)
 
-
     def _calculate_atr(self, minute_data, period=14):
-        """ATR 계산"""
+        """
+        ATR(Average True Range) 계산
+        
+        Args:
+            minute_data: 분봉 리스트 (최신순)
+            period: ATR 계산 기간 (기본 14)
+        
+        Returns:
+            float: ATR 값 (원 단위)
+        """
         try:
             if len(minute_data) < period + 1:
                 return 0
             
             true_ranges = []
             
+            # 최신 데이터부터 과거로 순회
             for i in range(len(minute_data) - 1):
                 current = minute_data[i]
                 previous = minute_data[i + 1]
@@ -1473,20 +1488,24 @@ class SignalTradingBot:
                 low = float(current.get('LowPrice', 0))
                 prev_close = float(previous.get('ClosePrice', 0))
                 
-                tr1 = high - low
-                tr2 = abs(high - prev_close)
-                tr3 = abs(low - prev_close)
+                # True Range 계산
+                tr1 = high - low                    # 당일 고가-저가
+                tr2 = abs(high - prev_close)       # 당일 고가 - 전일 종가
+                tr3 = abs(low - prev_close)        # 당일 저가 - 전일 종가
                 
                 true_range = max(tr1, tr2, tr3)
                 true_ranges.append(true_range)
             
+            # ATR = 최근 period개 True Range의 평균
             atr = sum(true_ranges[:period]) / period
+            
+            logger.debug(f"ATR 계산: {period}개 TR 평균 = {atr:.0f}원")
+            
             return atr
             
         except Exception as e:
             logger.error(f"ATR 계산 오류: {e}")
             return 0
-
 
     def _integrated_stop_decision(self, stock_code, profit_rate, dynamic_stop, signal_type, signal_confidence):
         """신호와 변동성 통합 손절 판단"""

@@ -858,54 +858,126 @@ class Kiwoom_Common:
             self.logger.error(f"장중 투자자별 매매 조회 예외: {e}")
             return None
 
-    def GetMinuteData(self, stock_code):
+    def GetMinuteData(self, stock_code, count=20):
         """
-        주식 시분 정보 조회 (ka10006)
-        분봉 데이터로 추세 파악
+        주식 시분 정보 조회 - 연속조회 지원 (ka10006)
+        
+        여러 분봉 데이터를 연속조회로 수집하여 리스트로 반환
+        ATR 계산 등에 활용 가능
         
         Args:
             stock_code: 종목코드
+            count: 조회할 분봉 개수 (기본 20개)
         
         Returns:
-            dict: 분봉 데이터 또는 None
+            list: 분봉 데이터 리스트 (최신순) 또는 None
+                [
+                    {"Date": "...", "OpenPrice": 85000, ...},  # 최신
+                    {"Date": "...", "OpenPrice": 84800, ...},
+                    ...
+                ]
         """
         try:
             url = f"{self.GetBaseURL()}/api/dostk/mrkcond"
             
-            body = {
-                "stk_cd": stock_code
-            }
+            minute_list = []
+            cont_yn = None
+            next_key = None
             
-            result = self.CallAPI(url, "ka10006", body)
-            
-            if result and result.get("return_code") == 0:
-                # +, - 부호 제거 함수
-                def clean_number(value):
-                    if isinstance(value, str):
-                        return value.replace("+", "").replace("-", "").strip()
-                    return value
-                
-                minute_data = {
-                    "Date": result.get("date", ""),
-                    "OpenPrice": int(clean_number(result.get("open_pric", "0"))),
-                    "HighPrice": int(clean_number(result.get("high_pric", "0"))),
-                    "LowPrice": int(clean_number(result.get("low_pric", "0"))),
-                    "ClosePrice": int(clean_number(result.get("close_pric", "0"))),
-                    "PrevDayDiff": int(clean_number(result.get("pre", "0"))),
-                    "ChangeRate": float(result.get("flu_rt", "0")),
-                    "Volume": int(result.get("trde_qty", "0")),
-                    "TradingValue": int(result.get("trde_prica", "0")),
-                    "ExecutionStrength": float(result.get("cntr_str", "0"))
+            # 연속조회 루프
+            for i in range(count):
+                # Request Body
+                body = {
+                    "stk_cd": stock_code
                 }
                 
-                self.logger.debug(f"분봉 조회: {stock_code} - 종가: {minute_data['ClosePrice']:,}원")
-                return minute_data
-            else:
-                self.logger.error(f"분봉 조회 실패: {result.get('return_msg') if result else 'No response'}")
-                return None
+                # Request Header (연속조회용)
+                headers = {
+                    "content-type": "application/json; charset=UTF-8",
+                    "authorization": f"Bearer {self.access_token}",
+                    "api-id": "ka10006"
+                }
                 
+                # 🔥 연속조회 헤더 추가 (2번째 호출부터)
+                if cont_yn == "Y" and next_key:
+                    headers["cont-yn"] = "Y"
+                    headers["next-key"] = next_key
+                
+                # API 호출
+                try:
+                    response = requests.post(
+                        url,
+                        headers=headers,
+                        data=json.dumps(body),
+                        timeout=10
+                    )
+                    
+                    if response.status_code != 200:
+                        self.logger.error(f"분봉 조회 실패: HTTP {response.status_code}")
+                        break
+                    
+                    result = response.json()
+                    
+                    # 응답 확인
+                    if result.get("return_code") != 0:
+                        self.logger.error(f"분봉 조회 실패: {result.get('return_msg')}")
+                        break
+                    
+                    # 🔥 Response Header에서 연속조회 정보 추출
+                    cont_yn = response.headers.get("cont-yn", "N")
+                    next_key = response.headers.get("next-key", "")
+                    
+                    # +, - 부호 제거 함수
+                    def clean_number(value):
+                        if isinstance(value, str):
+                            return value.replace("+", "").replace("-", "").strip()
+                        return value
+                    
+                    # 분봉 데이터 파싱
+                    minute_data = {
+                        "Date": result.get("date", ""),
+                        "OpenPrice": int(clean_number(result.get("open_pric", "0"))),
+                        "HighPrice": int(clean_number(result.get("high_pric", "0"))),
+                        "LowPrice": int(clean_number(result.get("low_pric", "0"))),
+                        "ClosePrice": int(clean_number(result.get("close_pric", "0"))),
+                        "PrevDayDiff": int(clean_number(result.get("pre", "0"))),
+                        "ChangeRate": float(result.get("flu_rt", "0")),
+                        "Volume": int(result.get("trde_qty", "0")),
+                        "TradingValue": int(result.get("trde_prica", "0")),
+                        "ExecutionStrength": float(result.get("cntr_str", "0"))
+                    }
+                    
+                    minute_list.append(minute_data)
+                    
+                    # 🔥 연속조회 불가능하면 종료
+                    if cont_yn != "Y":
+                        self.logger.debug(f"분봉 조회 완료: {len(minute_list)}개 (연속조회 종료)")
+                        break
+                    
+                    # API 과부하 방지 (0.1초 대기)
+                    time.sleep(0.1)
+                    
+                except requests.exceptions.Timeout:
+                    self.logger.error(f"분봉 조회 타임아웃 ({i+1}번째 시도)")
+                    break
+                except Exception as e:
+                    self.logger.error(f"분봉 조회 오류 ({i+1}번째 시도): {e}")
+                    break
+            
+            # 결과 확인
+            if len(minute_list) == 0:
+                self.logger.warning(f"분봉 데이터 없음: {stock_code}")
+                return None
+            
+            self.logger.info(f"분봉 조회 성공: {stock_code} - {len(minute_list)}개")
+            self.logger.debug(f"  최신 분봉: {minute_list[0]['Date']} 종가 {minute_list[0]['ClosePrice']:,}원")
+            
+            return minute_list
+            
         except Exception as e:
             self.logger.error(f"분봉 조회 예외: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
             return None
 
     def GetOrderBookRanking(self, market_type="101", sort_type="1", 
