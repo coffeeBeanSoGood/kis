@@ -81,26 +81,20 @@ class ConfigManager:
     def __init__(self, config_file='signal_trading_config.json'):
         self.config_file = config_file
         self.config = self.load_config()
-        
+
         self.default_config = {
             # ============================================
-            # 기본 설정
+            # 계좌 및 자산 설정
             # ============================================
-            "bot_name": "SignalTradingBot_Kiwoom_v3.0",
-            "use_discord_alert": True,
-            
-            # ============================================
-            # 🔥🔥🔥 자산 관리 설정 (NEW!)
-            # ============================================
-            # "initial_budget": 500000,           # 초기 자산 50만원
             "min_asset_threshold": 400000,      # 최소 자산 40만원 (이하 시 매매 중지)
-            "max_positions": 3,                 # 최대 보유 종목 수
+            "max_positions": 2,                 # 🔥 최대 보유 종목 수 (3 → 2로 변경)
             
             # ============================================
             # 매수 설정
             # ============================================
-            "buy_signals": ["STRONG_BUY"],      # 매수 신호 종류
+            "buy_signals": ["STRONG_BUY", "CONFIRMED_BUY"],  # 🔥 CONFIRMED_BUY 추가
             "signal_validity_minutes": 10,      # 신호 유효 시간 (분)
+            "buy_cutoff_time": "14:50",         # 🔥 [신규 추가] 매수 마감 시간
             
             # ============================================
             # 매도 설정 (A안: 공격적 수익 보호)
@@ -127,17 +121,13 @@ class ConfigManager:
             # ============================================
             # 스마트 스케줄링 설정
             # ============================================
-            "pending_order_timeout_minutes": 5,      # 미체결 타임아웃 5분
-            "check_pending_interval_seconds": 30,    # 미체결 체크 주기 30초
-            "check_position_interval_seconds": 60,   # 포지션 체크 주기 60초
-            
-            # ============================================
-            # 쿨다운 설정
-            # ============================================
+            "pending_order_timeout_minutes": 10,     # 미체결 주문 타임아웃
+            "check_pending_interval_seconds": 30,    # 미체결 체크 주기
+            "check_position_interval_seconds": 60,   # 보유 종목 체크 주기
             "cooldown_hours": 8,                     # 매도 후 재매수 금지 시간
             
             # ============================================
-            # 파일 경로
+            # 파일 경로 설정
             # ============================================
             "signal_file": "signal_history.json",
             "positions_file": "trading_positions.json",
@@ -145,7 +135,13 @@ class ConfigManager:
             "cooldowns_file": "trading_cooldowns.json",
             
             # ============================================
-            # 성과 추적
+            # 알림 설정
+            # ============================================
+            "use_discord": True,
+            "bot_name": "SignalTradingBot_Kiwoom",
+            
+            # ============================================
+            # 성과 추적 설정
             # ============================================
             "performance": {
                 # 📌 수동 관리 (입금/출금 시 사용자가 직접 수정!)
@@ -176,7 +172,7 @@ class ConfigManager:
                 "start_date": datetime.now().strftime("%Y-%m-%d")
             }
         }
-        
+
         self._upgrade_config_if_needed()
 
     def load_config(self):
@@ -488,7 +484,14 @@ class SignalTradingBot:
         """
         try:
             logger.info(f"🔍 매수 가능 여부 체크 시작: {stock_code}")
+            # 🔥 0단계: 매수 시간 제한 (새로 추가)
+            now = datetime.now()
+            cutoff_str = config.get("buy_cutoff_time", "14:50")
+            cutoff_time = datetime.strptime(cutoff_str, "%H:%M").time()
             
+            if now.time() >= cutoff_time:
+                return False, f"매수 시간 마감 ({now.strftime('%H:%M')} >= {cutoff_str})"
+
             # 1️⃣ 보유 중 체크
             logger.debug("   → 1단계: 보유 여부 확인...")
             with self.lock:
