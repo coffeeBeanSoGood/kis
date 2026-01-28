@@ -2075,10 +2075,10 @@ class SignalMonitor:
                         confidence = result.get("confidence", 0)
                         threshold = MONITOR_CONFIG["signal_threshold"]
 
-                        # ✅ 수정: 히스토리 저장 조건 (점수 기준)
+                        # ✅ 수정: STRONG 신호만 히스토리 저장 (중요 신호만)
                         should_track = False
                         
-                        if score >= threshold or signal in ["SELL", "STRONG_SELL"]:
+                        if signal in ["STRONG_BUY", "STRONG_SELL"]:
                             should_track = True
 
                         # 신뢰도 필터링
@@ -2089,41 +2089,41 @@ class SignalMonitor:
                         if should_track:
                             signals_found.append(result)
 
-                            # ✅ 히스토리는 모든 신호 저장
+                            # ✅ 히스토리는 STRONG 신호만 저장
                             if MONITOR_CONFIG["save_history"]:
                                 self.signal_history.append(result)
 
-                            # 🔥🔥🔥 [여기에 추가 1] BUY 신호면 추적기에 기록
-                            if signal == "BUY":
-                                self.continuous_buy_tracker.add_buy_signal(
-                                    stock_code,
-                                    {
-                                        'score': score,
-                                        'reasons': result.get('reasons', []),
-                                        'details': result.get('details', {})
-                                    }
-                                )
-                            # 🔥🔥🔥 [추가 끝]
+                        # 🔥🔥🔥 [중요] BUY 신호는 히스토리 저장 안 하지만 추적기에는 기록
+                        if signal == "BUY":
+                            self.continuous_buy_tracker.add_buy_signal(
+                                stock_code,
+                                {
+                                    'score': score,
+                                    'reasons': result.get('reasons', []),
+                                    'details': result.get('details', {})
+                                }
+                            )
+                        # 🔥🔥🔥 [추가 끝]
 
-                            # ✅ 수정: 알림 발송은 설정에 따라 제한
-                            should_alert = False
-                            
-                            if only_strong_signals:
-                                # STRONG 신호만 알림
-                                if signal in ["STRONG_BUY", "STRONG_SELL"]:
-                                    should_alert = True
-                            else:
-                                # 모든 신호 알림
+                        # ✅ 수정: 알림 발송은 설정에 따라 제한
+                        should_alert = False
+                        
+                        if only_strong_signals:
+                            # STRONG 신호만 알림
+                            if signal in ["STRONG_BUY", "STRONG_SELL"]:
                                 should_alert = True
-                            
-                            if should_alert and self.should_send_alert(stock_code, result):
-                                self.send_signal_alert(result)
-                                alerts_sent.append(result)
+                        else:
+                            # 모든 신호 알림
+                            should_alert = True
+                        
+                        if should_alert and self.should_send_alert(stock_code, result):
+                            self.send_signal_alert(result)
+                            alerts_sent.append(result)
+                        else:
+                            if should_alert:
+                                logger.debug(f"중복 알림 스킵: {stock_info['name']} - {signal}")
                             else:
-                                if should_alert:
-                                    logger.debug(f"중복 알림 스킵: {stock_info['name']} - {signal}")
-                                else:
-                                    logger.debug(f"STRONG 신호 아님 - 알림 스킵: {stock_info['name']} - {signal}")
+                                logger.debug(f"STRONG 신호 아님 - 알림 스킵: {stock_info['name']} - {signal}")
 
                     time.sleep(0.5)
 
