@@ -703,6 +703,99 @@ class SignalMonitor:
             logger.error(f"신호 안정성 검증 실패: {e}")
             return current_confidence, ""
 
+    def check_price_momentum_divergence(self, stock_code, current_data):
+        """
+        🔥 체결강도-가격 괴리 및 모멘텀 약화 감지
+        
+        Args:
+            stock_code: 종목코드
+            current_data: 현재 분석 데이터
+                {
+                    'trading_power': 체결강도,
+                    'current_price': 현재가,
+                    'change_rate': 등락률
+                }
+        
+        Returns:
+            (is_divergent, warning_msg): 괴리 여부, 경고 메시지
+        """
+        try:
+            # 이력 데이터 구조 초기화
+            if not hasattr(self, 'price_momentum_history'):
+                self.price_momentum_history = {}
+            
+            if stock_code not in self.price_momentum_history:
+                self.price_momentum_history[stock_code] = []
+            
+            history = self.price_momentum_history[stock_code]
+            
+            # 현재 데이터 추가
+            history.append({
+                'timestamp': datetime.now(),
+                'trading_power': current_data['trading_power'],
+                'price': current_data['current_price'],
+                'change_rate': current_data['change_rate']
+            })
+            
+            # 최근 3개만 유지 (15-20분 데이터)
+            if len(history) > 3:
+                history.pop(0)
+            
+            # 최소 2개 데이터 필요 (비교하려면)
+            if len(history) < 2:
+                return False, None
+            
+            # 최근 2-3개 데이터 분석
+            recent = history[-2:]  # 최근 2개
+            
+            # 1️⃣ 체결강도는 강한데 가격이 하락하는지 체크
+            trading_power_strong = all(d['trading_power'] >= 120 for d in recent)
+            price_declining = recent[-1]['price'] < recent[0]['price']
+            
+            # 2️⃣ 등락률 모멘텀 약화 체크
+            momentum_weakening = recent[-1]['change_rate'] < recent[0]['change_rate']
+            
+            # 3️⃣ 더 엄격한 체크 (3개 데이터 있을 때)
+            consecutive_decline = False
+            if len(history) >= 3:
+                # 3회 연속 가격 하락
+                consecutive_decline = (
+                    history[-1]['price'] < history[-2]['price'] < history[-3]['price']
+                )
+            
+            # 🚨 위험 신호 판단
+            is_divergent = False
+            warning_msg = None
+            
+            if trading_power_strong and price_declining:
+                is_divergent = True
+                price_change = ((recent[-1]['price'] - recent[0]['price']) / recent[0]['price']) * 100
+                warning_msg = f"⚠️ 체결강도 강하지만 가격 하락 중 ({price_change:+.2f}%)"
+                logger.warning(f"   {warning_msg}")
+            
+            if trading_power_strong and momentum_weakening:
+                is_divergent = True
+                momentum_change = recent[-1]['change_rate'] - recent[0]['change_rate']
+                if warning_msg:
+                    warning_msg += f" / 모멘텀 약화 ({momentum_change:+.2f}%p)"
+                else:
+                    warning_msg = f"⚠️ 상승 모멘텀 약화 중 ({momentum_change:+.2f}%p)"
+                logger.warning(f"   모멘텀 약화: {recent[0]['change_rate']:.2f}% → {recent[-1]['change_rate']:.2f}%")
+            
+            if consecutive_decline:
+                is_divergent = True
+                if warning_msg:
+                    warning_msg += " / 연속 하락"
+                else:
+                    warning_msg = "⚠️ 단기 연속 하락 추세"
+                logger.warning(f"   3회 연속 가격 하락 감지")
+            
+            return is_divergent, warning_msg
+            
+        except Exception as e:
+            logger.error(f"가격 모멘텀 괴리 분석 실패: {e}")
+            return False, None
+
     # ============================================
     # 🔥🔥🔥 [추가] 시장 상황 필터 함수들
     # ============================================
@@ -1490,7 +1583,51 @@ class SignalMonitor:
             else:
                 signal = "STRONG_SELL"
                 signal_emoji = "🚨❌"
-
+            # ============================================
+            # 🔥🔥🔥 [신규 추가] 체결강도-가격 괴리 분석
+            # ============================================
+            # 매수 신호일 때만 체크 (STRONG_BUY, BUY)
+            if signal in ["STRONG_BUY", "BUY"]:
+                # analysis_result["details"]에서 필요한 데이터 추출
+                exec_info = analysis_result["details"].get("execution", {})
+                stock_info = analysis_result["details"].get("stock_info", {})
+                
+                trading_power = exec_info.get("strength", 0)
+                current_price = stock_info.get("current_price", 0)
+                change_rate = stock_info.get("change_rate", 0)
+                
+                # 데이터가 있을 때만 분석
+                if trading_power > 0 and current_price > 0:
+                    momentum_data = {
+                        'trading_power': trading_power,
+                        'current_price': current_price,
+                        'change_rate': change_rate
+                    }
+                    
+                    is_divergent, divergence_msg = self.check_price_momentum_divergence(
+                        stock_code, momentum_data
+                    )
+                    
+                    if is_divergent and divergence_msg:
+                        # 신호 다운그레이드
+                        original_signal = signal
+                        
+                        if signal == "STRONG_BUY":
+                            signal = "BUY"  # STRONG_BUY → BUY로 다운그레이드
+                            signal_emoji = "📈✅"
+                            logger.warning(f"   🔻 신호 다운그레이드: {original_signal} → {signal} (가격 모멘텀 괴리)")
+                        elif signal == "BUY":
+                            signal = "HOLD"  # BUY → HOLD로 다운그레이드
+                            signal_emoji = "⏸️"
+                            logger.warning(f"   🔻 신호 다운그레이드: {original_signal} → {signal} (가격 모멘텀 괴리)")
+                        
+                        # 점수도 조정 (10-15점 감점)
+                        score = max(score - 12, 40)  # 최소 40점 보장
+                        
+                        # 경고 메시지를 reasons에 추가
+                        reasons.append(divergence_msg)
+                        
+                        logger.info(f"   📊 조정된 점수: {score:.1f}/100")
             # ============================================
             # 🔥🔥🔥 [추가] 신호 안정성 검증 적용
             # ============================================
