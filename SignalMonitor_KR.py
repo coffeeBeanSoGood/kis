@@ -2081,8 +2081,9 @@ class SignalMonitor:
                     }
                     
                     # 히스토리 저장
-                    self.add_to_history(confirmed_result)
-                    
+                    if MONITOR_CONFIG["save_history"]:
+                        self.signal_history.append(confirmed_result)
+
                     # 디스코드 알림 발송
                     self.send_confirmed_buy_alert(confirmed_result)
                     alerts_sent.append(confirmed_result)
