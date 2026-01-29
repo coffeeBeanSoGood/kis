@@ -1702,13 +1702,16 @@ class SignalTradingBot:
     def _get_default_stop_loss(self, stock_code):
         """기본 손절선 (ATR 실패 시)"""
         sector_volatility = {
-            "battery": -0.05,
-            "robot": -0.05,
-            "defense": -0.04,
-            "nuclear": -0.04,
-            "semiconductor": -0.03,
-            "lng": -0.04,
-            "shipbuilding": -0.04
+            "battery": -0.05,        # 2차전지: 고변동성
+            "robot": -0.05,          # 로봇: 고변동성
+            "defense": -0.04,        # 방산: 중간 변동성
+            "nuclear": -0.04,        # 원전: 중간 변동성
+            "power": -0.04,          # 🆕 전력: 중간 변동성
+            "semiconductor": -0.03,  # 반도체: 저변동성 (대형주)
+            "lng": -0.04,            # LNG: 중간 변동성
+            "shipbuilding": -0.04,   # 조선: 중간 변동성
+            "bio": -0.06,            # 🆕 바이오: 초고변동성
+            "entertainment": -0.05   # 🆕 엔터: 고변동성
         }
         
         sector = self._get_stock_sector(stock_code)
@@ -1717,30 +1720,59 @@ class SignalTradingBot:
     def _get_stock_sector(self, stock_code):
         """종목 섹터 조회"""
         sector_map = {
-            # 2차전지
-            "086520": "battery", "005490": "battery", "006400": "battery",
-            "373220": "battery", "348370": "battery", "078600": "battery",
-            "305720": "battery", "365340": "battery",
-            # 로봇
+            # 2차전지 (16종목)
+            "086520": "battery", "247540": "battery", "005490": "battery",
+            "003670": "battery", "006400": "battery", "373220": "battery",
+            "051910": "battery", "066970": "battery", "348370": "battery",
+            "278280": "battery", "357780": "battery", "078600": "battery",
+            "020150": "battery", "361610": "battery", "305720": "battery",
+            "365340": "battery",
+            
+            # LNG (2종목)
+            "033500": "lng", "017960": "lng",
+            
+            # 조선 (2종목)
+            "042660": "shipbuilding", "010140": "shipbuilding",
+            
+            # 원전 (7종목)
+            "105840": "nuclear", "457550": "nuclear", "094820": "nuclear",
+            "034020": "nuclear", "000720": "nuclear", "028260": "nuclear",
+            "051600": "nuclear",
+            
+            # 전력/중전기 (10종목)
+            "267260": "power", "298040": "power", "010120": "power",
+            "001440": "power", "152360": "power", "291640": "power",
+            "126720": "power", "033100": "power", "388050": "power",
+            "189860": "power",
+            
+            # 방산 (7종목)
+            "272210": "defense", "064350": "defense", "079550": "defense",
+            "012450": "defense", "047810": "defense", "103140": "defense",
+            "281990": "defense",
+            
+            # 로봇 (8종목)
             "030530": "robot", "058610": "robot", "182690": "robot",
             "108490": "robot", "454910": "robot", "399720": "robot",
             "140860": "robot", "056080": "robot",
-            # 방산
-            "272210": "defense", "064350": "defense", "079550": "defense",
-            "281990": "defense", "047810": "defense", "103140": "defense",
-            # 원전
-            "105840": "nuclear", "041960": "nuclear", "094820": "nuclear",
-            "034020": "nuclear", "000720": "nuclear", "051600": "nuclear",
-            # 반도체
+            
+            # 반도체 (17종목)
             "005930": "semiconductor", "000660": "semiconductor",
-            "000990": "semiconductor", "084370": "semiconductor",
-            "240810": "semiconductor", "095610": "semiconductor",
-            "046890": "semiconductor", "036540": "semiconductor",
-            "357780": "semiconductor",
-            # 조선
-            "042660": "shipbuilding", "010140": "shipbuilding",
-            # LNG
-            "033500": "lng", "017960": "lng"
+            "000990": "semiconductor", "108320": "semiconductor",
+            "131970": "semiconductor", "036540": "semiconductor",
+            "067310": "semiconductor", "058470": "semiconductor",
+            "039030": "semiconductor", "403870": "semiconductor",
+            "042700": "semiconductor", "240810": "semiconductor",
+            "036930": "semiconductor", "064760": "semiconductor",
+            "005290": "semiconductor", "007660": "semiconductor",
+            "218410": "semiconductor",
+            
+            # 바이오 (4종목)
+            "207940": "bio", "068270": "bio", "302440": "bio",
+            "128940": "bio",
+            
+            # 엔터테인먼트 (4종목)
+            "352820": "entertainment", "035900": "entertainment",
+            "041510": "entertainment", "122870": "entertainment"
         }
         
         return sector_map.get(stock_code, "unknown")
