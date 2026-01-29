@@ -22,9 +22,14 @@ CACHE_FILE = ".dashboard_cache.json"
 SECTOR_INFO = {
     "robot": {"name": "로봇", "emoji": "🤖"},
     "nuclear": {"name": "원전", "emoji": "⚡"},
+    "power": {"name": "전력", "emoji": "⚡"},           # 🆕 전력 추가
     "defense": {"name": "방산", "emoji": "🚀"},
     "battery": {"name": "2차전지", "emoji": "🔋"},
-    "semiconductor": {"name": "반도체", "emoji": "💾"}
+    "semiconductor": {"name": "반도체", "emoji": "💾"},
+    "lng": {"name": "LNG", "emoji": "🔥"},
+    "shipbuilding": {"name": "조선", "emoji": "🚢"},
+    "bio": {"name": "바이오", "emoji": "🧬"},          # 🆕 바이오 추가
+    "entertainment": {"name": "엔터", "emoji": "🎤"}   # 🆕 엔터 추가
 }
 
 SIGNAL_INFO = {

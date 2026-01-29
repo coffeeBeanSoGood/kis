@@ -65,42 +65,65 @@ logger.addHandler(console_handler)
 
 ################################### 설정 ##################################
 
-# 섹터별 추천 종목 (41종목)
+# 섹터별 추천 종목 (95종목) - v2.0
 TARGET_STOCKS = {
-    # 🔋 2차전지 (8종목)
+
+    # 🔋 2차전지 (16종목)
     "086520": {"name": "에코프로", "sector": "battery"},
+    "247540": {"name": "에코프로비엠", "sector": "battery"},
     "005490": {"name": "POSCO홀딩스", "sector": "battery"},
+    "003670": {"name": "포스코퓨처엠", "sector": "battery"},
     "006400": {"name": "삼성SDI", "sector": "battery"},
     "373220": {"name": "LG에너지솔루션", "sector": "battery"},
+    "051910": {"name": "LG화학", "sector": "battery"},
+    "066970": {"name": "엘앤에프", "sector": "battery"},
     "348370": {"name": "엔켐", "sector": "battery"},
+    "278280": {"name": "천보", "sector": "battery"},
+    "357780": {"name": "솔브레인", "sector": "battery"},
     "078600": {"name": "대주전자재료", "sector": "battery"},
+    "020150": {"name": "롯데에너지머티리얼즈", "sector": "battery"},
+    "361610": {"name": "SK아이이테크놀로지", "sector": "battery"},
     "305720": {"name": "TIGER 2차전지소재Fn", "sector": "battery"},
     "365340": {"name": "성일하이텍", "sector": "battery"},
-    
+
     # 🔥 LNG (2종목)
     "033500": {"name": "동성화인텍", "sector": "lng"},
     "017960": {"name": "한국카본", "sector": "lng"},
-    
+
     # 🚢 조선 (2종목)
     "042660": {"name": "한화오션", "sector": "shipbuilding"},
     "010140": {"name": "삼성중공업", "sector": "shipbuilding"},
-    
-    # ⚡ 원전 (6종목)
+
+    # ⚡ 원전 (7종목)
     "105840": {"name": "우진", "sector": "nuclear"},
-    "041960": {"name": "우진엔텍", "sector": "nuclear"},
+    "457550": {"name": "우진엔텍", "sector": "nuclear"},
     "094820": {"name": "일진파워", "sector": "nuclear"},
     "034020": {"name": "두산에너빌리티", "sector": "nuclear"},
     "000720": {"name": "현대건설", "sector": "nuclear"},
+    "028260": {"name": "삼성물산", "sector": "nuclear"},
     "051600": {"name": "한전KPS", "sector": "nuclear"},
-    
-    # 🚀 방산 (6종목)
+
+    # ⚡ 전력/중전기 (10종목)
+    "267260": {"name": "HD현대일렉트릭", "sector": "power"},
+    "298040": {"name": "효성중공업", "sector": "power"},
+    "010120": {"name": "LS일렉트릭", "sector": "power"},
+    "001440": {"name": "대한전선", "sector": "power"},
+    "152360": {"name": "한국전력기술", "sector": "power"},
+    "291640": {"name": "한중엔시에스", "sector": "power"},
+    "126720": {"name": "수산인더스트리", "sector": "power"},
+    "033100": {"name": "제룡전기", "sector": "power"},
+    "388050": {"name": "지투파워", "sector": "power"},
+    "189860": {"name": "서전기전", "sector": "power"},
+
+    # 🚀 방산 (7종목)
     "272210": {"name": "한화시스템", "sector": "defense"},
     "064350": {"name": "현대로템", "sector": "defense"},
     "079550": {"name": "LIG넥스원", "sector": "defense"},
-    "281990": {"name": "PLUS K방산", "sector": "defense"},
+    "012450": {"name": "한화에어로스페이스", "sector": "defense"},
     "047810": {"name": "한국항공우주", "sector": "defense"},
     "103140": {"name": "풍산", "sector": "defense"},
-    
+    "281990": {"name": "PLUS K방산", "sector": "defense"},
+
     # 🤖 로봇 (8종목)
     "030530": {"name": "원익홀딩스", "sector": "robot"},
     "058610": {"name": "에스피지", "sector": "robot"},
@@ -110,21 +133,41 @@ TARGET_STOCKS = {
     "399720": {"name": "케이엔알시스템", "sector": "robot"},
     "140860": {"name": "씨메스", "sector": "robot"},
     "056080": {"name": "유진로봇", "sector": "robot"},
-    
-    # 💾 반도체 (9종목)
+
+    # 💾 반도체 (17종목)
     "005930": {"name": "삼성전자", "sector": "semiconductor"},
     "000660": {"name": "SK하이닉스", "sector": "semiconductor"},
+    "000990": {"name": "DB하이텍", "sector": "semiconductor"},
+    "108320": {"name": "LX세미콘", "sector": "semiconductor"},
     "131970": {"name": "두산테스나", "sector": "semiconductor"},
+    "036540": {"name": "SFA반도체", "sector": "semiconductor"},
+    "067310": {"name": "하나마이크론", "sector": "semiconductor"},
+    "058470": {"name": "리노공업", "sector": "semiconductor"},
+    "039030": {"name": "이오테크닉스", "sector": "semiconductor"},
     "403870": {"name": "HPSP", "sector": "semiconductor"},
     "042700": {"name": "한미반도체", "sector": "semiconductor"},
+    "240810": {"name": "원익IPS", "sector": "semiconductor"},
+    "036930": {"name": "주성엔지니어링", "sector": "semiconductor"},
+    "064760": {"name": "티씨케이", "sector": "semiconductor"},
+    "005290": {"name": "동진쎄미켐", "sector": "semiconductor"},
     "007660": {"name": "이수페타시스", "sector": "semiconductor"},
-    "058470": {"name": "리노공업", "sector": "semiconductor"},
-    "067310": {"name": "하나마이크론", "sector": "semiconductor"},
-    "039030": {"name": "이오테크닉스", "sector": "semiconductor"},
+    "218410": {"name": "RFHIC", "sector": "semiconductor"},
+
+    # 🧬 바이오 (4종목)
+    "207940": {"name": "삼성바이오로직스", "sector": "bio"},
+    "068270": {"name": "셀트리온", "sector": "bio"},
+    "302440": {"name": "SK바이오사이언스", "sector": "bio"},
+    "128940": {"name": "한미약품", "sector": "bio"},
+
+    # 🎤 엔터테인먼트 (4종목)
+    "352820": {"name": "하이브", "sector": "entertainment"},
+    "035900": {"name": "JYP Ent.", "sector": "entertainment"},
+    "041510": {"name": "SM", "sector": "entertainment"},
+    "122870": {"name": "YG PLUS", "sector": "entertainment"},
 }
 
 MONITOR_CONFIG = {
-    "check_interval_minutes": 5,    # 🔥 5분
+    "check_interval_minutes": 10,    # 🔥 10분
     "signal_threshold": 60,
     "trading_hours_only": True,
     "save_history": True,
@@ -686,13 +729,13 @@ class SignalMonitor:
             
             # 섹터별 통계
             sector_stats = {}
-            for sector in ['robot', 'nuclear', 'defense', 'battery', 'semiconductor']:
+            for sector in ['robot', 'nuclear', 'power', 'defense', 'battery', 'semiconductor', 'lng', 'shipbuilding', 'bio', 'entertainment']:
                 sector_stats[sector] = {
                     'count': 0,
                     'wins': 0,
                     'returns': []
                 }
-            
+
             # 데이터 수집
             for perf in self.performance_data.values():
                 signal = perf['signal']
@@ -795,9 +838,14 @@ class SignalMonitor:
         sector_names = {
             'robot': '🤖 로봇',
             'nuclear': '⚡ 원전',
+            'power': '⚡ 전력',          # 🆕 전력 추가
             'defense': '🚀 방산',
             'battery': '🔋 2차전지',
-            'semiconductor': '💾 반도체'
+            'semiconductor': '💾 반도체',
+            'lng': '🔥 LNG',
+            'shipbuilding': '🚢 조선',
+            'bio': '🧬 바이오',          # 🆕 바이오 추가
+            'entertainment': '🎤 엔터'   # 🆕 엔터 추가
         }
         
         for sector, stats in sector_stats.items():
@@ -1970,14 +2018,20 @@ class SignalMonitor:
             confidence = result.get("confidence", 0)
             reasons = result.get("reasons", [])
             details = result.get("details", {})
-            
+
             sector_emoji_map = {
                 "robot": "🤖",
                 "nuclear": "⚡",
+                "power": "⚡",           # 🆕 전력 추가
                 "defense": "🚀",
                 "battery": "🔋",
-                "semiconductor": "💾"
+                "semiconductor": "💾",
+                "lng": "🔥",
+                "shipbuilding": "🚢",
+                "bio": "🧬",             # 🆕 바이오 추가
+                "entertainment": "🎤"    # 🆕 엔터 추가
             }
+
             sector_emoji = sector_emoji_map.get(sector, "📊")
             
             # 콘솔 메시지
@@ -2236,9 +2290,14 @@ class SignalMonitor:
             sector_emoji_map = {
                 "robot": "🤖",
                 "nuclear": "⚡",
+                "power": "⚡",           # 🆕 전력 추가
                 "defense": "🚀",
                 "battery": "🔋",
-                "semiconductor": "💾"
+                "semiconductor": "💾",
+                "lng": "🔥",
+                "shipbuilding": "🚢",
+                "bio": "🧬",             # 🆕 바이오 추가
+                "entertainment": "🎤"    # 🆕 엔터 추가
             }
             
             emoji = signal_emoji_map.get(signal, "📊")
