@@ -65,10 +65,10 @@ logger.addHandler(console_handler)
 
 ################################### 설정 ##################################
 
-# 섹터별 추천 종목 (95종목) - v2.0
+# 섹터별 추천 종목 (86종목) - v2.0
 TARGET_STOCKS = {
 
-    # 🔋 2차전지 (16종목)
+    # 🔋 2차전지 (18종목)
     "086520": {"name": "에코프로", "sector": "battery"},
     "247540": {"name": "에코프로비엠", "sector": "battery"},
     "005490": {"name": "POSCO홀딩스", "sector": "battery"},
@@ -85,14 +85,17 @@ TARGET_STOCKS = {
     "361610": {"name": "SK아이이테크놀로지", "sector": "battery"},
     "305720": {"name": "TIGER 2차전지소재Fn", "sector": "battery"},
     "365340": {"name": "성일하이텍", "sector": "battery"},
+    "005070": {"name": "코스모신소재", "sector": "battery"},
+    "095500": {"name": "미래나노텍", "sector": "battery"},
 
     # 🔥 LNG (2종목)
     "033500": {"name": "동성화인텍", "sector": "lng"},
     "017960": {"name": "한국카본", "sector": "lng"},
 
-    # 🚢 조선 (2종목)
+    # 🚢 조선 (3종목)
     "042660": {"name": "한화오션", "sector": "shipbuilding"},
     "010140": {"name": "삼성중공업", "sector": "shipbuilding"},
+    "097230": {"name": "HJ중공업", "sector": "shipbuilding"},
 
     # ⚡ 원전 (7종목)
     "105840": {"name": "우진", "sector": "nuclear"},
@@ -124,7 +127,7 @@ TARGET_STOCKS = {
     "103140": {"name": "풍산", "sector": "defense"},
     "281990": {"name": "PLUS K방산", "sector": "defense"},
 
-    # 🤖 로봇 (8종목)
+    # 🤖 로봇 (9종목)
     "030530": {"name": "원익홀딩스", "sector": "robot"},
     "058610": {"name": "에스피지", "sector": "robot"},
     "182690": {"name": "클로봇", "sector": "robot"},
@@ -133,8 +136,9 @@ TARGET_STOCKS = {
     "399720": {"name": "케이엔알시스템", "sector": "robot"},
     "140860": {"name": "씨메스", "sector": "robot"},
     "056080": {"name": "유진로봇", "sector": "robot"},
+    "348340": {"name": "뉴로메카", "sector": "robot"},
 
-    # 💾 반도체 (17종목)
+    # 💾 반도체 (19종목)
     "005930": {"name": "삼성전자", "sector": "semiconductor"},
     "000660": {"name": "SK하이닉스", "sector": "semiconductor"},
     "000990": {"name": "DB하이텍", "sector": "semiconductor"},
@@ -152,12 +156,17 @@ TARGET_STOCKS = {
     "005290": {"name": "동진쎄미켐", "sector": "semiconductor"},
     "007660": {"name": "이수페타시스", "sector": "semiconductor"},
     "218410": {"name": "RFHIC", "sector": "semiconductor"},
+    "101490": {"name": "에스앤에스텍", "sector": "semiconductor"},
+    "319660": {"name": "피에스케이", "sector": "semiconductor"},
 
-    # 🧬 바이오 (4종목)
+    # 🧬 바이오 (7종목)
     "207940": {"name": "삼성바이오로직스", "sector": "bio"},
     "068270": {"name": "셀트리온", "sector": "bio"},
     "302440": {"name": "SK바이오사이언스", "sector": "bio"},
+    "326030": {"name": "SK바이오팜", "sector": "bio"},
     "128940": {"name": "한미약품", "sector": "bio"},
+    "067080": {"name": "대화제약", "sector": "bio"},
+    "028300": {"name": "HLB", "sector": "bio"},
 
     # 🎤 엔터테인먼트 (4종목)
     "352820": {"name": "하이브", "sector": "entertainment"},
@@ -167,7 +176,7 @@ TARGET_STOCKS = {
 }
 
 MONITOR_CONFIG = {
-    "check_interval_minutes": 10,    # 🔥 10분
+    "check_interval_minutes": 7,    # 🔥 7분
     "signal_threshold": 60,
     "trading_hours_only": True,
     "save_history": True,

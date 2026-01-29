@@ -1720,19 +1720,20 @@ class SignalTradingBot:
     def _get_stock_sector(self, stock_code):
         """종목 섹터 조회"""
         sector_map = {
-            # 2차전지 (16종목)
+            # 2차전지 (18종목)
             "086520": "battery", "247540": "battery", "005490": "battery",
             "003670": "battery", "006400": "battery", "373220": "battery",
             "051910": "battery", "066970": "battery", "348370": "battery",
             "278280": "battery", "357780": "battery", "078600": "battery",
             "020150": "battery", "361610": "battery", "305720": "battery",
-            "365340": "battery",
+            "365340": "battery", "005070": "battery", "095500": "battery",
             
             # LNG (2종목)
             "033500": "lng", "017960": "lng",
             
-            # 조선 (2종목)
-            "042660": "shipbuilding", "010140": "shipbuilding",
+            # 조선 (3종목)
+            "042660": "shipbuilding", "010140": "shipbuilding", 
+            "097230": "shipbuilding",
             
             # 원전 (7종목)
             "105840": "nuclear", "457550": "nuclear", "094820": "nuclear",
@@ -1750,12 +1751,12 @@ class SignalTradingBot:
             "012450": "defense", "047810": "defense", "103140": "defense",
             "281990": "defense",
             
-            # 로봇 (8종목)
+            # 로봇 (9종목)
             "030530": "robot", "058610": "robot", "182690": "robot",
             "108490": "robot", "454910": "robot", "399720": "robot",
-            "140860": "robot", "056080": "robot",
+            "140860": "robot", "056080": "robot", "348340": "robot",
             
-            # 반도체 (17종목)
+            # 반도체 (19종목)
             "005930": "semiconductor", "000660": "semiconductor",
             "000990": "semiconductor", "108320": "semiconductor",
             "131970": "semiconductor", "036540": "semiconductor",
@@ -1764,11 +1765,13 @@ class SignalTradingBot:
             "042700": "semiconductor", "240810": "semiconductor",
             "036930": "semiconductor", "064760": "semiconductor",
             "005290": "semiconductor", "007660": "semiconductor",
-            "218410": "semiconductor",
+            "218410": "semiconductor", "101490": "semiconductor",
+            "319660": "semiconductor",
             
-            # 바이오 (4종목)
+            # 바이오 (7종목)
             "207940": "bio", "068270": "bio", "302440": "bio",
-            "128940": "bio",
+            "326030": "bio", "128940": "bio", "067080": "bio",
+            "028300": "bio",
             
             # 엔터테인먼트 (4종목)
             "352820": "entertainment", "035900": "entertainment",
