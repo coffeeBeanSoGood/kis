@@ -99,9 +99,9 @@ class ConfigManager:
             # ============================================
             # 매도 설정 (A안: 공격적 수익 보호)
             # ============================================
-            "target_profit_rate": 0.03,              # 3% 목표 수익
-            "breakeven_protection_rate": 0.02,       # 2% 달성 시 본전 보호
-            "tight_trailing_threshold": 0.03,        # 3% 달성 시 타이트 트레일링
+            "target_profit_rate": 0.02,              # 2% 목표 수익
+            "breakeven_protection_rate": 0.01,       # 1% 달성 시 본전 보호
+            "tight_trailing_threshold": 0.02,        # 2% 달성 시 타이트 트레일링
             "tight_trailing_rate": 0.005,            # 0.5% 타이트 트레일링
             "trailing_stop_rate": 0.01,              # 1% 일반 트레일링
             "sell_signals": ["SELL", "STRONG_SELL"], # 매도 신호 종류
@@ -1217,78 +1217,121 @@ class SignalTradingBot:
 
     def check_sell_conditions(self, stock_code, current_signal=None):
         """
-        매도 조건 체크 (개선 버전: ATR + 신호 통합)
+        매도 조건 체크 (🔥 로깅 대폭 강화)
         
         우선순위:
         1. 목표 수익 달성 (3%)
         2. 트레일링 스탑 발동
-        3. 통합 손절 판단 (신호 + ATR)
+        3. 손절 신호 (SELL/STRONG_SELL)
+        4. 긴급 손절 (-3%)
+        5. ATR 기반 동적 손절
+        
+        Returns:
+            tuple: (should_sell: bool, reason: str)
         """
         try:
             with self.lock:
                 if stock_code not in self.positions:
-                    return False, None
-
-                if stock_code in self.pending_orders:
-                    pending = self.pending_orders[stock_code]
-                    if pending.get('order_type') == 'sell':
-                        return False, None
-
+                    return False, "포지션 없음"
+                
                 position = self.positions[stock_code].copy()
             
+            # 기본 정보
             stock_info = KiwoomAPI.GetStockInfo(stock_code)
             if not stock_info:
-                return False, None
+                return False, "현재가 조회 실패"
             
             current_price = stock_info.get('CurrentPrice', 0)
             entry_price = position.get('entry_price', 0)
             entry_time_str = position.get('entry_time', '')
+            highest_price = position.get('highest_price', entry_price)
             trailing_stop_price = position.get('trailing_stop_price', 0)
+            target_profit_price = position.get('target_profit_price', 0)
             
-            profit_rate = (current_price - entry_price) / entry_price
+            # 수익률 계산
+            profit_rate = (current_price - entry_price) / entry_price if entry_price > 0 else 0
             
-            # 보유 시간 계산
+            # 보유 시간
             try:
                 entry_time = datetime.strptime(entry_time_str, "%Y-%m-%d %H:%M:%S")
-                holding_minutes = (datetime.now() - entry_time).total_seconds() / 60
+                holding_time = datetime.now() - entry_time
+                holding_minutes = holding_time.total_seconds() / 60
             except:
                 holding_minutes = 0
             
-            # 1️⃣ 목표 수익 달성
+            logger.info(f"    ┌─ 매도 조건 상세 체크 ─┐")
+            
+            # 🔥 1️⃣ 목표 수익 체크
+            logger.info(f"    │ [1/5] 목표 수익 체크")
             target_profit_rate = config.get("target_profit_rate", 0.03)
-            if profit_rate >= target_profit_rate:
-                reason = f"목표 수익 달성 ({profit_rate*100:+.2f}%)"
-                logger.info(f"🎯 {stock_code} {reason}")
-                return True, reason
             
-            # 2️⃣ 트레일링 스탑 발동
+            if current_price >= target_profit_price:
+                reason = f"목표 수익 달성 ({profit_rate*100:+.2f}% >= {target_profit_rate*100:.0f}%)"
+                logger.info(f"    │   ✅ 만족: {current_price:,}원 >= {target_profit_price:,}원")
+                logger.info(f"    └─────────────────────┘")
+                return True, reason
+            else:
+                logger.info(f"    │   ❌ 미만족: {current_price:,}원 < {target_profit_price:,}원 (차이: {(target_profit_price-current_price):,}원)")
+            
+            # 🔥 2️⃣ 트레일링 스탑 체크
+            logger.info(f"    │ [2/5] 트레일링 스탑 체크")
+            
             if current_price <= trailing_stop_price:
-                trailing_profit = (trailing_stop_price - entry_price) / entry_price
-                reason = f"트레일링 스탑 발동 (보장수익: {trailing_profit*100:+.2f}%)"
-                logger.info(f"📉 {stock_code} {reason}")
+                trailing_loss = (trailing_stop_price - current_price) / current_price
+                reason = f"트레일링 스탑 ({profit_rate*100:+.2f}%, 최고가 대비 -{trailing_loss*100:.2f}%)"
+                logger.info(f"    │   ✅ 발동: {current_price:,}원 <= {trailing_stop_price:,}원")
+                logger.info(f"    │   최고가: {highest_price:,}원 → 현재가: {current_price:,}원")
+                logger.info(f"    └─────────────────────┘")
                 return True, reason
+            else:
+                logger.info(f"    │   ❌ 미발동: {current_price:,}원 > {trailing_stop_price:,}원 (여유: {(current_price-trailing_stop_price):,}원)")
             
-            # 3️⃣ 통합 손절 판단
+            # 🔥 3️⃣ 긴급 손절 체크
+            logger.info(f"    │ [3/5] 긴급 손절 체크")
+            emergency_stop = config.get("emergency_stop_loss", -0.03)
+            
+            if profit_rate <= emergency_stop:
+                reason = f"긴급 손절 ({profit_rate*100:+.2f}% <= {emergency_stop*100:.0f}%)"
+                logger.info(f"    │   ✅ 발동: {profit_rate*100:.2f}% <= {emergency_stop*100:.0f}%")
+                logger.info(f"    └─────────────────────┘")
+                return True, reason
+            else:
+                logger.info(f"    │   ❌ 미발동: {profit_rate*100:.2f}% > {emergency_stop*100:.0f}% (여유: {(profit_rate-emergency_stop)*100:.2f}%p)")
+            
+            # 🔥 4️⃣ 유예 기간 체크
+            logger.info(f"    │ [4/5] 유예 기간 / ATR 손절 체크")
             grace_period_minutes = config.get("stop_loss_grace_period_minutes", 10)
             
             if holding_minutes < grace_period_minutes:
-                # 유예 기간: 극단 손절만
+                logger.info(f"    │   ⏰ 유예 중: {holding_minutes:.0f}분 < {grace_period_minutes}분")
+                
+                # 유예 기간 중 극단 손절만 체크
                 extreme_stop = config.get("extreme_stop_loss", -0.05)
                 if profit_rate <= extreme_stop:
                     reason = f"극단 손절 ({profit_rate*100:+.2f}%, 보유 {holding_minutes:.0f}분)"
-                    logger.warning(f"🚨 {stock_code} {reason}")
+                    logger.info(f"    │   🚨 극단 손절 발동: {profit_rate*100:.2f}% <= {extreme_stop*100:.0f}%")
+                    logger.info(f"    └─────────────────────┘")
                     return True, reason
                 else:
-                    logger.debug(f"⏰ {stock_code} 유예 중 ({profit_rate*100:+.2f}%)")
-                    return False, None
+                    logger.info(f"    │   ✅ 극단 손절 미발동: {profit_rate*100:.2f}% > {extreme_stop*100:.0f}%")
+                    logger.info(f"    └─────────────────────┘")
+                    return False, f"유예 중 ({holding_minutes:.0f}분/{grace_period_minutes}분)"
             
-            # ATR 기반 동적 손절선 계산
+            logger.info(f"    │   ✅ 유예 완료: {holding_minutes:.0f}분 >= {grace_period_minutes}분")
+            
+            # 🔥 5️⃣ ATR 기반 동적 손절
+            logger.info(f"    │   🔍 ATR 동적 손절선 계산 중...")
             dynamic_stop = self._calculate_dynamic_stop_loss(stock_code, current_price)
             
             # 신호와 변동성 통합 판단
             signal_type = current_signal.get('signal', 'HOLD') if current_signal else 'HOLD'
             signal_confidence = current_signal.get('confidence', 0) if current_signal else 0
             
+            logger.info(f"    │   📊 ATR 손절선: {dynamic_stop*100:.2f}%")
+            logger.info(f"    │   📡 신호: {signal_type} (신뢰도: {signal_confidence:.1%})")
+            logger.info(f"    │   💰 현재 손익: {profit_rate*100:+.2f}%")
+            
+            logger.info(f"    │ [5/5] 통합 손절 판단 시작...")
             should_stop, stop_reason = self._integrated_stop_decision(
                 stock_code,
                 profit_rate,
@@ -1297,15 +1340,18 @@ class SignalTradingBot:
                 signal_confidence
             )
             
+            logger.info(f"    └─────────────────────┘")
+            
             if should_stop:
-                logger.warning(f"🚨 {stock_code} {stop_reason}")
                 return True, stop_reason
             
-            return False, None
+            return False, "모든 매도 조건 미충족"
             
         except Exception as e:
-            logger.error(f"매도 조건 체크 실패: {e}")
-            return False, None
+            logger.error(f"    ❌ 매도 조건 체크 실패: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False, f"체크 실패: {str(e)}"
 
     def calculate_unrealized_profit(self):
         """미실현 손익 계산"""
@@ -1511,70 +1557,117 @@ class SignalTradingBot:
             return 0
 
     def _integrated_stop_decision(self, stock_code, profit_rate, dynamic_stop, signal_type, signal_confidence):
-        """신호와 변동성 통합 손절 판단"""
+        """신호와 변동성 통합 손절 판단 (🔥 로깅 대폭 강화)"""
         try:
             min_confidence = config.get("min_signal_confidence", 0.4)
             
+            logger.info(f"        ┌─ 통합 손절 판단 ─┐")
+            logger.info(f"        │ 입력 정보:")
+            logger.info(f"        │   • 현재 손익: {profit_rate*100:+.2f}%")
+            logger.info(f"        │   • ATR 손절: {dynamic_stop*100:.2f}%")
+            logger.info(f"        │   • 신호: {signal_type}")
+            logger.info(f"        │   • 신뢰도: {signal_confidence:.1%}")
+            logger.info(f"        │")
+            
             # 상황 1: STRONG_SELL (최우선)
+            logger.info(f"        │ [상황1] STRONG_SELL 체크")
             if signal_type == "STRONG_SELL" and signal_confidence >= min_confidence:
                 reason = f"강력 손절 신호 (STRONG_SELL, 신뢰도: {signal_confidence:.1%})"
-                logger.info(f"   🚨 강력 신호 - ATR 무시하고 즉시 손절")
+                logger.info(f"        │   🚨 ✅ STRONG_SELL 발동!")
+                logger.info(f"        │   → ATR 무시하고 즉시 손절")
+                logger.info(f"        └─────────────────┘")
                 return True, reason
+            else:
+                if signal_type == "STRONG_SELL":
+                    logger.info(f"        │   ❌ STRONG_SELL이지만 신뢰도 부족 ({signal_confidence:.1%} < {min_confidence:.1%})")
+                else:
+                    logger.info(f"        │   ❌ STRONG_SELL 아님 (신호: {signal_type})")
             
             # 상황 2: ATR 손절선 도달
+            logger.info(f"        │ [상황2] ATR 손절선 도달 체크")
+            logger.info(f"        │   비교: {profit_rate*100:.2f}% vs {dynamic_stop*100:.2f}%")
+            
             if profit_rate <= dynamic_stop:
+                logger.info(f"        │   ⚠️ ATR 손절선 도달!")
+                
                 # 강한 매수 신호 유지 시 추가 유예
                 if signal_type in ["STRONG_BUY", "BUY"] and signal_confidence >= 0.6:
                     grace_buffer = config.get("signal_override_buffer", 0.02)
                     final_stop = dynamic_stop - grace_buffer
                     
+                    logger.info(f"        │   🔄 {signal_type} 신호 감지 → 추가 유예 검토")
+                    logger.info(f"        │   신뢰도: {signal_confidence:.1%} >= 60%")
+                    logger.info(f"        │   유예 버퍼: {grace_buffer*100:.0f}%")
+                    logger.info(f"        │   최종 손절: {final_stop*100:.2f}%")
+                    
                     if profit_rate <= final_stop:
                         reason = f"최종 손절 ({profit_rate*100:+.2f}%, {signal_type} 신호에도 불구)"
-                        logger.info(f"   ⚠️ 최종 손절선 도달")
+                        logger.info(f"        │   ⚠️ ✅ 최종 손절선도 돌파 → 손절")
+                        logger.info(f"        └─────────────────┘")
                         return True, reason
                     else:
-                        logger.info(f"   🔄 ATR 손절 유예: {signal_type} 강세")
-                        logger.info(f"   현재: {profit_rate*100:+.2f}%, 최종: {final_stop*100:.1f}%")
+                        logger.info(f"        │   ✅ 유예 적용: {profit_rate*100:.2f}% > {final_stop*100:.2f}%")
+                        logger.info(f"        │   → {signal_type} 강세로 관찰 지속")
+                        logger.info(f"        └─────────────────┘")
                         return False, None
                 
                 # 신호 없거나 약함 → 손절
                 reason = f"ATR 손절 ({profit_rate*100:+.2f}%, 기준: {dynamic_stop*100:.1f}%)"
-                logger.info(f"   📊 ATR 손절선 도달")
+                logger.info(f"        │   ✅ 매수 신호 없음 or 약함 → 손절")
+                logger.info(f"        └─────────────────┘")
                 return True, reason
+            else:
+                atr_buffer = profit_rate - dynamic_stop
+                logger.info(f"        │   ❌ ATR 손절선 미도달")
+                logger.info(f"        │   여유: {atr_buffer*100:.2f}%p")
             
             # 상황 3: SELL 신호 + ATR 여유
+            logger.info(f"        │ [상황3] SELL 신호 복합 판단")
+            
             if signal_type == "SELL" and signal_confidence >= min_confidence:
                 atr_buffer = dynamic_stop - profit_rate
                 atr_usage = (profit_rate / dynamic_stop) * 100 if dynamic_stop != 0 else 0
                 
-                logger.info(f"   🤔 SELL 신호 vs ATR 판단:")
-                logger.info(f"   손실: {profit_rate*100:+.2f}%, ATR: {dynamic_stop*100:.1f}%")
-                logger.info(f"   ATR 사용률: {atr_usage:.1f}%")
+                logger.info(f"        │   ⚠️ SELL 신호 발생!")
+                logger.info(f"        │   신뢰도: {signal_confidence:.1%}")
+                logger.info(f"        │   손실: {profit_rate*100:+.2f}%")
+                logger.info(f"        │   ATR: {dynamic_stop*100:.2f}%")
+                logger.info(f"        │   ATR 사용률: {atr_usage:.1f}%")
                 
                 # 고신뢰도 SELL → 즉시 손절
                 if signal_confidence >= 0.75:
                     reason = f"고신뢰 SELL ({signal_confidence:.1%}, ATR 무시)"
-                    logger.info(f"   ✅ 신뢰도 매우 높음 → 즉시 손절")
+                    logger.info(f"        │   🚨 ✅ 신뢰도 매우 높음 ({signal_confidence:.1%} >= 75%) → 즉시 손절")
+                    logger.info(f"        └─────────────────┘")
                     return True, reason
                 
                 # ATR 50% 이상 소진 + SELL → 손절
                 if atr_usage >= 50:
                     reason = f"SELL+ATR 복합 손절 ({signal_confidence:.1%}, ATR {atr_usage:.0f}% 소진)"
-                    logger.info(f"   ✅ ATR 반 이상 소진 → 손절")
+                    logger.info(f"        │   ⚠️ ✅ ATR 반 이상 소진 ({atr_usage:.0f}% >= 50%) → 손절")
+                    logger.info(f"        └─────────────────┘")
                     return True, reason
                 
                 # ATR 여유 충분 → 관찰
-                logger.info(f"   🔄 SELL 신호 있지만 ATR 여유 → 관찰")
+                logger.info(f"        │   🔄 ATR 여유 충분 ({atr_usage:.0f}% < 50%) → 관찰")
+                logger.info(f"        └─────────────────┘")
                 return False, None
+            else:
+                if signal_type == "SELL":
+                    logger.info(f"        │   ❌ SELL이지만 신뢰도 부족 ({signal_confidence:.1%} < {min_confidence:.1%})")
+                else:
+                    logger.info(f"        │   ❌ SELL 아님 (신호: {signal_type})")
             
+            logger.info(f"        │")
+            logger.info(f"        │ ✅ 모든 손절 조건 미충족 → 보유 유지")
+            logger.info(f"        └─────────────────┘")
             return False, None
             
         except Exception as e:
-            logger.error(f"통합 손절 판단 실패: {e}")
+            logger.error(f"        ❌ 통합 손절 판단 실패: {e}")
             if profit_rate <= dynamic_stop:
                 return True, f"ATR 손절 (판단 실패)"
             return False, None
-
 
     def _get_default_stop_loss(self, stock_code):
         """기본 손절선 (ATR 실패 시)"""
@@ -1710,107 +1803,232 @@ class SignalTradingBot:
             import traceback
             logger.error(traceback.format_exc())
             return False
-    
+
     def check_positions_and_sell(self):
-        """보유 종목 트레일링 & 매도 체크"""
+        """보유 종목 트레일링 & 매도 체크 (🔥 로깅 강화)"""
         try:
             with self.lock:
                 if not self.positions:
+                    logger.debug("📊 보유 종목 없음 - 매도 체크 스킵")
                     return
                 
                 position_codes = list(self.positions.keys())
             
-            logger.info(f"📊 보유 종목 체크: {len(position_codes)}개")
+            logger.info("=" * 80)
+            logger.info(f"📊 보유 종목 체크 시작: {len(position_codes)}개")
+            logger.info("=" * 80)
             
             # 최신 신호 읽기 (매도 신호 확인용)
             all_signals = self.read_latest_signals()
             valid_signals = self.filter_valid_signals(all_signals)
             
+            logger.info(f"📡 유효 신호: {len(valid_signals)}개")
+            
             for stock_code in position_codes:
-                self.update_trailing_stop(stock_code)
-                
-                current_signal = None
-                for sig in valid_signals:
-                    if sig.get('stock_code') == stock_code:
-                        current_signal = sig
-                        break
-                
-                should_sell, reason = self.check_sell_conditions(stock_code, current_signal)
-                
-                if should_sell:
-                    self.execute_sell(stock_code, reason)
+                try:
+                    with self.lock:
+                        if stock_code not in self.positions:
+                            continue
+                        position = self.positions[stock_code].copy()
+                    
+                    stock_name = position.get('stock_name', stock_code)
+                    
+                    logger.info("")
+                    logger.info("─" * 80)
+                    logger.info(f"🔍 [{stock_name}] 매도 조건 체크 시작")
+                    logger.info("─" * 80)
+                    
+                    # 🔥 1. 현재 상태 정보 로그
+                    stock_info = KiwoomAPI.GetStockInfo(stock_code)
+                    if not stock_info:
+                        logger.warning(f"  ⚠️ 현재가 조회 실패 - 스킵")
+                        continue
+                    
+                    current_price = stock_info.get('CurrentPrice', 0)
+                    entry_price = position.get('entry_price', 0)
+                    entry_time_str = position.get('entry_time', '')
+                    highest_price = position.get('highest_price', entry_price)
+                    trailing_stop = position.get('trailing_stop_price', 0)
+                    
+                    # 수익률 계산
+                    profit_rate = (current_price - entry_price) / entry_price if entry_price > 0 else 0
+                    
+                    # 보유 시간 계산
+                    try:
+                        entry_time = datetime.strptime(entry_time_str, "%Y-%m-%d %H:%M:%S")
+                        holding_time = datetime.now() - entry_time
+                        holding_minutes = holding_time.total_seconds() / 60
+                    except:
+                        holding_minutes = 0
+                    
+                    logger.info(f"  📌 현재가: {current_price:,}원")
+                    logger.info(f"  📌 진입가: {entry_price:,}원")
+                    logger.info(f"  📌 현재 수익률: {profit_rate*100:+.2f}%")
+                    logger.info(f"  📌 최고가: {highest_price:,}원")
+                    logger.info(f"  📌 보유 시간: {holding_minutes:.0f}분")
+                    logger.info(f"  📌 트레일링 스탑: {trailing_stop:,}원")
+                    
+                    # 🔥 2. 현재 신호 확인
+                    current_signal = None
+                    for sig in valid_signals:
+                        if sig.get('stock_code') == stock_code:
+                            current_signal = sig
+                            break
+                    
+                    if current_signal:
+                        signal_type = current_signal.get('signal', 'HOLD')
+                        signal_confidence = current_signal.get('confidence', 0)
+                        signal_score = current_signal.get('score', 0)
+                        logger.info(f"  📡 현재 신호: {signal_type} (점수: {signal_score:.1f}, 신뢰도: {signal_confidence:.1%})")
+                    else:
+                        logger.info(f"  📡 현재 신호: 없음 (유효 신호 없음)")
+                    
+                    # 🔥 3. 트레일링 스탑 업데이트
+                    logger.info(f"  🔄 트레일링 스탑 업데이트 시작...")
+                    self.update_trailing_stop(stock_code)
+                    
+                    # 🔥 4. 매도 조건 체크 (상세 로그 포함)
+                    logger.info(f"  🔍 매도 조건 체크 시작...")
+                    should_sell, reason = self.check_sell_conditions(stock_code, current_signal)
+                    
+                    # 🔥 5. 매도 판단 결과
+                    if should_sell:
+                        logger.warning(f"  ✅ 매도 결정: {reason}")
+                        logger.info(f"  💸 매도 실행 시작...")
+                        self.execute_sell(stock_code, reason)
+                    else:
+                        if reason:
+                            logger.info(f"  ⏸️ 매도 안 함: {reason}")
+                        else:
+                            logger.info(f"  ⏸️ 매도 안 함: 모든 조건 미충족")
+                    
+                    logger.info("─" * 80)
+                    
+                except Exception as e:
+                    logger.error(f"  ❌ {stock_code} 체크 중 오류: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+            
+            logger.info("=" * 80)
+            logger.info(f"✅ 보유 종목 체크 완료")
+            logger.info("=" * 80)
             
         except Exception as e:
             logger.error(f"보유 종목 체크 실패: {e}")
-    
-    def process_new_signals(self):
-        """🔥 신호 파일 변경 시 호출 (watchdog)"""
+            import traceback
+            logger.error(traceback.format_exc())
+
+    def check_positions_and_sell(self):
+        """보유 종목 트레일링 & 매도 체크 (🔥 로깅 강화)"""
         try:
-            if not self.is_trading_time():
-                logger.debug("장 시간 외 - 거래 없음")
-                return
+            with self.lock:
+                if not self.positions:
+                    logger.debug("📊 보유 종목 없음 - 매도 체크 스킵")
+                    return
+                
+                position_codes = list(self.positions.keys())
             
-            logger.info("")
-            logger.info("🔔" * 30)
-            logger.info(f"📊 신호 파일 변경 감지 - 즉시 처리!")
-            logger.info(f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            logger.info("🔔" * 30)
+            logger.info("=" * 80)
+            logger.info(f"📊 보유 종목 체크 시작: {len(position_codes)}개")
+            logger.info("=" * 80)
             
+            # 최신 신호 읽기 (매도 신호 확인용)
             all_signals = self.read_latest_signals()
             valid_signals = self.filter_valid_signals(all_signals)
             
-            if not valid_signals:
-                logger.info("📭 유효한 신호 없음")
-                return
+            logger.info(f"📡 유효 신호: {len(valid_signals)}개")
             
-            buy_signals = config.get("buy_signals", ["STRONG_BUY"])
-            
-            buy_candidates = [
-                sig for sig in valid_signals
-                if sig.get('signal') in buy_signals
-            ]
-            
-            if buy_candidates:
-                logger.info(f"🎯 매수 후보: {len(buy_candidates)}개")
-                
-                buy_candidates_sorted = sorted(
-                    buy_candidates,
-                    key=lambda x: x.get('timestamp', '')
-                )
-                
-                for signal in buy_candidates_sorted:
-                    stock_code = signal.get('stock_code', '')
-                    
+            for stock_code in position_codes:
+                try:
                     with self.lock:
-                        is_already_in = stock_code in self.positions or stock_code in self.pending_orders
+                        if stock_code not in self.positions:
+                            continue
+                        position = self.positions[stock_code].copy()
                     
-                    if is_already_in:
-                        logger.debug(f"⏭️ {stock_code} 이미 보유 또는 주문 중")
+                    stock_name = position.get('stock_name', stock_code)
+                    
+                    logger.info("")
+                    logger.info("─" * 80)
+                    logger.info(f"🔍 [{stock_name}] 매도 조건 체크 시작")
+                    logger.info("─" * 80)
+                    
+                    # 🔥 1. 현재 상태 정보 로그
+                    stock_info = KiwoomAPI.GetStockInfo(stock_code)
+                    if not stock_info:
+                        logger.warning(f"  ⚠️ 현재가 조회 실패 - 스킵")
                         continue
                     
-                    success = self.execute_buy(signal)
+                    current_price = stock_info.get('CurrentPrice', 0)
+                    entry_price = position.get('entry_price', 0)
+                    entry_time_str = position.get('entry_time', '')
+                    highest_price = position.get('highest_price', entry_price)
+                    trailing_stop = position.get('trailing_stop_price', 0)
                     
-                    if success:
-                        with self.lock:
-                            total_stocks = len(self.positions) + len(self.pending_orders)
-                        
-                        if total_stocks >= config.get("max_positions", 3):
-                            logger.info(f"✅ 최대 종목 수 도달 - 매수 중단")
+                    # 수익률 계산
+                    profit_rate = (current_price - entry_price) / entry_price if entry_price > 0 else 0
+                    
+                    # 보유 시간 계산
+                    try:
+                        entry_time = datetime.strptime(entry_time_str, "%Y-%m-%d %H:%M:%S")
+                        holding_time = datetime.now() - entry_time
+                        holding_minutes = holding_time.total_seconds() / 60
+                    except:
+                        holding_minutes = 0
+                    
+                    logger.info(f"  📌 현재가: {current_price:,}원")
+                    logger.info(f"  📌 진입가: {entry_price:,}원")
+                    logger.info(f"  📌 현재 수익률: {profit_rate*100:+.2f}%")
+                    logger.info(f"  📌 최고가: {highest_price:,}원")
+                    logger.info(f"  📌 보유 시간: {holding_minutes:.0f}분")
+                    logger.info(f"  📌 트레일링 스탑: {trailing_stop:,}원")
+                    
+                    # 🔥 2. 현재 신호 확인
+                    current_signal = None
+                    for sig in valid_signals:
+                        if sig.get('stock_code') == stock_code:
+                            current_signal = sig
                             break
+                    
+                    if current_signal:
+                        signal_type = current_signal.get('signal', 'HOLD')
+                        signal_confidence = current_signal.get('confidence', 0)
+                        signal_score = current_signal.get('score', 0)
+                        logger.info(f"  📡 현재 신호: {signal_type} (점수: {signal_score:.1f}, 신뢰도: {signal_confidence:.1%})")
+                    else:
+                        logger.info(f"  📡 현재 신호: 없음 (유효 신호 없음)")
+                    
+                    # 🔥 3. 트레일링 스탑 업데이트
+                    logger.info(f"  🔄 트레일링 스탑 업데이트 시작...")
+                    self.update_trailing_stop(stock_code)
+                    
+                    # 🔥 4. 매도 조건 체크 (상세 로그 포함)
+                    logger.info(f"  🔍 매도 조건 체크 시작...")
+                    should_sell, reason = self.check_sell_conditions(stock_code, current_signal)
+                    
+                    # 🔥 5. 매도 판단 결과
+                    if should_sell:
+                        logger.warning(f"  ✅ 매도 결정: {reason}")
+                        logger.info(f"  💸 매도 실행 시작...")
+                        self.execute_sell(stock_code, reason)
+                    else:
+                        if reason:
+                            logger.info(f"  ⏸️ 매도 안 함: {reason}")
+                        else:
+                            logger.info(f"  ⏸️ 매도 안 함: 모든 조건 미충족")
+                    
+                    logger.info("─" * 80)
+                    
+                except Exception as e:
+                    logger.error(f"  ❌ {stock_code} 체크 중 오류: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
             
-            # 매도 신호도 즉시 체크
-            self.check_positions_and_sell()
-            
-            logger.info("=" * 60)
-            logger.info(f"✅ 신호 처리 완료")
-            with self.lock:
-                logger.info(f"📊 보유 종목: {len(self.positions)}개")
-                logger.info(f"📋 미체결 주문: {len(self.pending_orders)}개")
-                logger.info(f"⏰ 쿨다운: {len(self.cooldowns)}개")
-            logger.info("=" * 60)
+            logger.info("=" * 80)
+            logger.info(f"✅ 보유 종목 체크 완료")
+            logger.info("=" * 80)
             
         except Exception as e:
-            logger.error(f"신호 처리 오류: {e}")
+            logger.error(f"보유 종목 체크 실패: {e}")
             import traceback
             logger.error(traceback.format_exc())
 
