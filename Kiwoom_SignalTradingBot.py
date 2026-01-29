@@ -87,28 +87,29 @@ class ConfigManager:
             # 계좌 및 자산 설정
             # ============================================
             "min_asset_threshold": 400000,      # 최소 자산 40만원 (이하 시 매매 중지)
-            "max_positions": 2,                 # 🔥 최대 보유 종목 수 (3 → 2로 변경)
+            "max_positions": 2,                 # 최대 보유 종목 수
             
             # ============================================
             # 매수 설정
             # ============================================
-            "buy_signals": ["STRONG_BUY", "CONFIRMED_BUY"],  # 🔥 CONFIRMED_BUY 추가
+            "buy_signals": ["STRONG_BUY", "CONFIRMED_BUY"],
             "signal_validity_minutes": 10,      # 신호 유효 시간 (분)
-            "buy_cutoff_time": "14:50",         # 🔥 [신규 추가] 매수 마감 시간
+            "buy_cutoff_time": "14:50",         # 매수 마감 시간
             
             # ============================================
-            # 매도 설정 (A안: 공격적 수익 보호)
+            # 매도 설정 (A안: 공격적 수익 보호 + 조건부 트레일링)
             # ============================================
             "target_profit_rate": 0.02,              # 2% 목표 수익
             "breakeven_protection_rate": 0.01,       # 1% 달성 시 본전 보호
             "tight_trailing_threshold": 0.02,        # 2% 달성 시 타이트 트레일링
             "tight_trailing_rate": 0.005,            # 0.5% 타이트 트레일링
             "trailing_stop_rate": 0.01,              # 1% 일반 트레일링
+            "min_profit_for_trailing": 0.01,         # 🔥 [추가] 1% 이상일 때만 트레일링 활성화
             "sell_signals": ["SELL", "STRONG_SELL"], # 매도 신호 종류
             "emergency_stop_loss": -0.03,            # -3% 긴급 손절
             
             # ============================================
-            # 🔥 동적 손절 설정 (ATR 기반)
+            # 동적 손절 설정 (ATR 기반)
             # ============================================
             "stop_loss_grace_period_minutes": 10,    # 매수 후 10분 유예
             "extreme_stop_loss": -0.05,              # -5% 극단 손절
@@ -145,30 +146,30 @@ class ConfigManager:
             # ============================================
             "performance": {
                 # 📌 수동 관리 (입금/출금 시 사용자가 직접 수정!)
-                "baseline_asset": 500000,            # 기준 자산 (입금 시 수동 업데이트)
+                "baseline_asset": 500000,
                 "baseline_date": datetime.now().strftime("%Y-%m-%d"),
                 "baseline_note": "추가 입금 시 baseline_asset을 수동으로 업데이트하세요",
                 
                 # ✅ 자동 계산 (봇이 관리)
-                "total_realized_profit": 0,          # 실현 수익 누적
-                "total_realized_loss": 0,            # 실현 손실 누적
-                "net_realized_profit": 0,            # 순 실현 수익
+                "total_realized_profit": 0,
+                "total_realized_loss": 0,
+                "net_realized_profit": 0,
                 
                 # 📊 거래 통계
-                "total_trades": 0,                   # 총 거래 횟수
-                "winning_trades": 0,                 # 수익 거래 횟수
-                "losing_trades": 0,                  # 손실 거래 횟수
-                "canceled_orders": 0,                # 취소된 주문 수
-                "win_rate": 0.0,                     # 승률
+                "total_trades": 0,
+                "winning_trades": 0,
+                "losing_trades": 0,
+                "canceled_orders": 0,
+                "win_rate": 0.0,
                 
                 # 🏆 최고/최저 기록
-                "best_performance_rate": 0.0,        # 최고 수익률
-                "best_performance_date": "",         # 최고 수익 날짜
-                "worst_performance_rate": 0.0,       # 최저 수익률
-                "worst_performance_date": "",        # 최저 수익 날짜
+                "best_performance_rate": 0.0,
+                "best_performance_date": "",
+                "worst_performance_rate": 0.0,
+                "worst_performance_date": "",
                 
                 # 📅 일일 기록
-                "last_report_date": "",              # 마지막 리포트 날짜
+                "last_report_date": "",
                 "start_date": datetime.now().strftime("%Y-%m-%d")
             }
         }
@@ -1108,7 +1109,13 @@ class SignalTradingBot:
 
     def update_trailing_stop(self, stock_code):
         """
-        트레일링 스탑 업데이트 (A안: 공격적 수익 보호)
+        트레일링 스탑 업데이트 (A안: 조건부 활성화 + 공격적 수익 보호)
+        
+        🔥 핵심 개선:
+        - 1% 이상 수익일 때만 트레일링 활성화
+        - 소폭 상승(1% 미만)에는 ATR 손절만 사용
+        
+        기존 3단계 시스템:
         - 2% 달성: 본전 보호 활성화
         - 3% 달성: 타이트 트레일링 시작 (0.5%)
         """
@@ -1137,6 +1144,18 @@ class SignalTradingBot:
                 
                 logger.debug(f"📈 {stock_code} 최고가 갱신: {current_price:,}원 (수익률: {profit_rate*100:+.2f}%)")
             
+            # 🔥🔥🔥 A안 핵심: 조건부 트레일링 활성화 🔥🔥🔥
+            min_profit_for_trailing = config.get("min_profit_for_trailing", 0.01)  # 기본 1%
+            
+            if profit_rate < min_profit_for_trailing:
+                # 1% 미만 수익: 트레일링 업데이트 하지 않음
+                logger.debug(f"  ⏸️ {stock_code} 트레일링 대기: 수익률 {profit_rate*100:+.2f}% < {min_profit_for_trailing*100:.0f}%")
+                logger.debug(f"  💡 ATR 손절만 사용 (소폭 상승에 민감하지 않게)")
+                return
+            # 🔥🔥🔥 A안 핵심 끝 🔥🔥🔥
+            
+            # 이하 기존 3단계 시스템 (1% 이상일 때만 실행됨)
+            
             # 🔥 1단계: 본전 보호 활성화 (2% 달성)
             breakeven_threshold = config.get("breakeven_protection_rate", 0.02)
             breakeven_protected = position.get('breakeven_protected', False)
@@ -1152,8 +1171,9 @@ class SignalTradingBot:
                 logger.info(f"   손절선: {entry_price:,}원 (본전)")
                 
                 if config.get("use_discord_alert", True):
+                    stock_name = position.get('stock_name', stock_code)
                     msg = f"🛡️ **본전 보호 활성화!**\n"
-                    msg += f"종목: {position.get('stock_name')} ({stock_code})\n"
+                    msg += f"종목: {stock_name} ({stock_code})\n"
                     msg += f"진입가: {entry_price:,}원\n"
                     msg += f"현재가: {current_price:,}원 ({profit_rate*100:+.2f}%)\n"
                     msg += f"손절선: {entry_price:,}원 (본전 보호)"
@@ -1168,7 +1188,6 @@ class SignalTradingBot:
             if not tight_trailing_active and profit_rate >= tight_threshold:
                 with self.lock:
                     self.positions[stock_code]['tight_trailing_active'] = True
-                    
                     tight_rate = config.get("tight_trailing_rate", 0.005)
                     self.positions[stock_code]['trailing_stop_price'] = highest_price * (1 - tight_rate)
                 
@@ -1179,8 +1198,9 @@ class SignalTradingBot:
                 logger.info(f"   트레일링: {self.positions[stock_code]['trailing_stop_price']:,.0f}원 (-0.5%)")
                 
                 if config.get("use_discord_alert", True):
+                    stock_name = position.get('stock_name', stock_code)
                     msg = f"🎯 **타이트 트레일링 시작!**\n"
-                    msg += f"종목: {position.get('stock_name')} ({stock_code})\n"
+                    msg += f"종목: {stock_name} ({stock_code})\n"
                     msg += f"진입가: {entry_price:,}원\n"
                     msg += f"최고가: {highest_price:,}원 ({profit_rate*100:+.2f}%)\n"
                     msg += f"트레일링: {self.positions[stock_code]['trailing_stop_price']:,.0f}원 (-0.5%)"
@@ -1191,7 +1211,7 @@ class SignalTradingBot:
             # 🔥 3단계: 트레일링 스탑 업데이트 (최고가 갱신 시)
             if current_price == highest_price:  # 방금 최고가 갱신됨
                 if tight_trailing_active:
-                    # 타이트 트레일링 모드
+                    # 타이트 트레일링 모드 (3% 이상)
                     tight_rate = config.get("tight_trailing_rate", 0.005)
                     new_trailing_stop = highest_price * (1 - tight_rate)
                 elif breakeven_protected:
@@ -1200,9 +1220,11 @@ class SignalTradingBot:
                     trailing_rate = config.get("trailing_stop_rate", 0.01)
                     new_trailing_stop = max(entry_price, highest_price * (1 - trailing_rate))
                 else:
-                    # 일반 트레일링 (2% 미만 구간)
+                    # 🔥 일반 트레일링 (1-2% 구간) - A안으로 조건부 활성화됨!
                     trailing_rate = config.get("trailing_stop_rate", 0.01)
                     new_trailing_stop = highest_price * (1 - trailing_rate)
+                    
+                    logger.info(f"✅ {stock_code} 트레일링 활성화! (수익률: {profit_rate*100:+.2f}% >= {min_profit_for_trailing*100:.0f}%)")
                 
                 with self.lock:
                     self.positions[stock_code]['trailing_stop_price'] = new_trailing_stop
@@ -1214,6 +1236,8 @@ class SignalTradingBot:
             
         except Exception as e:
             logger.error(f"트레일링 스탑 업데이트 실패: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
 
     def check_sell_conditions(self, stock_code, current_signal=None):
         """
