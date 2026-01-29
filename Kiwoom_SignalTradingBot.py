@@ -1384,7 +1384,13 @@ class SignalTradingBot:
             logger.info("=" * 60)
             logger.info("📊 일일 리포트 생성 중...")
             logger.info("=" * 60)
-            
+
+            # 🔥🔥🔥 올바른 방법! 🔥🔥🔥
+            # config 파일 다시 로드 (최신 데이터 반영)
+            config.config = config.load_config()
+            logger.info("✅ config 파일 재로드 완료")
+            # 🔥🔥🔥 여기까지 추가 🔥🔥🔥
+
             # 1️⃣ 성과 데이터 가져오기
             perf = config.get('performance', {})
             total_trades = perf.get('total_trades', 0)
