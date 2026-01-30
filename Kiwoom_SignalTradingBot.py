@@ -671,7 +671,7 @@ class SignalTradingBot:
                 logger.error(f"      현재 자산: {total_asset:,}원")
                 logger.error(f"      최소 기준: {min_asset:,}원")
                 
-                if config.get("use_discord_alert", True):
+                if config.get("use_discord", True):
                     msg = f"🚨 **긴급! 최소 자산 미달**\n"
                     msg += f"현재 자산: {total_asset:,}원\n"
                     msg += f"최소 기준: {min_asset:,}원\n"
@@ -908,7 +908,7 @@ class SignalTradingBot:
                 
                 logger.info(msg)
                 
-                if config.get("use_discord_alert", True):
+                if config.get("use_discord", True):
                     discord_alert.SendMessage(msg)
                 
                 return True
@@ -1115,7 +1115,7 @@ class SignalTradingBot:
                         
                         logger.info(msg)
                         
-                        if config.get("use_discord_alert", True):
+                        if config.get("use_discord", True):
                             discord_alert.SendMessage(msg)
                         
                         continue
@@ -1158,7 +1158,7 @@ class SignalTradingBot:
                         
                         logger.warning(msg)
                         
-                        if config.get("use_discord_alert", True):
+                        if config.get("use_discord", True):
                             discord_alert.SendMessage(msg)
                         
                         continue
@@ -1287,7 +1287,7 @@ class SignalTradingBot:
                 logger.info(f"   실제 본전: {breakeven_price:,}원")
                 logger.info(f"   손절선: {breakeven_price:,}원 (본전+수수료)")
                 
-                if config.get("use_discord_alert", True):
+                if config.get("use_discord", True):
                     stock_name = position.get('stock_name', stock_code)
                     msg = f"🛡️ **본전 보호 활성화!**\n"
                     msg += f"종목: {stock_name} ({stock_code})\n"
@@ -1318,7 +1318,7 @@ class SignalTradingBot:
                 logger.info(f"   최고가: {highest_price:,}원")
                 logger.info(f"   트레일링: {new_trailing_stop:,}원 (-0.3%)")
                 
-                if config.get("use_discord_alert", True):
+                if config.get("use_discord", True):
                     stock_name = position.get('stock_name', stock_code)
                     msg = f"🎯 **초타이트 트레일링!**\n"
                     msg += f"종목: {stock_name} ({stock_code})\n"
@@ -1617,11 +1617,18 @@ class SignalTradingBot:
                     msg += "• 없음\n"
             
             # 7️⃣ 전송
+            logger.info("✅ 일일 리포트 생성 완료")
             logger.info(msg)
-            
-            if config.get("use_discord_alert", True):
-                discord_alert.SendMessage(msg)
-                logger.info("✅ 일일 리포트 전송 완료")
+
+            # 🔥 수정: use_discord로 변경 + 상세 로그 추가
+            if config.get("use_discord", True):
+                try:
+                    discord_alert.SendMessage(msg)
+                    logger.info("✅ Discord 일일 리포트 전송 완료")
+                except Exception as discord_e:
+                    logger.error(f"❌ Discord 전송 실패: {discord_e}")
+            else:
+                logger.warning("⚠️ Discord 알림이 비활성화되어 있습니다")
             
         except Exception as e:
             logger.error(f"일일 리포트 생성 실패: {e}")
@@ -1976,7 +1983,7 @@ class SignalTradingBot:
                 
                 logger.info(msg)
                 
-                if config.get("use_discord_alert", True):
+                if config.get("use_discord", True):
                     discord_alert.SendMessage(msg)
                 
                 return True
@@ -2582,13 +2589,20 @@ class SignalTradingBot:
             msg += f"\n{'━'*30}\n"
             msg += f"💡 추가 입금 시 config 파일에서\n"
             msg += f"   baseline_asset을 수동 업데이트하세요."
-            
+
             logger.info("✅ 일일 리포트 생성 완료")
             logger.info(msg)
-            
-            if config.get("use_discord_alert", True):
-                discord_alert.SendMessage(msg)
-            
+
+            # 🔥 수정: use_discord로 변경 + 상세 로그 추가
+            if config.get("use_discord", True):
+                try:
+                    discord_alert.SendMessage(msg)
+                    logger.info("✅ Discord 일일 리포트 전송 완료")
+                except Exception as discord_e:
+                    logger.error(f"❌ Discord 전송 실패: {discord_e}")
+            else:
+                logger.warning("⚠️ Discord 알림이 비활성화되어 있습니다")
+
         except Exception as e:
             logger.error(f"일일 리포트 생성 실패: {e}")
             import traceback
@@ -2634,7 +2648,8 @@ def main():
         logger.error("❌ 계좌 정보 조회 실패 - 봇 시작 불가")
         return
 
-    if config.get("use_discord_alert", True):
+    # 🔥 수정: use_discord로 변경
+    if config.get("use_discord", True):
         start_msg = f"🚀 **{BOT_NAME} 시작 v3.0**\n"
         start_msg += f"{'─'*30}\n"
         start_msg += f"💰 **현재 자산 현황**\n"
@@ -2688,7 +2703,7 @@ def main():
         
         observer.join()
         
-        if config.get("use_discord_alert", True):
+        if config.get("use_discord", True):
             perf = config.get('performance', {})
             total_trades = perf.get('total_trades', 0)
             winning_trades = perf.get('winning_trades', 0)
