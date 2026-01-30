@@ -176,7 +176,7 @@ TARGET_STOCKS = {
 }
 
 MONITOR_CONFIG = {
-    "check_interval_minutes": 7,    # 🔥 7분
+    "check_interval_minutes": 5,    # 🔥 5분
     "signal_threshold": 60,
     "trading_hours_only": True,
     "save_history": True,
