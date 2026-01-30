@@ -326,7 +326,7 @@ class SignalTradingBot:
             except Exception as e:
                 logger.error(f"포지션 로드 실패: {e}")
                 return {}
-        
+
     def process_new_signals(self):
         """
         신호 파일 변경 시 실행되는 핵심 함수
@@ -396,7 +396,8 @@ class SignalTradingBot:
                 logger.info("─" * 80)
                 
                 # 매수 가능 여부 체크
-                can_buy, reason = self.can_buy_stock(signal)
+                # can_buy, reason = self.can_buy_stock(signal)
+                can_buy, reason = self.can_buy(stock_code)
                 
                 if not can_buy:
                     logger.info(f"❌ 매수 불가: {reason}")
