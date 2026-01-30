@@ -1218,15 +1218,18 @@ class SignalTradingBot:
 
     def update_trailing_stop(self, stock_code):
         """
-        트레일링 스탑 업데이트 (A안: 조건부 활성화 + 공격적 수익 보호)
+        트레일링 스탑 업데이트 (완전 개선: 적극적 수익 보호)
         
-        🔥 핵심 개선:
-        - 1% 이상 수익일 때만 트레일링 활성화
-        - 소폭 상승(1% 미만)에는 ATR 손절만 사용
+        🔥🔥🔥 핵심 개선 사항:
+        1. 본전 보호 시 수수료 반영 (진짜 본전)
+        2. return 제거 → 소수익도 보호
+        3. 0.5% 기본 트레일링 (2배 촘촘)
+        4. 3% 달성 시 0.3% 초타이트
         
-        기존 3단계 시스템:
-        - 2% 달성: 본전 보호 활성화
-        - 3% 달성: 타이트 트레일링 시작 (0.5%)
+        3단계 시스템:
+        - 1% 달성: 본전 보호 (수수료 포함)
+        - 1~3% 구간: 0.5% 트레일링
+        - 3% 이상: 0.3% 초타이트 트레일링
         """
         try:
             with self.lock:
@@ -1253,31 +1256,35 @@ class SignalTradingBot:
                 
                 logger.debug(f"📈 {stock_code} 최고가 갱신: {current_price:,}원 (수익률: {profit_rate*100:+.2f}%)")
             
-            # 🔥🔥🔥 A안 핵심: 조건부 트레일링 활성화 🔥🔥🔥
-            min_profit_for_trailing = config.get("min_profit_for_trailing", 0.01)  # 기본 1%
+            # 🔥🔥🔥 조건부 트레일링 활성화 체크
+            min_profit_for_trailing = config.get("min_profit_for_trailing", 0.01)
             
             if profit_rate < min_profit_for_trailing:
-                # 1% 미만 수익: 트레일링 업데이트 하지 않음
                 logger.debug(f"  ⏸️ {stock_code} 트레일링 대기: 수익률 {profit_rate*100:+.2f}% < {min_profit_for_trailing*100:.0f}%")
                 logger.debug(f"  💡 ATR 손절만 사용 (소폭 상승에 민감하지 않게)")
                 return
-            # 🔥🔥🔥 A안 핵심 끝 🔥🔥🔥
             
-            # 이하 기존 3단계 시스템 (1% 이상일 때만 실행됨)
+            # 🔥🔥🔥 핵심 개선: 수수료 반영한 진짜 본전 가격 계산
+            commission_rate = config.get("commission_rate", 0.004)
+            breakeven_price = int(entry_price * (1 + commission_rate))
             
-            # 🔥 1단계: 본전 보호 활성화 (2% 달성)
-            breakeven_threshold = config.get("breakeven_protection_rate", 0.02)
+            # 🔥 1단계: 본전 보호 활성화 (1% 달성)
+            breakeven_threshold = config.get("breakeven_protection_rate", 0.01)
             breakeven_protected = position.get('breakeven_protected', False)
             
             if not breakeven_protected and profit_rate >= breakeven_threshold:
                 with self.lock:
                     self.positions[stock_code]['breakeven_protected'] = True
-                    self.positions[stock_code]['trailing_stop_price'] = entry_price  # 본전으로 설정
+                    self.positions[stock_code]['trailing_stop_price'] = breakeven_price  # ✅ 수수료 반영!
                 
                 self.save_positions()
                 
+                commission_amount = breakeven_price - entry_price
                 logger.info(f"🛡️ {stock_code} 본전 보호 활성화! (수익률: {profit_rate*100:+.2f}%)")
-                logger.info(f"   손절선: {entry_price:,}원 (본전)")
+                logger.info(f"   진입가: {entry_price:,}원")
+                logger.info(f"   거래비용: {commission_amount:,}원 ({commission_rate*100:.2f}%)")
+                logger.info(f"   실제 본전: {breakeven_price:,}원")
+                logger.info(f"   손절선: {breakeven_price:,}원 (본전+수수료)")
                 
                 if config.get("use_discord_alert", True):
                     stock_name = position.get('stock_name', stock_code)
@@ -1285,55 +1292,60 @@ class SignalTradingBot:
                     msg += f"종목: {stock_name} ({stock_code})\n"
                     msg += f"진입가: {entry_price:,}원\n"
                     msg += f"현재가: {current_price:,}원 ({profit_rate*100:+.2f}%)\n"
-                    msg += f"손절선: {entry_price:,}원 (본전 보호)"
+                    msg += f"거래비용: {commission_amount:,}원\n"
+                    msg += f"손절선: {breakeven_price:,}원 (본전+수수료)"
                     discord_alert.SendMessage(msg)
                 
-                return
+                # 🔥🔥🔥 return 제거! 아래 트레일링 로직도 실행됨
             
-            # 🔥 2단계: 타이트 트레일링 활성화 (3% 달성)
+            # 🔥 2단계: 초타이트 트레일링 활성화 (3% 달성)
             tight_threshold = config.get("tight_trailing_threshold", 0.03)
             tight_trailing_active = position.get('tight_trailing_active', False)
             
             if not tight_trailing_active and profit_rate >= tight_threshold:
                 with self.lock:
                     self.positions[stock_code]['tight_trailing_active'] = True
-                    tight_rate = config.get("tight_trailing_rate", 0.005)
-                    self.positions[stock_code]['trailing_stop_price'] = highest_price * (1 - tight_rate)
+                    tight_rate = config.get("tight_trailing_rate", 0.003)  # 0.3%
+                    new_trailing_stop = highest_price * (1 - tight_rate)
+                    # 본전 이하로 내려가지 않도록 보장
+                    new_trailing_stop = max(breakeven_price, int(new_trailing_stop))
+                    self.positions[stock_code]['trailing_stop_price'] = new_trailing_stop
                 
                 self.save_positions()
                 
-                logger.info(f"🎯 {stock_code} 타이트 트레일링 시작! (수익률: {profit_rate*100:+.2f}%)")
+                logger.info(f"🎯 {stock_code} 초타이트 트레일링 시작! (수익률: {profit_rate*100:+.2f}%)")
                 logger.info(f"   최고가: {highest_price:,}원")
-                logger.info(f"   트레일링: {self.positions[stock_code]['trailing_stop_price']:,.0f}원 (-0.5%)")
+                logger.info(f"   트레일링: {new_trailing_stop:,}원 (-0.3%)")
                 
                 if config.get("use_discord_alert", True):
                     stock_name = position.get('stock_name', stock_code)
-                    msg = f"🎯 **타이트 트레일링 시작!**\n"
+                    msg = f"🎯 **초타이트 트레일링!**\n"
                     msg += f"종목: {stock_name} ({stock_code})\n"
                     msg += f"진입가: {entry_price:,}원\n"
                     msg += f"최고가: {highest_price:,}원 ({profit_rate*100:+.2f}%)\n"
-                    msg += f"트레일링: {self.positions[stock_code]['trailing_stop_price']:,.0f}원 (-0.5%)"
+                    msg += f"트레일링: {new_trailing_stop:,}원 (-0.3%)"
                     discord_alert.SendMessage(msg)
                 
-                return
+                # 🔥🔥🔥 return 제거! 아래 로직도 실행
             
             # 🔥 3단계: 트레일링 스탑 업데이트 (최고가 갱신 시)
             if current_price == highest_price:  # 방금 최고가 갱신됨
                 if tight_trailing_active:
-                    # 타이트 트레일링 모드 (3% 이상)
-                    tight_rate = config.get("tight_trailing_rate", 0.005)
+                    # 초타이트 트레일링 모드 (3% 이상)
+                    tight_rate = config.get("tight_trailing_rate", 0.003)  # 0.3%
                     new_trailing_stop = highest_price * (1 - tight_rate)
                 elif breakeven_protected:
-                    # 본전 보호 모드 (2-3% 구간)
-                    # 일반 트레일링 적용하되 본전 아래로는 내려가지 않음
-                    trailing_rate = config.get("trailing_stop_rate", 0.01)
-                    new_trailing_stop = max(entry_price, highest_price * (1 - trailing_rate))
-                else:
-                    # 🔥 일반 트레일링 (1-2% 구간) - A안으로 조건부 활성화됨!
-                    trailing_rate = config.get("trailing_stop_rate", 0.01)
+                    # 본전 보호 모드 (1~3% 구간)
+                    # 🔥 0.5% 트레일링 적용 (기존 1%보다 2배 촘촘)
+                    trailing_rate = config.get("trailing_stop_rate", 0.005)  # 0.5%
                     new_trailing_stop = highest_price * (1 - trailing_rate)
-                    
-                    logger.info(f"✅ {stock_code} 트레일링 활성화! (수익률: {profit_rate*100:+.2f}% >= {min_profit_for_trailing*100:.0f}%)")
+                else:
+                    # 일반 트레일링 (1~3% 구간, 본전 보호 미활성화)
+                    trailing_rate = config.get("trailing_stop_rate", 0.005)  # 0.5%
+                    new_trailing_stop = highest_price * (1 - trailing_rate)
+                
+                # 🔥🔥🔥 핵심: 진짜 본전(수수료 포함) 이하로 절대 내려가지 않음
+                new_trailing_stop = max(breakeven_price, int(new_trailing_stop))
                 
                 with self.lock:
                     self.positions[stock_code]['trailing_stop_price'] = new_trailing_stop
@@ -1341,7 +1353,7 @@ class SignalTradingBot:
                 self.save_positions()
                 
                 trailing_profit = (new_trailing_stop - entry_price) / entry_price
-                logger.debug(f"🔄 {stock_code} 트레일링 업데이트: {new_trailing_stop:,.0f}원 (보장수익: {trailing_profit*100:+.2f}%)")
+                logger.debug(f"🔄 {stock_code} 트레일링 업데이트: {new_trailing_stop:,}원 (보장수익: {trailing_profit*100:+.2f}%)")
             
         except Exception as e:
             logger.error(f"트레일링 스탑 업데이트 실패: {e}")
