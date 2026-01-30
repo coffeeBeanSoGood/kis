@@ -2667,7 +2667,8 @@ def main():
         start_msg += f"• ATR 기반 동적 손절\n"
         start_msg += f"\n📈 **매도 전략**\n"
         start_msg += f"• 목표 수익: +{config.get('target_profit_rate', 0.03)*100:.0f}%\n"
-        start_msg += f"• 일반 트레일링: -{config.get('trailing_stop_rate', 0.01)*100:.0f}%\n"
+        # start_msg += f"• 일반 트레일링: -{config.get('trailing_stop_rate', 0.01)*100:.0f}%\n"
+        start_msg += f"• 일반 트레일링: -{config.get('trailing_stop_rate', 0.01)*100:.1f}%\n"  # ← .0f를 .1f로!
         start_msg += f"• 타이트 트레일링: -{config.get('tight_trailing_rate', 0.005)*100:.1f}% (+3% 달성 시)\n"
         start_msg += f"• 본전 보호: +{config.get('breakeven_protection_rate', 0.02)*100:.0f}% 달성 시\n"
         start_msg += f"• 긴급 손절: {config.get('emergency_stop_loss', -0.03)*100:.0f}%\n"
