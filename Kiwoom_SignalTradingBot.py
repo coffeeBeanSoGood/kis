@@ -326,7 +326,114 @@ class SignalTradingBot:
             except Exception as e:
                 logger.error(f"포지션 로드 실패: {e}")
                 return {}
-    
+        
+    def process_new_signals(self):
+        """
+        신호 파일 변경 시 실행되는 핵심 함수
+        watchdog에서 호출됨
+        
+        처리 흐름:
+        1. 장중 시간 체크
+        2. 최신 신호 읽기
+        3. 유효 신호 필터링
+        4. STRONG_BUY/CONFIRMED_BUY 신호 매수 실행
+        """
+        try:
+            logger.info("=" * 80)
+            logger.info("🔔 신호 처리 시작!")
+            logger.info("=" * 80)
+            
+            # 1️⃣ 장중 시간 체크
+            if not self.is_trading_time():
+                logger.info("⏰ 장 시간 외 - 신호 처리 스킵")
+                return
+            
+            # 2️⃣ 최신 신호 읽기
+            logger.info("📖 신호 파일 읽는 중...")
+            all_signals = self.read_latest_signals()
+            
+            if not all_signals:
+                logger.info("📭 신호 없음")
+                return
+            
+            # 3️⃣ 유효한 신호만 필터링
+            logger.info("🔍 유효 신호 필터링 중...")
+            valid_signals = self.filter_valid_signals(all_signals)
+            
+            if not valid_signals:
+                logger.info("❌ 유효한 신호 없음")
+                return
+            
+            # 4️⃣ 매수 대상 신호만 선택 (STRONG_BUY, CONFIRMED_BUY)
+            buy_signal_types = config.get("buy_signals", ["STRONG_BUY", "CONFIRMED_BUY"])
+            buy_signals = [
+                sig for sig in valid_signals 
+                if sig.get('signal') in buy_signal_types
+            ]
+            
+            logger.info(f"🎯 매수 대상 신호: {len(buy_signals)}건 ({', '.join(buy_signal_types)})")
+            
+            if not buy_signals:
+                logger.info("💤 매수 대상 신호 없음 (STRONG_BUY/CONFIRMED_BUY만 처리)")
+                return
+            
+            # 5️⃣ 각 매수 신호 처리
+            processed_count = 0
+            
+            for signal in buy_signals:
+                stock_code = signal.get('stock_code', '')
+                stock_name = signal.get('stock_name', '')
+                signal_type = signal.get('signal', '')
+                score = signal.get('score', 0)
+                confidence = signal.get('confidence', 0)
+                timestamp = signal.get('timestamp', '')
+                
+                logger.info("")
+                logger.info("─" * 80)
+                logger.info(f"🔍 [{stock_name}] {signal_type} 신호 처리 시작")
+                logger.info(f"   📊 점수: {score:.1f}/100, 신뢰도: {confidence*100:.0f}%")
+                logger.info(f"   ⏰ 발생시각: {timestamp}")
+                logger.info("─" * 80)
+                
+                # 매수 가능 여부 체크
+                can_buy, reason = self.can_buy_stock(signal)
+                
+                if not can_buy:
+                    logger.info(f"❌ 매수 불가: {reason}")
+                    logger.info("─" * 80)
+                    continue
+                
+                # ✅ 매수 실행!
+                logger.info(f"✅ 매수 가능! 매수 실행 중...")
+                
+                success = self.execute_buy(signal)
+                
+                if success:
+                    processed_count += 1
+                    logger.info(f"🎉 매수 완료!")
+                else:
+                    logger.warning(f"⚠️ 매수 실패")
+                
+                logger.info("─" * 80)
+                
+                # 너무 빠른 연속 주문 방지
+                time.sleep(1)
+            
+            # 6️⃣ 처리 결과 요약
+            logger.info("")
+            logger.info("=" * 80)
+            logger.info(f"✅ 신호 처리 완료!")
+            logger.info(f"📊 총 신호: {len(all_signals)}건")
+            logger.info(f"✔️ 유효 신호: {len(valid_signals)}건")
+            logger.info(f"🎯 매수 대상: {len(buy_signals)}건")
+            logger.info(f"💰 실제 매수: {processed_count}건")
+            logger.info("=" * 80)
+            
+        except Exception as e:
+            logger.error(f"❌ 신호 처리 중 오류: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
     def save_positions(self):
         try:
             with self.lock:
