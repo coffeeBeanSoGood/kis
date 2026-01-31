@@ -36,6 +36,42 @@
   "cooldowns_file": "trading_cooldowns.json",
   "use_discord": true,
   "bot_name": "SignalTradingBot_Kiwoom",
+
+  "_comment_golden_time": "========== 골든타임 차등 매매 전략 v1.0 ==========",
+  "golden_time_strategy": {
+    "enabled": true,
+    
+    "_comment_time": "시간대 정의 (HH:MM 형식)",
+    "morning_blackout_end": "09:20",
+    "golden_time_end": "11:00",
+    
+    "_comment_blackout": "장초반 관망 (09:00-09:20)",
+    "blackout": {
+      "buy_allowed": false
+    },
+    
+    "_comment_golden": "골든타임 (09:20-11:00) - 매수 기준 완화",
+    "golden": {
+      "strong_buy_min_score": 72,
+      "min_confidence": 0.35,
+      "allow_buy_signal": true,
+      "buy_signal_min_score": 70,
+      "buy_signal_filters": {
+        "min_execution_strength": 120,
+        "market_crash_threshold": -1.5,
+        "min_change_rate": -2.0,
+        "require_investor_support": true
+      }
+    },
+    
+    "_comment_normal": "일반 시간대 (11:00-15:20) - 기존 기준 유지",
+    "normal": {
+      "strong_buy_min_score": 75,
+      "min_confidence": 0.40,
+      "allow_buy_signal": false
+    }
+  },
+  
   "performance": {
     "baseline_asset": 500000,
     "baseline_date": "2026-01-27",
