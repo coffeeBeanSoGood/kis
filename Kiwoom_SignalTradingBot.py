@@ -142,44 +142,7 @@ class ConfigManager:
             # ============================================
             "use_discord": True,
             "bot_name": "SignalTradingBot_Kiwoom",
-
-            # ============================================
-            # 🔥 골든타임 차등 매매 설정 v1.0
-            # ============================================
-            "golden_time_strategy": {
-                "enabled": True,                          # 기능 On/Off 스위치
-                
-                # 시간대 정의 (HH:MM 형식)
-                "morning_blackout_end": "09:20",          # 장초반 관망 종료
-                "golden_time_end": "11:00",               # 골든타임 종료
-                
-                # 장초반 관망 (09:00-09:20)
-                "blackout": {
-                    "buy_allowed": False                  # 매수 금지
-                },
-                
-                # 골든타임 (09:20-11:00)
-                "golden": {
-                    "strong_buy_min_score": 72,           # STRONG_BUY 최소 점수
-                    "min_confidence": 0.35,               # 최소 신뢰도
-                    "allow_buy_signal": True,             # BUY 신호 직접 매수 허용
-                    "buy_signal_min_score": 70,           # BUY 신호 최소 점수
-                    "buy_signal_filters": {
-                        "min_execution_strength": 120,    # 체결강도 최소 120%
-                        "market_crash_threshold": -1.5,   # 시장 급락 기준
-                        "min_change_rate": -2.0,          # 종목 최소 등락률
-                        "require_investor_support": True  # 외국인/기관 순매수 필요
-                    }
-                },
-                
-                # 일반 시간대 (11:00-15:20)
-                "normal": {
-                    "strong_buy_min_score": 75,           # 기존 유지
-                    "min_confidence": 0.40,               # 기존 유지
-                    "allow_buy_signal": False             # BUY 직접 매수 불가
-                }
-            },
-
+            
             # ============================================
             # 성과 추적 설정
             # ============================================
@@ -371,14 +334,11 @@ class SignalTradingBot:
         신호 파일 변경 시 실행되는 핵심 함수
         watchdog에서 호출됨
         
-        🔥 v3.3 골든타임 차등 매매 전략 적용
-        
         처리 흐름:
         1. 장중 시간 체크
-        2. 🆕 시간대 판단 (blackout/golden/normal)
-        3. 최신 신호 읽기
-        4. 🆕 시간대별 조건으로 유효 신호 필터링
-        5. 매수 실행
+        2. 최신 신호 읽기
+        3. 유효 신호 필터링
+        4. STRONG_BUY/CONFIRMED_BUY 신호 매수 실행
         """
         try:
             logger.info("=" * 80)
@@ -390,42 +350,7 @@ class SignalTradingBot:
                 logger.info("⏰ 장 시간 외 - 신호 처리 스킵")
                 return
             
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # 2️⃣ 🆕 시간대 판단
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            time_zone = self.get_trading_time_zone()
-            criteria = self.get_time_zone_buy_criteria(time_zone)
-            
-            time_zone_emoji = {
-                "blackout": "🔒",
-                "golden": "🔥",
-                "normal": "✅"
-            }
-            
-            logger.info(f"")
-            logger.info(f"⏰ 현재 시간대: {time_zone_emoji.get(time_zone, '')} {time_zone.upper()}")
-            
-            if time_zone == "blackout":
-                logger.info(f"   🔒 장초반 관망 시간 (09:00-09:20)")
-                logger.info(f"   ❌ 모든 매수 금지 - 갭 안정화 대기")
-                logger.info("=" * 80)
-                return
-            
-            elif time_zone == "golden":
-                logger.info(f"   🔥 골든타임 (09:20-11:00)")
-                logger.info(f"   📊 STRONG_BUY 기준: {criteria['strong_buy_min_score']}점+ (완화)")
-                logger.info(f"   📈 BUY 직접 매수: {'허용 (70점+, 5중필터)' if criteria['allow_buy_signal'] else '불가'}")
-                logger.info(f"   🎯 신뢰도 기준: {criteria['min_confidence']*100:.0f}%+")
-            
-            else:  # normal
-                logger.info(f"   ✅ 일반 시간대 (11:00-15:20)")
-                logger.info(f"   📊 STRONG_BUY 기준: {criteria['strong_buy_min_score']}점+ (기본)")
-                logger.info(f"   📈 BUY 직접 매수: {'허용' if criteria['allow_buy_signal'] else 'CONFIRMED_BUY만'}")
-                logger.info(f"   🎯 신뢰도 기준: {criteria['min_confidence']*100:.0f}%+")
-            
-            logger.info(f"")
-            
-            # 3️⃣ 최신 신호 읽기
+            # 2️⃣ 최신 신호 읽기
             logger.info("📖 신호 파일 읽는 중...")
             all_signals = self.read_latest_signals()
             
@@ -433,7 +358,7 @@ class SignalTradingBot:
                 logger.info("📭 신호 없음")
                 return
             
-            # 4️⃣ 유효한 신호만 필터링 (시간, 중복 등 기본 필터)
+            # 3️⃣ 유효한 신호만 필터링
             logger.info("🔍 유효 신호 필터링 중...")
             valid_signals = self.filter_valid_signals(all_signals)
             
@@ -441,58 +366,20 @@ class SignalTradingBot:
                 logger.info("❌ 유효한 신호 없음")
                 return
             
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # 5️⃣ 🆕 시간대별 조건으로 매수 대상 선정
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            buy_signals = []
+            # 4️⃣ 매수 대상 신호만 선택 (STRONG_BUY, CONFIRMED_BUY)
+            buy_signal_types = config.get("buy_signals", ["STRONG_BUY", "CONFIRMED_BUY"])
+            buy_signals = [
+                sig for sig in valid_signals 
+                if sig.get('signal') in buy_signal_types
+            ]
             
-            for sig in valid_signals:
-                signal_type = sig.get('signal', '')
-                score = sig.get('score', 0)
-                confidence = sig.get('confidence', 0)
-                stock_name = sig.get('stock_name', sig.get('stock_code', ''))
-                
-                # 신뢰도 기본 체크
-                if confidence < criteria['min_confidence']:
-                    logger.info(f"  ❌ [{stock_name}] 신뢰도 미달: {confidence*100:.0f}% < {criteria['min_confidence']*100:.0f}%")
-                    continue
-                
-                # STRONG_BUY 처리
-                if signal_type == "STRONG_BUY":
-                    if score >= criteria['strong_buy_min_score']:
-                        buy_signals.append(sig)
-                        logger.info(f"  ✅ [{stock_name}] STRONG_BUY {score:.1f}점 → 매수 대상")
-                    else:
-                        logger.info(f"  ❌ [{stock_name}] STRONG_BUY {score:.1f}점 < {criteria['strong_buy_min_score']}점 (시간대 기준 미달)")
-                
-                # CONFIRMED_BUY 처리 (항상 허용)
-                elif signal_type == "CONFIRMED_BUY":
-                    buy_signals.append(sig)
-                    logger.info(f"  ✅ [{stock_name}] CONFIRMED_BUY → 매수 대상 (최고 신호)")
-                
-                # 🆕 BUY 처리 (골든타임에만)
-                elif signal_type == "BUY" and criteria['allow_buy_signal']:
-                    if score >= criteria['buy_signal_min_score']:
-                        # 5중 필터 체크
-                        filter_passed, filter_reason = self.check_golden_time_buy_filters(sig)
-                        
-                        if filter_passed:
-                            buy_signals.append(sig)
-                            logger.info(f"  ✅ [{stock_name}] BUY {score:.1f}점 → 골든타임 매수 대상 ({filter_reason})")
-                        else:
-                            logger.info(f"  ❌ [{stock_name}] BUY {score:.1f}점 → {filter_reason}")
-                    else:
-                        logger.info(f"  ❌ [{stock_name}] BUY {score:.1f}점 < {criteria['buy_signal_min_score']}점 (골든타임 BUY 기준 미달)")
-            
-            logger.info(f"")
-            logger.info(f"🎯 매수 대상 신호: {len(buy_signals)}건")
+            logger.info(f"🎯 매수 대상 신호: {len(buy_signals)}건 ({', '.join(buy_signal_types)})")
             
             if not buy_signals:
-                logger.info("💤 매수 대상 신호 없음")
-                logger.info("=" * 80)
+                logger.info("💤 매수 대상 신호 없음 (STRONG_BUY/CONFIRMED_BUY만 처리)")
                 return
             
-            # 6️⃣ 각 매수 신호 처리
+            # 5️⃣ 각 매수 신호 처리
             processed_count = 0
             
             for signal in buy_signals:
@@ -508,10 +395,10 @@ class SignalTradingBot:
                 logger.info(f"🔍 [{stock_name}] {signal_type} 신호 처리 시작")
                 logger.info(f"   📊 점수: {score:.1f}/100, 신뢰도: {confidence*100:.0f}%")
                 logger.info(f"   ⏰ 발생시각: {timestamp}")
-                logger.info(f"   🕐 시간대: {time_zone.upper()}")
                 logger.info("─" * 80)
                 
                 # 매수 가능 여부 체크
+                # can_buy, reason = self.can_buy_stock(signal)
                 can_buy, reason = self.can_buy(stock_code)
                 
                 if not can_buy:
@@ -527,16 +414,6 @@ class SignalTradingBot:
                 if success:
                     processed_count += 1
                     logger.info(f"🎉 매수 완료!")
-                    
-                    # 🆕 골든타임 BUY 매수 시 특별 알림
-                    if signal_type == "BUY" and time_zone == "golden":
-                        if config.get("use_discord", True):
-                            golden_msg = f"🔥 **골든타임 BUY 매수!**\n"
-                            golden_msg += f"종목: {stock_name}\n"
-                            golden_msg += f"점수: {score:.1f}점\n"
-                            golden_msg += f"시간대: 골든타임 (09:20-11:00)\n"
-                            golden_msg += f"⚡ 5중 필터 통과!"
-                            discord_alert.SendMessage(golden_msg)
                 else:
                     logger.warning(f"⚠️ 매수 실패")
                 
@@ -545,7 +422,7 @@ class SignalTradingBot:
                 # 너무 빠른 연속 주문 방지
                 time.sleep(1)
             
-            # 7️⃣ 처리 결과 요약
+            # 6️⃣ 처리 결과 요약
             logger.info("")
             logger.info("=" * 80)
             logger.info(f"✅ 신호 처리 완료!")
@@ -553,7 +430,6 @@ class SignalTradingBot:
             logger.info(f"✔️ 유효 신호: {len(valid_signals)}건")
             logger.info(f"🎯 매수 대상: {len(buy_signals)}건")
             logger.info(f"💰 실제 매수: {processed_count}건")
-            logger.info(f"🕐 시간대: {time_zone.upper()}")
             logger.info("=" * 80)
             
         except Exception as e:
@@ -625,225 +501,6 @@ class SignalTradingBot:
         market_close = datetime.strptime("15:30", "%H:%M").time()
         
         return market_open <= current_time <= market_close
-
-    def get_trading_time_zone(self) -> str:
-        """
-        현재 시간대 판단
-        
-        Returns:
-            str: "blackout" | "golden" | "normal" | "closed"
-            
-        시간대 구분:
-        - blackout: 09:00-09:20 (장초반 관망)
-        - golden: 09:20-11:00 (골든타임)
-        - normal: 11:00-15:20 (일반)
-        - closed: 장 시간 외
-        """
-        now = datetime.now()
-        current_time = now.strftime("%H:%M")
-        
-        # 골든타임 설정 로드
-        gt_config = config.get("golden_time_strategy", {})
-        if not gt_config.get("enabled", False):
-            return "normal"  # 기능 비활성화 시 항상 normal
-        
-        blackout_end = gt_config.get("morning_blackout_end", "09:20")
-        golden_end = gt_config.get("golden_time_end", "11:00")
-        
-        # 장 시간 외
-        if current_time < "09:00" or current_time >= "15:20":
-            return "closed"
-        
-        # 장초반 관망 (09:00-09:20)
-        if current_time < blackout_end:
-            return "blackout"
-        
-        # 골든타임 (09:20-11:00)
-        if current_time < golden_end:
-            return "golden"
-        
-        # 일반 시간대 (11:00-15:20)
-        return "normal"
-
-    def check_golden_time_buy_filters(self, signal: dict) -> tuple:
-        """
-        골든타임 BUY 신호 5중 필터 체크
-        
-        Args:
-            signal: 신호 딕셔너리 (signal_history.json에서 읽은 데이터)
-        
-        Returns:
-            tuple: (통과여부: bool, 사유: str)
-            
-        5중 필터:
-        1️⃣ 점수 필터: BUY 점수 70점 이상
-        2️⃣ 체결강도 필터: 120% 이상
-        3️⃣ 시장 필터: 코스피/코스닥 -1.5% 이상
-        4️⃣ 수급 필터: 외국인 OR 기관 순매수
-        5️⃣ 종목 필터: 당일 등락률 -2% 이상
-        """
-        try:
-            gt_config = config.get("golden_time_strategy", {}).get("golden", {})
-            filters = gt_config.get("buy_signal_filters", {})
-            
-            stock_code = signal.get('stock_code', '')
-            stock_name = signal.get('stock_name', stock_code)
-            score = signal.get('score', 0)
-            details = signal.get('details', {})
-            
-            passed_count = 0
-            filter_results = []
-            
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # 1️⃣ 점수 필터
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            min_score = gt_config.get("buy_signal_min_score", 70)
-            if score >= min_score:
-                passed_count += 1
-                filter_results.append(f"✅ 점수: {score:.1f}점 ≥ {min_score}")
-            else:
-                filter_results.append(f"❌ 점수: {score:.1f}점 < {min_score}")
-            
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # 2️⃣ 체결강도 필터
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            exec_info = details.get('execution', {})
-            exec_strength = exec_info.get('strength', 0)
-            min_exec = filters.get("min_execution_strength", 120)
-            
-            if exec_strength >= min_exec:
-                passed_count += 1
-                filter_results.append(f"✅ 체결강도: {exec_strength:.0f}% ≥ {min_exec}%")
-            else:
-                filter_results.append(f"❌ 체결강도: {exec_strength:.0f}% < {min_exec}%")
-            
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # 3️⃣ 시장 급락 필터 (코스피/코스닥)
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            market_ok = True
-            crash_threshold = filters.get("market_crash_threshold", -1.5)
-            
-            # reasons에서 시장 급락 경고 확인
-            reasons = signal.get('reasons', [])
-            has_market_crash = any('시장 급락' in r or '🚨' in r for r in reasons)
-            
-            if has_market_crash:
-                market_ok = False
-                filter_results.append(f"❌ 시장: 급락 경고 감지")
-            else:
-                passed_count += 1
-                filter_results.append(f"✅ 시장: 정상 (급락 없음)")
-            
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # 4️⃣ 외국인/기관 수급 필터
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            require_investor = filters.get("require_investor_support", True)
-            investor_ok = False
-            
-            if require_investor:
-                foreign_info = details.get('foreign', {})
-                institution_info = details.get('institution', {})
-                
-                foreign_net = foreign_info.get('net_volume', 0)
-                institution_net = institution_info.get('net_volume', 0)
-                
-                # 외국인 OR 기관 순매수
-                if foreign_net > 0 or institution_net > 0:
-                    investor_ok = True
-                    passed_count += 1
-                    investor_desc = []
-                    if foreign_net > 0:
-                        investor_desc.append(f"외국인+{foreign_net:,}")
-                    if institution_net > 0:
-                        investor_desc.append(f"기관+{institution_net:,}")
-                    filter_results.append(f"✅ 수급: {', '.join(investor_desc)}")
-                else:
-                    filter_results.append(f"❌ 수급: 외국인/기관 순매도")
-            else:
-                passed_count += 1
-                filter_results.append(f"✅ 수급: 체크 스킵 (설정)")
-            
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # 5️⃣ 종목 등락률 필터
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            stock_info = details.get('stock_info', {})
-            change_rate = stock_info.get('change_rate', 0)
-            min_change = filters.get("min_change_rate", -2.0)
-            
-            if change_rate >= min_change:
-                passed_count += 1
-                filter_results.append(f"✅ 등락률: {change_rate:+.2f}% ≥ {min_change}%")
-            else:
-                filter_results.append(f"❌ 등락률: {change_rate:+.2f}% < {min_change}% (급락)")
-            
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            # 최종 판정: 5개 중 4개 이상 통과
-            # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            min_pass = 4
-            is_passed = passed_count >= min_pass
-            
-            # 로그 출력
-            logger.info(f"  🔍 [{stock_name}] 골든타임 BUY 5중 필터 결과:")
-            for result in filter_results:
-                logger.info(f"      {result}")
-            logger.info(f"      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-            logger.info(f"      결과: {passed_count}/5 통과 → {'✅ 매수 허용' if is_passed else '❌ 매수 불가'}")
-            
-            if is_passed:
-                return True, f"골든타임 BUY 필터 통과 ({passed_count}/5)"
-            else:
-                return False, f"골든타임 BUY 필터 미달 ({passed_count}/5, 최소 {min_pass}개 필요)"
-                
-        except Exception as e:
-            logger.error(f"골든타임 BUY 필터 체크 오류: {e}")
-            return False, f"필터 체크 오류: {e}"
-
-    def get_time_zone_buy_criteria(self, time_zone: str) -> dict:
-        """
-        시간대별 매수 기준 반환
-        
-        Args:
-            time_zone: "blackout" | "golden" | "normal"
-        
-        Returns:
-            dict: {
-                "buy_allowed": bool,
-                "strong_buy_min_score": int,
-                "min_confidence": float,
-                "allow_buy_signal": bool,
-                "buy_signal_min_score": int
-            }
-        """
-        gt_config = config.get("golden_time_strategy", {})
-        
-        if time_zone == "blackout":
-            return {
-                "buy_allowed": gt_config.get("blackout", {}).get("buy_allowed", False),
-                "strong_buy_min_score": 100,  # 사실상 매수 불가
-                "min_confidence": 1.0,
-                "allow_buy_signal": False,
-                "buy_signal_min_score": 100
-            }
-        
-        elif time_zone == "golden":
-            golden_cfg = gt_config.get("golden", {})
-            return {
-                "buy_allowed": True,
-                "strong_buy_min_score": golden_cfg.get("strong_buy_min_score", 72),
-                "min_confidence": golden_cfg.get("min_confidence", 0.35),
-                "allow_buy_signal": golden_cfg.get("allow_buy_signal", True),
-                "buy_signal_min_score": golden_cfg.get("buy_signal_min_score", 70)
-            }
-        
-        else:  # normal
-            normal_cfg = gt_config.get("normal", {})
-            return {
-                "buy_allowed": True,
-                "strong_buy_min_score": normal_cfg.get("strong_buy_min_score", 75),
-                "min_confidence": normal_cfg.get("min_confidence", 0.40),
-                "allow_buy_signal": normal_cfg.get("allow_buy_signal", False),
-                "buy_signal_min_score": 100  # BUY 직접 매수 불가
-            }
     
     def read_latest_signals(self):
         try:
@@ -2599,28 +2256,44 @@ class SignalTradingBot:
                 time.sleep(interval)
         
         # 🔥🔥🔥 여기부터 새로 추가 🔥🔥🔥
+
         def daily_report_checker():
-            """일일 리포트 체크 스레드 (15:20~15:30 사이 1회 실행)"""
-            report_sent_date = None  # 마지막 전송 날짜
+            """일일 리포트 전송 체크 (15:20~15:30)"""
+            report_sent_date = None
+            logger.info("✅ 일일 리포트 체크 스레드 시작")
             
             while self.running:
                 try:
                     now = datetime.now()
                     
-                    # 15:20~15:30 사이인지 확인
-                    if now.hour == 15 and 20 <= now.minute <= 30:
+                    # 🔥🔥🔥 여기 수정! 평일 체크 추가 🔥🔥🔥
+                    # 15:20~15:30 사이이고 평일(월~금)인지 확인
+                    is_weekday = now.weekday() < 5  # 월(0) ~ 금(4)
+                    
+                    if (now.hour == 15 and 
+                        20 <= now.minute <= 30 and 
+                        is_weekday):  # 👈 평일 체크 추가!
+                        
                         # 오늘 아직 전송 안했으면 전송
                         if report_sent_date != now.date():
-                            logger.info("📊 일일 리포트 시간 도달")
+                            logger.info("📊 일일 리포트 시간 도달 (장 개장일)")
                             self.send_daily_report()
                             report_sent_date = now.date()
                             logger.info(f"✅ 일일 리포트 전송 완료 - 다음: {(now + timedelta(days=1)).date()}")
+                    
+                    # 🆕 주말/공휴일 로그 추가 (디버깅용)
+                    elif now.hour == 15 and 20 <= now.minute <= 30:
+                        if not is_weekday:
+                            if report_sent_date != now.date():  # 하루에 한 번만 로그
+                                logger.info("⏸️ 오늘은 주말이므로 일일 리포트를 전송하지 않습니다")
+                                report_sent_date = now.date()  # 로그 중복 방지
                     
                 except Exception as e:
                     logger.error(f"일일 리포트 체크 스레드 오류: {e}")
                 
                 # 1분마다 체크
                 time.sleep(60)
+
         # 🔥🔥🔥 여기까지 추가 🔥🔥🔥
         
         # 스레드 시작
@@ -3016,17 +2689,6 @@ def main():
         start_msg += f"• 본전 보호: +{config.get('breakeven_protection_rate', 0.02)*100:.0f}% 달성 시\n"
         start_msg += f"• 긴급 손절: {config.get('emergency_stop_loss', -0.03)*100:.0f}%\n"
         start_msg += f"• 쿨다운: {config.get('cooldown_hours')}시간\n"
-
-        # 🆕 골든타임 전략 정보 추가
-        gt_config = config.get("golden_time_strategy", {})
-        if gt_config.get("enabled", False):
-            start_msg += f"\n🔥 **골든타임 전략 v1.0**\n"
-            start_msg += f"• 장초반 관망: 09:00-09:20 (매수 금지)\n"
-            start_msg += f"• 골든타임: 09:20-11:00\n"
-            start_msg += f"  - STRONG_BUY: 72점+ (완화)\n"
-            start_msg += f"  - BUY: 70점+ (5중필터 통과 시)\n"
-            start_msg += f"• 일반시간: 11:00-15:20 (기존 75점+)\n"
-
         start_msg += f"{'─'*30}\n"
         start_msg += "✅ 시스템 준비 완료!"
         
