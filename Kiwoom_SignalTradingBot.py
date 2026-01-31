@@ -1723,7 +1723,106 @@ class SignalTradingBot:
         except Exception as e:
             logger.error(f"미실현 손익 계산 실패: {e}")
             return 0
-    
+
+    def send_market_open_alert(self):
+        """
+        장 시작 알림 전송 (09:00)
+        - 계좌 현황 (기준자산 대비 증감 포함)
+        - 보유 종목 상세
+        - 누적 성과
+        """
+        try:
+            logger.info("=" * 60)
+            logger.info("🔔 장 시작 알림 생성 중...")
+            logger.info("=" * 60)
+            
+            # 1️⃣ 자산 정보 조회
+            asset_info = self.calculate_total_asset()
+            if not asset_info:
+                logger.error("❌ 자산 정보 조회 실패 - 장 시작 알림 생략")
+                return
+            
+            total_asset = asset_info['total_asset']
+            orderable_amt = asset_info['orderable_amt']
+            holding_value = asset_info['holding_value']
+            pending_value = asset_info['pending_value']
+            
+            # 2️⃣ 기준 자산 대비 증감 계산
+            perf = config.get('performance', {})
+            baseline_asset = perf.get('baseline_asset', total_asset)
+            baseline_date = perf.get('baseline_date', '-')
+            
+            asset_diff = total_asset - baseline_asset
+            asset_diff_rate = (asset_diff / baseline_asset * 100) if baseline_asset > 0 else 0
+            
+            # 3️⃣ 성과 데이터
+            total_trades = perf.get('total_trades', 0)
+            winning_trades = perf.get('winning_trades', 0)
+            losing_trades = perf.get('losing_trades', 0)
+            net_realized_profit = perf.get('net_realized_profit', 0)
+            win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+            
+            # 4️⃣ 메시지 생성
+            now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
+            
+            msg = f"🔔 **장 시작 알림** ({now_str})\n"
+            msg += f"{'━' * 30}\n"
+            
+            # 💰 계좌 현황
+            msg += f"💰 **계좌 현황**\n"
+            msg += f"• 총 자산: {total_asset:,}원 ({asset_diff:+,}원, {asset_diff_rate:+.1f}% vs 기준)\n"
+            msg += f"  ├─ 현금: {orderable_amt:,}원\n"
+            msg += f"  ├─ 보유주: {holding_value:,}원\n"
+            msg += f"  └─ 미체결: {pending_value:,}원\n"
+            msg += f"• 기준 자산: {baseline_asset:,}원 ({baseline_date})\n"
+            
+            # 📈 보유 종목 상세
+            msg += f"\n📈 **보유 종목 상세**\n"
+            
+            with self.lock:
+                if self.positions:
+                    for stock_code, position in self.positions.items():
+                        stock_name = position.get('stock_name', stock_code)
+                        qty = position.get('qty', 0)
+                        avg_price = position.get('avg_price', 0)
+                        
+                        # 현재가 조회
+                        try:
+                            current_price_info = KiwoomAPI.GetCurrentPrice(stock_code)
+                            current_price = current_price_info.get('CurrentPrice', avg_price) if current_price_info else avg_price
+                        except:
+                            current_price = avg_price
+                        
+                        # 수익률 계산
+                        profit_rate = ((current_price - avg_price) / avg_price * 100) if avg_price > 0 else 0
+                        
+                        msg += f"• {stock_name}({stock_code})\n"
+                        msg += f"  수량: {qty}주 | 평균가: {avg_price:,}원\n"
+                        msg += f"  현재가: {current_price:,}원 | 수익률: {profit_rate:+.2f}%\n"
+                else:
+                    msg += f"• 보유 종목 없음\n"
+            
+            # 📊 누적 성과
+            msg += f"\n📊 **누적 성과**\n"
+            msg += f"• 총 거래: {total_trades}회\n"
+            msg += f"• 승률: {win_rate:.1f}% ({winning_trades}승 {losing_trades}패)\n"
+            msg += f"• 실현손익: {net_realized_profit:+,}원\n"
+            
+            msg += f"{'━' * 30}\n"
+            msg += f"✅ 매매 시스템 정상 가동 중!"
+            
+            # 5️⃣ Discord 전송
+            if config.get("use_discord", True):
+                discord_alert.SendMessage(msg)
+                logger.info("✅ 장 시작 알림 전송 완료")
+            
+            logger.info(msg)
+            
+        except Exception as e:
+            logger.error(f"❌ 장 시작 알림 생성 실패: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
     def send_daily_report(self):
         """일일 리포트 전송 (장 마감 후)"""
         try:
@@ -2494,21 +2593,73 @@ class SignalTradingBot:
                 # 1분마다 체크
                 time.sleep(60)
 
+        # 🔥🔥🔥 장 시작 알림 체크 함수 추가 🔥🔥🔥
+        def market_open_alert_checker():
+            """장 시작 알림 체크 (09:00~09:05, 영업일만)"""
+            alert_sent_today = None  # 오늘 알림 전송 여부 (날짜 저장)
+            logger.info("✅ 장 시작 알림 체크 스레드 시작")
+            
+            while self.running:
+                try:
+                    now = datetime.now()
+                    today_date = now.strftime('%Y-%m-%d')
+                    current_time = now.strftime('%H:%M')
+                    
+                    # 이미 오늘 알림을 보냈으면 스킵
+                    if alert_sent_today == today_date:
+                        time.sleep(30)
+                        continue
+                    
+                    # 09:00 ~ 09:05 사이에만 체크 (여유 시간)
+                    if not ("09:00" <= current_time <= "09:05"):
+                        time.sleep(30)
+                        continue
+                    
+                    # 주말 체크 (토: 5, 일: 6)
+                    if now.weekday() >= 5:
+                        logger.debug("🔔 주말 - 장 시작 알림 스킵")
+                        alert_sent_today = today_date  # 주말도 체크 완료로 표시
+                        time.sleep(30)
+                        continue
+                    
+                    # 장 운영 여부 체크 (공휴일 등)
+                    if not KiwoomAPI.IsStockMarketOpen():
+                        logger.info("🔔 휴장일 - 장 시작 알림 스킵")
+                        alert_sent_today = today_date
+                        time.sleep(30)
+                        continue
+                    
+                    # ✅ 장 시작 알림 전송!
+                    logger.info("🔔 장이 열렸습니다! 알림 전송 중...")
+                    self.send_market_open_alert()
+                    
+                    # 오늘 알림 전송 완료 표시
+                    alert_sent_today = today_date
+                    logger.info(f"🔔 오늘({today_date}) 장 시작 알림 전송 완료")
+                    
+                except Exception as e:
+                    logger.error(f"❌ 장 시작 알림 체크 오류: {e}")
+                
+                time.sleep(30)  # 30초마다 체크
+
         # 🔥🔥🔥 여기까지 추가 🔥🔥🔥
         
         # 스레드 시작
         pending_thread = threading.Thread(target=pending_checker, daemon=True)
         position_thread = threading.Thread(target=position_checker, daemon=True)
-        report_thread = threading.Thread(target=daily_report_checker, daemon=True)  # 🔥 추가!
+        report_thread = threading.Thread(target=daily_report_checker, daemon=True)  
+        market_open_thread = threading.Thread(target=market_open_alert_checker, daemon=True)  # 🔥 추가!
         
         pending_thread.start()
         position_thread.start()
         report_thread.start()  # 🔥 추가!
-        
+        market_open_thread.start()  # 🔥 추가!
+
         logger.info("✅ 백그라운드 스레드 시작 완료")
         logger.info(f"   - 미체결 체크: {config.get('check_pending_interval_seconds')}초마다")
         logger.info(f"   - 보유 종목 체크: {config.get('check_position_interval_seconds')}초마다")
-        logger.info(f"   - 일일 리포트: 15:20~15:30 (장 마감 후)")  # 🔥 추가!
+        logger.info(f"   - 일일 리포트: 15:20~15:30 (장 마감 후)")
+        logger.info(f"   - 🔔 장 시작 알림: 매일 09:00 (영업일만)")  # 🔥 추가!
 
     def stop(self):
         """봇 중지"""
