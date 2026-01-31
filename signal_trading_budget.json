@@ -1,0 +1,9 @@
+{
+  "_comment": "========== 투자 예산 및 리스크 관리 설정 ==========",
+  "_note": "이 파일의 모든 값은 사용자가 직접 수정하는 설정입니다",
+  "min_asset_threshold": 400000,
+  "max_positions": 2,
+  "baseline_asset": 500000,
+  "baseline_date": "2026-01-27",
+  "baseline_note": "추가 입금 시 baseline_asset을 수동으로 업데이트하세요"
+}

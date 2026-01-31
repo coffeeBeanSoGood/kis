@@ -1,10 +1,7 @@
 {
-  "min_asset_threshold": 400000,
-  "max_positions": 2,
   "buy_signals": [
     "STRONG_BUY",
-    "CONFIRMED_BUY",
-    "BUY"
+    "CONFIRMED_BUY"
   ],
   "signal_validity_minutes": 10,
   "buy_cutoff_time": "14:50",
@@ -37,64 +34,5 @@
   "cooldowns_file": "trading_cooldowns.json",
   "use_discord": true,
   "bot_name": "SignalTradingBot_Kiwoom",
-
-  "_comment_golden_time": "========== 골든타임 차등 매매 전략 v1.0 ==========",
-  "golden_time_strategy": {
-    "enabled": true,
-    
-    "_comment_time": "시간대 정의 (HH:MM 형식)",
-    "morning_blackout_end": "09:20",
-    "golden_time_end": "11:00",
-    
-    "_comment_blackout": "장초반 관망 (09:00-09:20)",
-    "blackout": {
-      "buy_allowed": false
-    },
-    
-    "_comment_golden": "골든타임 (09:20-11:00) - 매수 기준 완화",
-    "golden": {
-      "strong_buy_min_score": 72,
-      "min_confidence": 0.35,
-      "allow_buy_signal": true,
-      "buy_signal_min_score": 70,
-      "buy_signal_filters": {
-        "min_execution_strength": 120,
-        "market_crash_threshold": -1.5,
-        "min_change_rate": -2.0,
-        "require_investor_support": true
-      }
-    },
-    
-    "_comment_normal": "일반 시간대 (11:00-15:20) - 기존 기준 유지",
-    "normal": {
-      "strong_buy_min_score": 75,
-      "min_confidence": 0.40,
-      "allow_buy_signal": false
-    }
-  },
-  
-  "performance": {
-    "baseline_asset": 500000,
-    "baseline_date": "2026-01-27",
-    "baseline_note": "추가 입금 시 baseline_asset을 수동으로 업데이트하세요",
-    "total_realized_profit": 8893,
-    "total_realized_loss": 2740,
-    "net_realized_profit": -191,
-    "total_trades": 5,
-    "winning_trades": 2,
-    "losing_trades": 3,
-    "canceled_orders": 0,
-    "win_rate": 0.0,
-    "best_performance_rate": 0.0,
-    "best_performance_date": "",
-    "worst_performance_rate": 0.0,
-    "worst_performance_date": "2026-01-28",
-    "last_report_date": "2026-01-28",
-    "start_date": "2026-01-27"
-  },
-  "performance.net_realized_profit": 6153,
-  "performance.win_rate": 40.0,
-  "performance.worst_performance_rate": -0.038200000000000005,
-  "performance.worst_performance_date": "2026-01-30",
-  "performance.last_report_date": "2026-01-30"
+  "_comment": "========== 매매 전략 설정 (사용자 수정 가능) =========="
 }

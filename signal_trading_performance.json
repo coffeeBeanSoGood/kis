@@ -1,0 +1,18 @@
+{
+  "total_realized_profit": 8893,
+  "total_realized_loss": 2740,
+  "net_realized_profit": 6153,
+  "total_trades": 5,
+  "winning_trades": 2,
+  "losing_trades": 3,
+  "canceled_orders": 0,
+  "win_rate": 40.0,
+  "best_performance_rate": 0.0,
+  "best_performance_date": "",
+  "worst_performance_rate": -0.038200000000000005,
+  "worst_performance_date": "2026-01-30",
+  "last_report_date": "2026-01-30",
+  "start_date": "2026-01-27",
+  "_comment": "========== 봇 성과 추적 데이터 (자동 업데이트) ==========",
+  "_note": "이 파일의 모든 값은 봇이 자동으로 계산하고 업데이트합니다"
+}

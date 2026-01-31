@@ -73,112 +73,126 @@ except Exception as e:
     logger.error(f"❌ 키움 API 초기화 중 오류: {str(e)}")
     exit(1)
 
-################################### 설정 관리 ##################################
+################################### 설정 관리 (3개 파일 분리) ##################################
 
 class ConfigManager:
-    """통합 설정 관리자"""
+    """
+    통합 설정 관리자 (3개 파일 분리)
+    - signal_trading_config.json: 매매 전략 설정
+    - signal_trading_budget.json: 투자 예산 설정
+    - signal_trading_performance.json: 성과 추적 데이터
+    """
 
-    def __init__(self, config_file='signal_trading_config.json'):
+    def __init__(self, 
+                 config_file='signal_trading_config.json',
+                 budget_file='signal_trading_budget.json',
+                 performance_file='signal_trading_performance.json'):
+        
         self.config_file = config_file
+        self.budget_file = budget_file
+        self.performance_file = performance_file
+        
+        # 각 파일 로드
         self.config = self.load_config()
+        self.budget_config = self.load_budget()
+        self.performance_config = self.load_performance()
+        
+        # 기본값으로 업그레이드
+        self._upgrade_config_if_needed()
 
-        self.default_config = {
-            # ============================================
-            # 계좌 및 자산 설정
-            # ============================================
-            "min_asset_threshold": 400000,      # 최소 자산 40만원 (이하 시 매매 중지)
-            "max_positions": 2,                 # 최대 보유 종목 수
+    # ============================================
+    # 기본 설정값 (3개 파일 분리)
+    # ============================================
+    
+    @property
+    def default_config(self):
+        """매매 전략 기본값"""
+        return {
+            "bot_name": "SignalTradingBot_Kiwoom",
+            "use_discord": True,
             
-            # ============================================
             # 매수 설정
-            # ============================================
             "buy_signals": ["STRONG_BUY", "CONFIRMED_BUY"],
-            "signal_validity_minutes": 10,      # 신호 유효 시간 (분)
-            "buy_cutoff_time": "14:50",         # 매수 마감 시간
-
-            # ============================================
-            # 매도 설정 (개선: 적극적 수익 보호 + 타이트 트레일링)
-            # ============================================
-            "target_profit_rate": 0.02,              # 2% 목표 수익
-            # "breakeven_protection_rate": 0.008,      # 0.8% 달성 시 본전 보호 (기존 0.02)
-            "breakeven_protection_rate": 0.012,      # 🔥 1.2% 달성 시 본전 보호 (비대칭!)
-            "commission_rate": 0.004,                # 🔥 [신규] 0.4% 거래비용
-            "tight_trailing_threshold": 0.03,        # 3% 달성 시 초타이트 (기존 0.02)
-            "tight_trailing_rate": 0.003,            # 🔥 0.3% 초타이트 (기존 0.005)
-            "trailing_stop_rate": 0.005,             # 🔥 0.5% 기본 트레일링 (기존 0.01)
-            "min_profit_for_trailing": 0.008,        # 0.8% 이상일 때 트레일링 활성화
-            "sell_signals": ["SELL", "STRONG_SELL"], # 매도 신호 종류
-            "emergency_stop_loss": -0.03,            # -3% 긴급 손절
+            "signal_validity_minutes": 10,
+            "buy_cutoff_time": "14:50",
+            "min_signal_confidence": 0.4,
             
-            # ============================================
-            # 동적 손절 설정 (ATR 기반)
-            # ============================================
-            "stop_loss_grace_period_minutes": 10,    # 매수 후 10분 유예
-            "extreme_stop_loss": -0.05,              # -5% 극단 손절
-            "atr_stop_multiplier": 2.0,              # ATR 배수
-            "atr_min_stop_loss": 0.02,               # ATR 최소 손절 2%
-            "atr_max_stop_loss": 0.08,               # ATR 최대 손절 8%
-            "signal_override_buffer": 0.02,          # 신호 우선 버퍼 2%
-            "min_signal_confidence": 0.4,            # 최소 신호 신뢰도 40%
+            # 매도 설정
+            "sell_signals": ["SELL", "STRONG_SELL"],
+            "target_profit_rate": 0.02,
+            "breakeven_protection_rate": 0.012,
+            "tight_trailing_threshold": 0.03,
+            "tight_trailing_rate": 0.003,
+            "trailing_stop_rate": 0.005,
+            "min_profit_for_trailing": 0.008,
             
-            # ============================================
-            # 스마트 스케줄링 설정
-            # ============================================
-            "pending_order_timeout_minutes": 10,     # 미체결 주문 타임아웃
-            "check_pending_interval_seconds": 30,    # 미체결 체크 주기
-            "check_position_interval_seconds": 60,   # 보유 종목 체크 주기
-            "cooldown_hours": 8,                     # 매도 후 재매수 금지 시간
+            # 손절 설정
+            "emergency_stop_loss": -0.03,
+            "stop_loss_grace_period_minutes": 10,
+            "extreme_stop_loss": -0.05,
+            "atr_stop_multiplier": 2.0,
+            "atr_min_stop_loss": 0.02,
+            "atr_max_stop_loss": 0.08,
+            "signal_override_buffer": 0.02,
             
-            # ============================================
-            # 파일 경로 설정
-            # ============================================
+            # 기타 설정
+            "commission_rate": 0.004,
+            "pending_order_timeout_minutes": 10,
+            "check_pending_interval_seconds": 30,
+            "check_position_interval_seconds": 60,
+            "cooldown_hours": 8,
+            
+            # 파일 경로
             "signal_file": "signal_history.json",
             "positions_file": "trading_positions.json",
             "pending_orders_file": "trading_pending_orders.json",
-            "cooldowns_file": "trading_cooldowns.json",
+            "cooldowns_file": "trading_cooldowns.json"
+        }
+    
+    @property
+    def default_budget(self):
+        """투자 예산 기본값"""
+        return {
+            "min_asset_threshold": 400000,
+            "max_positions": 2,
+            "baseline_asset": 500000,
+            "baseline_date": datetime.now().strftime("%Y-%m-%d"),
+            "baseline_note": "추가 입금/출금 시 baseline_asset을 수동으로 업데이트하세요"
+        }
+    
+    @property
+    def default_performance(self):
+        """성과 추적 기본값"""
+        return {
+            # 자동 계산
+            "total_realized_profit": 0,
+            "total_realized_loss": 0,
+            "net_realized_profit": 0,
             
-            # ============================================
-            # 알림 설정
-            # ============================================
-            "use_discord": True,
-            "bot_name": "SignalTradingBot_Kiwoom",
+            # 거래 통계
+            "total_trades": 0,
+            "winning_trades": 0,
+            "losing_trades": 0,
+            "canceled_orders": 0,
+            "win_rate": 0.0,
             
-            # ============================================
-            # 성과 추적 설정
-            # ============================================
-            "performance": {
-                # 📌 수동 관리 (입금/출금 시 사용자가 직접 수정!)
-                "baseline_asset": 500000,
-                "baseline_date": datetime.now().strftime("%Y-%m-%d"),
-                "baseline_note": "추가 입금 시 baseline_asset을 수동으로 업데이트하세요",
-                
-                # ✅ 자동 계산 (봇이 관리)
-                "total_realized_profit": 0,
-                "total_realized_loss": 0,
-                "net_realized_profit": 0,
-                
-                # 📊 거래 통계
-                "total_trades": 0,
-                "winning_trades": 0,
-                "losing_trades": 0,
-                "canceled_orders": 0,
-                "win_rate": 0.0,
-                
-                # 🏆 최고/최저 기록
-                "best_performance_rate": 0.0,
-                "best_performance_date": "",
-                "worst_performance_rate": 0.0,
-                "worst_performance_date": "",
-                
-                # 📅 일일 기록
-                "last_report_date": "",
-                "start_date": datetime.now().strftime("%Y-%m-%d")
-            }
+            # 최고/최저 기록
+            "best_performance_rate": 0.0,
+            "best_performance_date": "",
+            "worst_performance_rate": 0.0,
+            "worst_performance_date": "",
+            
+            # 일일 기록
+            "last_report_date": "",
+            "start_date": datetime.now().strftime("%Y-%m-%d")
         }
 
-        self._upgrade_config_if_needed()
-
+    # ============================================
+    # 파일 로드/저장
+    # ============================================
+    
     def load_config(self):
+        """매매 전략 설정 로드"""
         try:
             if os.path.exists(self.config_file):
                 with open(self.config_file, 'r', encoding='utf-8') as f:
@@ -188,17 +202,64 @@ class ConfigManager:
             logger.error(f"설정 로드 실패: {e}")
             return {}
     
+    def load_budget(self):
+        """투자 예산 설정 로드"""
+        try:
+            if os.path.exists(self.budget_file):
+                with open(self.budget_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            return {}
+        except Exception as e:
+            logger.error(f"예산 설정 로드 실패: {e}")
+            return {}
+    
+    def load_performance(self):
+        """성과 추적 데이터 로드"""
+        try:
+            if os.path.exists(self.performance_file):
+                with open(self.performance_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            return {}
+        except Exception as e:
+            logger.error(f"성과 데이터 로드 실패: {e}")
+            return {}
+    
     def save_config(self):
+        """매매 전략 설정 저장"""
         try:
             with open(self.config_file, 'w', encoding='utf-8') as f:
                 json.dump(self.config, f, ensure_ascii=False, indent=2)
-            logger.debug("✅ 설정 저장 완료")
+            logger.debug("✅ 매매 전략 설정 저장 완료")
         except Exception as e:
             logger.error(f"설정 저장 실패: {e}")
     
+    def save_budget(self):
+        """투자 예산 설정 저장"""
+        try:
+            with open(self.budget_file, 'w', encoding='utf-8') as f:
+                json.dump(self.budget_config, f, ensure_ascii=False, indent=2)
+            logger.debug("✅ 예산 설정 저장 완료")
+        except Exception as e:
+            logger.error(f"예산 설정 저장 실패: {e}")
+    
+    def save_performance(self):
+        """성과 추적 데이터 저장"""
+        try:
+            with open(self.performance_file, 'w', encoding='utf-8') as f:
+                json.dump(self.performance_config, f, ensure_ascii=False, indent=2)
+            logger.debug("✅ 성과 데이터 저장 완료")
+        except Exception as e:
+            logger.error(f"성과 데이터 저장 실패: {e}")
+
+    # ============================================
+    # 초기화 및 업그레이드
+    # ============================================
+    
     def _upgrade_config_if_needed(self):
+        """설정 파일 자동 업그레이드"""
         is_modified = False
         
+        # 1. 매매 전략 설정 업그레이드
         for key, value in self.default_config.items():
             if key not in self.config:
                 self.config[key] = value
@@ -206,33 +267,159 @@ class ConfigManager:
         
         if is_modified:
             self.save_config()
+            logger.info("📝 매매 전략 설정 업그레이드 완료")
+        
+        # 2. 예산 설정 업그레이드
+        is_modified = False
+        for key, value in self.default_budget.items():
+            if key not in self.budget_config:
+                self.budget_config[key] = value
+                is_modified = True
+        
+        if is_modified:
+            self.save_budget()
+            logger.info("📝 예산 설정 업그레이드 완료")
+        
+        # 3. 성과 데이터 업그레이드
+        is_modified = False
+        for key, value in self.default_performance.items():
+            if key not in self.performance_config:
+                self.performance_config[key] = value
+                is_modified = True
+        
+        if is_modified:
+            self.save_performance()
+            logger.info("📝 성과 데이터 업그레이드 완료")
+
+    # ============================================
+    # 통합 접근 메서드
+    # ============================================
     
     def get(self, key, default=None):
-        return self.config.get(key, default)
+        """
+        설정값 가져오기 (3개 파일 모두 검색)
+        우선순위: config > budget > performance
+        """
+        # 1. 매매 전략에서 찾기
+        if key in self.config:
+            return self.config[key]
+        
+        # 2. 예산 설정에서 찾기
+        if key in self.budget_config:
+            return self.budget_config[key]
+        
+        # 3. 성과 데이터에서 찾기 (performance.xxx 형식 지원)
+        if key.startswith('performance.'):
+            perf_key = key.replace('performance.', '')
+            
+            # baseline 관련은 budget에서 찾기
+            if perf_key in ['baseline_asset', 'baseline_date', 'baseline_note']:
+                return self.budget_config.get(perf_key, default)
+            
+            # 나머지는 performance에서 찾기
+            if perf_key in self.performance_config:
+                return self.performance_config[perf_key]
+        
+        # performance 전체 요청 시 budget의 baseline 포함
+        if key == 'performance':
+            result = self.performance_config.copy()
+            # baseline 정보를 budget에서 가져와 추가
+            result['baseline_asset'] = self.budget_config.get('baseline_asset', 500000)
+            result['baseline_date'] = self.budget_config.get('baseline_date', '')
+            result['baseline_note'] = self.budget_config.get('baseline_note', '')
+            return result
+        
+        # 4. 기본값 반환
+        return default
     
     def set(self, key, value):
+        """
+        설정값 저장 (적절한 파일에 자동 저장)
+        """
+        # performance.xxx 형식이면 적절한 파일에 저장
+        if key.startswith('performance.'):
+            perf_key = key.replace('performance.', '')
+            
+            # baseline 관련은 budget 파일에 저장
+            if perf_key in ['baseline_asset', 'baseline_date', 'baseline_note']:
+                self.budget_config[perf_key] = value
+                self.save_budget()
+                return
+            
+            # 나머지는 performance 파일에 저장
+            self.performance_config[perf_key] = value
+            self.save_performance()
+            return
+        
+        # performance면 전체 성과 데이터 교체
+        if key == 'performance':
+            # baseline은 budget으로 분리
+            if 'baseline_asset' in value:
+                self.budget_config['baseline_asset'] = value['baseline_asset']
+            if 'baseline_date' in value:
+                self.budget_config['baseline_date'] = value['baseline_date']
+            if 'baseline_note' in value:
+                self.budget_config['baseline_note'] = value['baseline_note']
+            
+            # baseline 제거 후 performance에 저장
+            perf_value = {k: v for k, v in value.items() 
+                         if k not in ['baseline_asset', 'baseline_date', 'baseline_note']}
+            self.performance_config = perf_value
+            
+            self.save_budget()
+            self.save_performance()
+            return
+        
+        # 예산 관련 키면 예산 파일에 저장
+        if key in ['min_asset_threshold', 'max_positions', 'baseline_asset', 'baseline_date', 'baseline_note']:
+            self.budget_config[key] = value
+            self.save_budget()
+            return
+        
+        # 그 외는 매매 전략 설정에 저장
         self.config[key] = value
         self.save_config()
     
+    # ============================================
+    # 성과 추적 전용 메서드
+    # ============================================
+    
     def update_performance(self, metric, value):
-        if 'performance' not in self.config:
-            self.config['performance'] = self.default_config['performance'].copy()
+        """
+        성과 메트릭 업데이트
         
+        Args:
+            metric: 메트릭 이름 (예: 'net_realized_profit', 'total_trades')
+            value: 설정할 값 또는 증가시킬 값
+        """
         if isinstance(value, (int, float)):
-            self.config['performance'][metric] = self.config['performance'].get(metric, 0) + value
+            # 숫자면 기존 값에 더하기
+            current = self.performance_config.get(metric, 0)
+            self.performance_config[metric] = current + value
         else:
-            self.config['performance'][metric] = value
+            # 그 외는 값 교체
+            self.performance_config[metric] = value
         
-        self.save_config()
+        self.save_performance()
+    
+    def get_performance(self, metric, default=None):
+        """성과 메트릭 가져오기"""
+        return self.performance_config.get(metric, default)
+    
+    def set_performance(self, metric, value):
+        """성과 메트릭 직접 설정"""
+        self.performance_config[metric] = value
+        self.save_performance()
 
+# 전역 설정 인스턴스
 config = ConfigManager()
 BOT_NAME = config.get("bot_name", "SignalTradingBot_Kiwoom")
 
 logger.info("=" * 60)
-logger.info(f"🤖 {config.get('bot_name')} 초기화 v3.0 (watchdog 실시간)")
-# logger.info(f"💰 초기 자산: {config.get('initial_budget', 500000):,}원")  # ✅ 수정!
-logger.info(f"⚠️ 최소 자산: {config.get('min_asset_threshold', 400000):,}원 (이하 시 매매 중지)")  # ✅ 추가!
+logger.info(f"🤖 {config.get('bot_name')} 초기화 v3.0 (3개 파일 분리)")
+logger.info(f"⚠️ 최소 자산: {config.get('min_asset_threshold', 400000):,}원")
 logger.info(f"📊 최대 종목: {config.get('max_positions')}개")
+logger.info("=" * 60)
 logger.info("⚡ watchdog: 파일 변경 즉시 감지 (0초 지연)")
 logger.info(f"🔄 미체결 체크: {config.get('check_pending_interval_seconds')}초마다")
 logger.info(f"📈 트레일링 체크: {config.get('check_position_interval_seconds')}초마다")
