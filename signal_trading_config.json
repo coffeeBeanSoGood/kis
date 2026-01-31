@@ -3,7 +3,8 @@
   "max_positions": 2,
   "buy_signals": [
     "STRONG_BUY",
-    "CONFIRMED_BUY"
+    "CONFIRMED_BUY",
+    "BUY"
   ],
   "signal_validity_minutes": 10,
   "buy_cutoff_time": "14:50",
