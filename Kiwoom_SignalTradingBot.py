@@ -1741,7 +1741,7 @@ class SignalTradingBot:
             perf = config.get('performance', {})
             total_trades = perf.get('total_trades', 0)
             winning_trades = perf.get('winning_trades', 0)
-            total_profit = perf.get('total_profit', 0)
+            net_realized_profit = perf.get('net_realized_profit', 0)
             total_loss = perf.get('total_loss', 0)
             canceled_orders = perf.get('canceled_orders', 0)
             
@@ -1761,7 +1761,7 @@ class SignalTradingBot:
             
             # 4️⃣ 승률 계산
             win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
-            net_profit = total_profit + total_loss  # total_loss는 음수
+            net_profit = net_realized_profit + total_loss  # total_loss는 음수
             
             # 5️⃣ 보유 종목 상세
             holdings_detail = ""
@@ -1799,7 +1799,7 @@ class SignalTradingBot:
             msg += "**📈 거래 성과**\n"
             msg += f"• 총 거래: {total_trades}회\n"
             msg += f"• 승률: {win_rate:.1f}% ({winning_trades}승/{total_trades-winning_trades}패)\n"
-            msg += f"• 실현 수익: {total_profit:+,}원\n"
+            msg += f"• 실현 수익: {net_realized_profit:+,}원\n"
             msg += f"• 실현 손실: {total_loss:+,}원\n"
             msg += f"• 순 손익: {net_profit:+,}원\n"
             msg += f"• 취소 주문: {canceled_orders}회\n"
@@ -2929,7 +2929,7 @@ def main():
             perf = config.get('performance', {})
             total_trades = perf.get('total_trades', 0)
             winning_trades = perf.get('winning_trades', 0)
-            total_profit = perf.get('total_profit', 0)
+            net_realized_profit = perf.get('net_realized_profit', 0)
             canceled_orders = perf.get('canceled_orders', 0)
             
             win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
@@ -2937,7 +2937,7 @@ def main():
             msg = f"👋 **{BOT_NAME} 종료**\n"
             msg += f"📊 총 거래: {total_trades}회\n"
             msg += f"✅ 수익 거래: {winning_trades}회 ({win_rate:.1f}%)\n"
-            msg += f"💰 총 수익: {total_profit:+,}원\n"
+            msg += f"💰 총 수익: {net_realized_profit:+,}원\n"
             msg += f"🚫 취소 주문: {canceled_orders}회"
             
             discord_alert.SendMessage(msg)
