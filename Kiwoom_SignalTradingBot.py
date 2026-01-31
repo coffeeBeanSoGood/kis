@@ -251,6 +251,19 @@ class ConfigManager:
         except Exception as e:
             logger.error(f"성과 데이터 저장 실패: {e}")
 
+    def reload_all(self):
+        """
+        모든 설정 파일 재로드
+        config, budget, performance 파일을 모두 다시 읽어옴
+        """
+        try:
+            self.config = self.load_config()
+            self.budget_config = self.load_budget()
+            self.performance_config = self.load_performance()
+            logger.info("✅ 모든 설정 파일 재로드 완료 (config + budget + performance)")
+        except Exception as e:
+            logger.error(f"설정 파일 재로드 실패: {e}")
+
     # ============================================
     # 초기화 및 업그레이드
     # ============================================
@@ -1720,8 +1733,8 @@ class SignalTradingBot:
 
             # 🔥🔥🔥 올바른 방법! 🔥🔥🔥
             # config 파일 다시 로드 (최신 데이터 반영)
-            config.config = config.load_config()
-            logger.info("✅ config 파일 재로드 완료")
+            config.reload_all()
+            logger.info("✅ 모든 config 파일 재로드 완료")
             # 🔥🔥🔥 여기까지 추가 🔥🔥🔥
 
             # 1️⃣ 성과 데이터 가져오기
@@ -2843,6 +2856,11 @@ def main():
     logger.info("=" * 60)
     logger.info(f"🤖 {BOT_NAME} 시작 v3.0 (watchdog)")
     logger.info("=" * 60)
+
+    # 🔥🔥🔥 여기에 추가! 🔥🔥🔥
+    # 모든 설정 파일 다시 로드 (최신 데이터 반영)
+    config.reload_all()
+    # 🔥🔥🔥 여기까지 추가 🔥🔥🔥
 
     # 🔥 실시간 자산 조회
     asset_info = bot_instance.calculate_total_asset()
