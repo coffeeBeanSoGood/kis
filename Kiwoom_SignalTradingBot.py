@@ -711,7 +711,72 @@ class SignalTradingBot:
             if not buy_signals:
                 logger.info("💤 매수 대상 신호 없음 (STRONG_BUY/CONFIRMED_BUY만 처리)")
                 return
-            
+
+            # 🔥🔥🔥 [여기부터 추가] 우선순위 정렬 로직 🔥🔥🔥
+            logger.info("")
+            logger.info("=" * 80)
+            logger.info("🎯 신호 우선순위 정렬 중...")
+            logger.info("=" * 80)
+
+            # 정렬 함수
+            def get_signal_priority(signal):
+                """
+                신호 우선순위 계산
+                
+                우선순위:
+                1. 신호 타입 (CONFIRMED_BUY > STRONG_BUY)
+                2. 점수 (높을수록 우선)
+                3. 신뢰도 (높을수록 우선)
+                4. 시간 (최신 우선)
+                
+                Returns:
+                    tuple: (신호타입순위, 점수, 신뢰도, 시간)
+                """
+                signal_type = signal.get('signal', '')
+                score = signal.get('score', 0)
+                confidence = signal.get('confidence', 0)
+                timestamp = signal.get('timestamp', '')
+                
+                # 신호 타입 우선순위 (숫자가 클수록 우선)
+                type_priority = {
+                    'CONFIRMED_BUY': 100,  # 3회 연속 검증된 신호 - 최우선
+                    'STRONG_BUY': 90       # 강력 매수 신호
+                }
+                
+                type_score = type_priority.get(signal_type, 0)
+                
+                return (
+                    type_score,      # 1순위: 신호 타입 (CONFIRMED_BUY 우선)
+                    score,           # 2순위: 점수 (높을수록 우선)
+                    confidence,      # 3순위: 신뢰도 (높을수록 우선)
+                    timestamp        # 4순위: 시간 (최신 우선)
+                )
+
+            # 우선순위 정렬 (높은 우선순위 → 낮은 우선순위)
+            buy_signals_sorted = sorted(
+                buy_signals,
+                key=get_signal_priority,
+                reverse=True
+            )
+
+            # 정렬 결과 로그 출력
+            logger.info("📊 우선순위 정렬 결과:")
+            for idx, signal in enumerate(buy_signals_sorted, 1):
+                stock_name = signal.get('stock_name', '')
+                signal_type = signal.get('signal', '')
+                score = signal.get('score', 0)
+                confidence = signal.get('confidence', 0)
+                
+                priority_emoji = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else "📌"
+                
+                logger.info(f"  {priority_emoji} {idx}순위: [{stock_name}]")
+                logger.info(f"     신호: {signal_type}, 점수: {score:.1f}, 신뢰도: {confidence*100:.0f}%")
+
+            logger.info("=" * 80)
+            logger.info("")
+
+            # 🔥🔥🔥 [여기까지 추가] 🔥🔥🔥
+
             # 5️⃣ 각 매수 신호 처리
             processed_count = 0
             
