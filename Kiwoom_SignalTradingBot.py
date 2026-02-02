@@ -151,15 +151,24 @@ class ConfigManager:
     
     @property
     def default_budget(self):
-        """투자 예산 기본값"""
+        """예산 설정 기본값"""
         return {
             "min_asset_threshold": 400000,
             "max_positions": 2,
             "baseline_asset": 500000,
             "baseline_date": datetime.now().strftime("%Y-%m-%d"),
-            "baseline_note": "추가 입금/출금 시 baseline_asset을 수동으로 업데이트하세요"
+            "baseline_note": "추가 입금/출금 시 자동으로 업데이트됩니다",
+            
+            # 🆕 입출금 자동 감지 설정
+            "auto_deposit_check": True,              # 자동 감지 활성화
+            "deposit_check_interval_hours": 24,      # 점검 주기 (시간)
+            "deposit_check_time": "09:05",           # 점검 시각 (HH:MM)
+            "last_deposit_check_date": "",           # 마지막 점검일 (YYYYMMDD)
+            
+            # 입출금 이력
+            "deposit_withdraw_history": []
         }
-    
+
     @property
     def default_performance(self):
         """성과 추적 기본값"""
@@ -414,7 +423,76 @@ class ConfigManager:
             self.performance_config[metric] = value
         
         self.save_performance()
-    
+
+    def add_deposit_withdraw_history(self, date, time, tx_type, amount, depositor=""):
+        """
+        입출금 이력 추가
+        
+        Args:
+            date: 거래일자 (YYYYMMDD)
+            time: 처리시간 (HH:MM:SS)
+            tx_type: deposit or withdraw
+            amount: 금액
+            depositor: 입금자 (선택)
+        """
+        history = self.budget_config.get('deposit_withdraw_history', [])
+        
+        history.append({
+            'date': date,
+            'time': time,
+            'type': tx_type,
+            'amount': amount,
+            'depositor': depositor,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+        # 최근 100개만 유지 (너무 많아지면 파일 비대화 방지)
+        if len(history) > 100:
+            history = history[-100:]
+        
+        self.budget_config['deposit_withdraw_history'] = history
+        self.save_budget()
+        
+        logger.info(f"✅ 입출금 이력 추가: {tx_type} {amount:,}원 ({date} {time})")
+
+    def get_deposit_withdraw_summary(self, days=30):
+        """
+        최근 N일 입출금 요약
+        
+        Args:
+            days: 조회 기간 (일)
+        
+        Returns:
+            dict: {
+                'total_deposits': 총 입금액,
+                'total_withdraws': 총 출금액,
+                'net_change': 순 변동,
+                'count': 거래 건수
+            }
+        """
+        history = self.budget_config.get('deposit_withdraw_history', [])
+        
+        cutoff_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
+        
+        total_deposits = 0
+        total_withdraws = 0
+        count = 0
+        
+        for h in history:
+            if h.get('date', '') >= cutoff_date:
+                count += 1
+                if h['type'] == 'deposit':
+                    total_deposits += h['amount']
+                else:
+                    total_withdraws += h['amount']
+        
+        return {
+            'total_deposits': total_deposits,
+            'total_withdraws': total_withdraws,
+            'net_change': total_deposits - total_withdraws,
+            'count': count
+        }
+
     def get_performance(self, metric, default=None):
         """성과 메트릭 가져오기"""
         return self.performance_config.get(metric, default)
@@ -1934,6 +2012,274 @@ class SignalTradingBot:
             import traceback
             logger.error(traceback.format_exc())
 
+    def check_deposit_withdraw(self):
+        """
+        kt00015 API를 사용한 입출금 내역 확인 및 baseline 자동 업데이트
+        
+        - 마지막 점검일 이후 입출금 내역 조회
+        - baseline_asset 자동 업데이트
+        - 이력 기록 및 Discord 알림
+        """
+        try:
+            logger.info("=" * 60)
+            logger.info("💰 입출금 자동 감지 시작")
+            logger.info("=" * 60)
+            
+            # 1️⃣ 설정 확인
+            if not config.get('auto_deposit_check', True):
+                logger.info("⚠️ 자동 입출금 감지가 비활성화되어 있습니다")
+                return
+            
+            # 2️⃣ 조회 기간 설정
+            last_checked = config.get('last_deposit_check_date', '')
+            today = datetime.now().strftime("%Y%m%d")
+            
+            # 첫 실행이거나 마지막 점검일이 없으면 어제부터 조회
+            if not last_checked:
+                last_checked = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+                logger.info(f"📅 첫 실행: 어제({last_checked})부터 조회")
+            
+            # 이미 오늘 점검했으면 스킵
+            if last_checked == today:
+                logger.info(f"✅ 오늘 이미 점검 완료: {today}")
+                return
+            
+            logger.info(f"📅 조회 기간: {last_checked} ~ {today}")
+            
+            # 3️⃣ kt00015 API 호출 (입출금만)
+            transactions = KiwoomAPI.GetTransactionHistory(
+                start_date=last_checked,
+                end_date=today,
+                transaction_type="1"  # 입출금만
+            )
+            
+            if not transactions:
+                logger.info("✅ 신규 입출금 내역 없음")
+                config.set('last_deposit_check_date', today)
+                return
+            
+            # 4️⃣ 입출금 내역 분석
+            total_change = 0
+            deposit_count = 0
+            withdraw_count = 0
+            deposit_details = []
+            withdraw_details = []
+            
+            for tx in transactions:
+                tx_type = tx['Type']  # deposit or withdraw
+                amount = tx['Amount']
+                date = tx['Date']
+                time = tx['Time']
+                depositor = tx['Depositor']
+                remark = tx['Remark']
+                
+                if tx_type == 'deposit':
+                    total_change += amount
+                    deposit_count += 1
+                    deposit_details.append(f"  💰 {date} {time}: +{amount:,}원 ({depositor or remark})")
+                    logger.info(f"💰 입금 감지: +{amount:,}원 ({date} {time}, {depositor or remark})")
+                elif tx_type == 'withdraw':
+                    total_change -= amount
+                    withdraw_count += 1
+                    withdraw_details.append(f"  💸 {date} {time}: -{amount:,}원 ({remark})")
+                    logger.info(f"💸 출금 감지: -{amount:,}원 ({date} {time}, {remark})")
+                
+                # 이력 기록
+                config.add_deposit_withdraw_history(
+                    date=date,
+                    time=time,
+                    tx_type=tx_type,
+                    amount=amount,
+                    depositor=depositor
+                )
+            
+            # 5️⃣ baseline_asset 업데이트
+            if total_change != 0:
+                current_baseline = config.get('baseline_asset', 0)
+                new_baseline = current_baseline + total_change
+                
+                logger.info(f"📊 Baseline 업데이트: {current_baseline:,}원 → {new_baseline:,}원 ({total_change:+,}원)")
+                
+                config.set('baseline_asset', new_baseline)
+                config.set('baseline_date', datetime.now().strftime("%Y-%m-%d"))
+                config.set('baseline_note', f"자동 업데이트: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+                
+                # 6️⃣ Discord 알림
+                msg = f"💰 **입출금 자동 감지 및 Baseline 업데이트**\n"
+                msg += f"{'━'*40}\n"
+                msg += f"📅 점검 기간: {last_checked} ~ {today}\n\n"
+                
+                if deposit_count > 0:
+                    msg += f"📥 **입금: {deposit_count}건**\n"
+                    msg += "\n".join(deposit_details[:5])  # 최대 5건만 표시
+                    if len(deposit_details) > 5:
+                        msg += f"\n  ... 외 {len(deposit_details) - 5}건\n"
+                    msg += "\n\n"
+                
+                if withdraw_count > 0:
+                    msg += f"📤 **출금: {withdraw_count}건**\n"
+                    msg += "\n".join(withdraw_details[:5])
+                    if len(withdraw_details) > 5:
+                        msg += f"\n  ... 외 {len(withdraw_details) - 5}건\n"
+                    msg += "\n\n"
+                
+                msg += f"💵 **순 변동: {total_change:+,}원**\n"
+                msg += f"📊 **Baseline 업데이트**\n"
+                msg += f"  • 이전: {current_baseline:,}원\n"
+                msg += f"  • 현재: {new_baseline:,}원\n"
+                msg += f"{'━'*40}\n"
+                msg += f"✅ 성과 계산 기준이 자동으로 조정되었습니다!"
+                
+                if config.get("use_discord", True):
+                    discord_alert.SendMessage(msg)
+                
+                logger.info("✅ Baseline 자동 업데이트 완료")
+            else:
+                logger.info("✅ 입출금 합계: 0원 (baseline 변경 없음)")
+            
+            # 7️⃣ 마지막 점검일 갱신
+            config.set('last_deposit_check_date', today)
+            logger.info(f"✅ 입출금 감지 완료: {today}")
+            
+        except Exception as e:
+            logger.error(f"❌ 입출금 감지 중 오류: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
+    def check_deposit_withdraw(self):
+        """
+        kt00015 API를 사용한 입출금 내역 확인 및 baseline 자동 업데이트
+        
+        - 마지막 점검일 이후 입출금 내역 조회
+        - baseline_asset 자동 업데이트
+        - 이력 기록 및 Discord 알림
+        """
+        try:
+            logger.info("=" * 60)
+            logger.info("💰 입출금 자동 감지 시작")
+            logger.info("=" * 60)
+            
+            # 1️⃣ 설정 확인
+            if not config.get('auto_deposit_check', True):
+                logger.info("⚠️ 자동 입출금 감지가 비활성화되어 있습니다")
+                return
+            
+            # 2️⃣ 조회 기간 설정
+            last_checked = config.get('last_deposit_check_date', '')
+            today = datetime.now().strftime("%Y%m%d")
+            
+            # 첫 실행이거나 마지막 점검일이 없으면 어제부터 조회
+            if not last_checked:
+                last_checked = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+                logger.info(f"📅 첫 실행: 어제({last_checked})부터 조회")
+            
+            # 이미 오늘 점검했으면 스킵
+            if last_checked == today:
+                logger.info(f"✅ 오늘 이미 점검 완료: {today}")
+                return
+            
+            logger.info(f"📅 조회 기간: {last_checked} ~ {today}")
+            
+            # 3️⃣ kt00015 API 호출 (입출금만)
+            transactions = KiwoomAPI.GetTransactionHistory(
+                start_date=last_checked,
+                end_date=today,
+                transaction_type="1"  # 입출금만
+            )
+            
+            if not transactions:
+                logger.info("✅ 신규 입출금 내역 없음")
+                config.set('last_deposit_check_date', today)
+                return
+            
+            # 4️⃣ 입출금 내역 분석
+            total_change = 0
+            deposit_count = 0
+            withdraw_count = 0
+            deposit_details = []
+            withdraw_details = []
+            
+            for tx in transactions:
+                tx_type = tx['Type']  # deposit or withdraw
+                amount = tx['Amount']
+                date = tx['Date']
+                time = tx['Time']
+                depositor = tx['Depositor']
+                remark = tx['Remark']
+                
+                if tx_type == 'deposit':
+                    total_change += amount
+                    deposit_count += 1
+                    deposit_details.append(f"  💰 {date} {time}: +{amount:,}원 ({depositor or remark})")
+                    logger.info(f"💰 입금 감지: +{amount:,}원 ({date} {time}, {depositor or remark})")
+                elif tx_type == 'withdraw':
+                    total_change -= amount
+                    withdraw_count += 1
+                    withdraw_details.append(f"  💸 {date} {time}: -{amount:,}원 ({remark})")
+                    logger.info(f"💸 출금 감지: -{amount:,}원 ({date} {time}, {remark})")
+                
+                # 이력 기록
+                config.add_deposit_withdraw_history(
+                    date=date,
+                    time=time,
+                    tx_type=tx_type,
+                    amount=amount,
+                    depositor=depositor
+                )
+            
+            # 5️⃣ baseline_asset 업데이트
+            if total_change != 0:
+                current_baseline = config.get('baseline_asset', 0)
+                new_baseline = current_baseline + total_change
+                
+                logger.info(f"📊 Baseline 업데이트: {current_baseline:,}원 → {new_baseline:,}원 ({total_change:+,}원)")
+                
+                config.set('baseline_asset', new_baseline)
+                config.set('baseline_date', datetime.now().strftime("%Y-%m-%d"))
+                config.set('baseline_note', f"자동 업데이트: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+                
+                # 6️⃣ Discord 알림
+                msg = f"💰 **입출금 자동 감지 및 Baseline 업데이트**\n"
+                msg += f"{'━'*40}\n"
+                msg += f"📅 점검 기간: {last_checked} ~ {today}\n\n"
+                
+                if deposit_count > 0:
+                    msg += f"📥 **입금: {deposit_count}건**\n"
+                    msg += "\n".join(deposit_details[:5])  # 최대 5건만 표시
+                    if len(deposit_details) > 5:
+                        msg += f"\n  ... 외 {len(deposit_details) - 5}건\n"
+                    msg += "\n\n"
+                
+                if withdraw_count > 0:
+                    msg += f"📤 **출금: {withdraw_count}건**\n"
+                    msg += "\n".join(withdraw_details[:5])
+                    if len(withdraw_details) > 5:
+                        msg += f"\n  ... 외 {len(withdraw_details) - 5}건\n"
+                    msg += "\n\n"
+                
+                msg += f"💵 **순 변동: {total_change:+,}원**\n"
+                msg += f"📊 **Baseline 업데이트**\n"
+                msg += f"  • 이전: {current_baseline:,}원\n"
+                msg += f"  • 현재: {new_baseline:,}원\n"
+                msg += f"{'━'*40}\n"
+                msg += f"✅ 성과 계산 기준이 자동으로 조정되었습니다!"
+                
+                if config.get("use_discord", True):
+                    discord_alert.SendMessage(msg)
+                
+                logger.info("✅ Baseline 자동 업데이트 완료")
+            else:
+                logger.info("✅ 입출금 합계: 0원 (baseline 변경 없음)")
+            
+            # 7️⃣ 마지막 점검일 갱신
+            config.set('last_deposit_check_date', today)
+            logger.info(f"✅ 입출금 감지 완료: {today}")
+            
+        except Exception as e:
+            logger.error(f"❌ 입출금 감지 중 오류: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
     def _calculate_dynamic_stop_loss(self, stock_code, current_price):
         """ATR 기반 동적 손절선 계산 (Kiwoom API 연속조회 활용)"""
         try:
@@ -2554,8 +2900,6 @@ class SignalTradingBot:
                 
                 time.sleep(interval)
         
-        # 🔥🔥🔥 여기부터 새로 추가 🔥🔥🔥
-
         def daily_report_checker():
             """일일 리포트 전송 체크 (15:20~15:30)"""
             report_sent_date = None
@@ -2564,102 +2908,114 @@ class SignalTradingBot:
             while self.running:
                 try:
                     now = datetime.now()
+                    today_date = now.date()
                     
-                    # 🔥🔥🔥 여기 수정! 평일 체크 추가 🔥🔥🔥
-                    # 15:20~15:30 사이이고 평일(월~금)인지 확인
-                    is_weekday = now.weekday() < 5  # 월(0) ~ 금(4)
-                    
-                    if (now.hour == 15 and 
-                        20 <= now.minute <= 30 and 
-                        is_weekday):  # 👈 평일 체크 추가!
+                    # 영업일이고, 15:20~15:30 사이이며, 오늘 아직 전송 안 했으면
+                    if (KiwoomAPI.IsTodayOpenCheck() and 
+                        now.hour == 15 and 
+                        20 <= now.minute < 40 and
+                        report_sent_date != today_date):
                         
-                        # 오늘 아직 전송 안했으면 전송
-                        if report_sent_date != now.date():
-                            logger.info("📊 일일 리포트 시간 도달 (장 개장일)")
-                            self.send_daily_report()
-                            report_sent_date = now.date()
-                            logger.info(f"✅ 일일 리포트 전송 완료 - 다음: {(now + timedelta(days=1)).date()}")
-                    
-                    # 🆕 주말/공휴일 로그 추가 (디버깅용)
-                    elif now.hour == 15 and 20 <= now.minute <= 30:
-                        if not is_weekday:
-                            if report_sent_date != now.date():  # 하루에 한 번만 로그
-                                logger.info("⏸️ 오늘은 주말이므로 일일 리포트를 전송하지 않습니다")
-                                report_sent_date = now.date()  # 로그 중복 방지
-                    
+                        logger.info("📊 일일 리포트 전송 시각!")
+                        self.send_daily_report()
+                        
+                        # 오늘 전송 완료 표시
+                        report_sent_date = today_date
+                        logger.info(f"📊 오늘({today_date}) 일일 리포트 전송 완료")
+                        
                 except Exception as e:
-                    logger.error(f"일일 리포트 체크 스레드 오류: {e}")
+                    logger.error(f"❌ 일일 리포트 체크 오류: {e}")
                 
-                # 1분마다 체크
-                time.sleep(60)
-
-        # 🔥🔥🔥 장 시작 알림 체크 함수 추가 🔥🔥🔥
+                time.sleep(60)  # 1분마다 체크
+        
         def market_open_alert_checker():
-            """장 시작 알림 체크 (09:00~09:05, 영업일만)"""
-            alert_sent_today = None  # 오늘 알림 전송 여부 (날짜 저장)
+            """장 시작 알림 체크 (09:00)"""
+            alert_sent_today = None
             logger.info("✅ 장 시작 알림 체크 스레드 시작")
             
             while self.running:
                 try:
                     now = datetime.now()
-                    today_date = now.strftime('%Y-%m-%d')
-                    current_time = now.strftime('%H:%M')
+                    today_date = now.date()
                     
-                    # 이미 오늘 알림을 보냈으면 스킵
-                    if alert_sent_today == today_date:
-                        time.sleep(30)
-                        continue
-                    
-                    # 09:00 ~ 09:05 사이에만 체크 (여유 시간)
-                    if not ("09:00" <= current_time <= "09:05"):
-                        time.sleep(30)
-                        continue
-                    
-                    # 주말 체크 (토: 5, 일: 6)
-                    if now.weekday() >= 5:
-                        logger.debug("🔔 주말 - 장 시작 알림 스킵")
-                        alert_sent_today = today_date  # 주말도 체크 완료로 표시
-                        time.sleep(30)
-                        continue
-                    
-                    # 장 운영 여부 체크 (공휴일 등)
-                    if not KiwoomAPI.IsStockMarketOpen():
-                        logger.info("🔔 휴장일 - 장 시작 알림 스킵")
+                    # 영업일이고, 09:00이며, 오늘 아직 전송 안 했으면
+                    if (KiwoomAPI.IsTodayOpenCheck() and 
+                        now.hour == 9 and 
+                        now.minute == 0 and
+                        alert_sent_today != today_date):
+                        
+                        logger.info("🔔 장이 열렸습니다! 알림 전송 중...")
+                        self.send_market_open_alert()
+                        
+                        # 오늘 알림 전송 완료 표시
                         alert_sent_today = today_date
-                        time.sleep(30)
-                        continue
-                    
-                    # ✅ 장 시작 알림 전송!
-                    logger.info("🔔 장이 열렸습니다! 알림 전송 중...")
-                    self.send_market_open_alert()
-                    
-                    # 오늘 알림 전송 완료 표시
-                    alert_sent_today = today_date
-                    logger.info(f"🔔 오늘({today_date}) 장 시작 알림 전송 완료")
-                    
+                        logger.info(f"🔔 오늘({today_date}) 장 시작 알림 전송 완료")
+                        
                 except Exception as e:
                     logger.error(f"❌ 장 시작 알림 체크 오류: {e}")
                 
                 time.sleep(30)  # 30초마다 체크
-
-        # 🔥🔥🔥 여기까지 추가 🔥🔥🔥
+        
+        # 🆕 입출금 감지 스레드 추가
+        def deposit_check_worker():
+            """입출금 점검 워커 (백그라운드 스레드)"""
+            logger.info("✅ 입출금 점검 워커 시작")
+            
+            last_check_day = None
+            
+            while self.running:
+                try:
+                    now = datetime.now()
+                    today = now.date()
+                    
+                    # 설정된 점검 시각 가져오기
+                    check_time_str = config.get('deposit_check_time', '09:05')
+                    check_hour, check_minute = map(int, check_time_str.split(':'))
+                    
+                    # 점검 시각 도달 확인
+                    if (now.hour == check_hour and 
+                        now.minute == check_minute and 
+                        last_check_day != today):
+                        
+                        # 영업일에만 점검
+                        if KiwoomAPI.IsTodayOpenCheck():
+                            logger.info(f"⏰ 점검 시각 도달: {check_time_str}")
+                            self.check_deposit_withdraw()
+                            last_check_day = today
+                            
+                            # 1분 대기 (중복 실행 방지)
+                            time.sleep(60)
+                        else:
+                            logger.info(f"⏰ 점검 시각이지만 휴장일: {check_time_str}")
+                            last_check_day = today
+                            time.sleep(60)
+                    
+                    # 30초마다 시간 체크
+                    time.sleep(30)
+                    
+                except Exception as e:
+                    logger.error(f"❌ 입출금 점검 워커 오류: {e}")
+                    time.sleep(60)
         
         # 스레드 시작
         pending_thread = threading.Thread(target=pending_checker, daemon=True)
         position_thread = threading.Thread(target=position_checker, daemon=True)
-        report_thread = threading.Thread(target=daily_report_checker, daemon=True)  
-        market_open_thread = threading.Thread(target=market_open_alert_checker, daemon=True)  # 🔥 추가!
+        report_thread = threading.Thread(target=daily_report_checker, daemon=True)
+        market_open_thread = threading.Thread(target=market_open_alert_checker, daemon=True)
+        deposit_check_thread = threading.Thread(target=deposit_check_worker, daemon=True)  # 🆕 추가
         
         pending_thread.start()
         position_thread.start()
-        report_thread.start()  # 🔥 추가!
-        market_open_thread.start()  # 🔥 추가!
+        report_thread.start()
+        market_open_thread.start()
+        deposit_check_thread.start()  # 🆕 추가
 
         logger.info("✅ 백그라운드 스레드 시작 완료")
         logger.info(f"   - 미체결 체크: {config.get('check_pending_interval_seconds')}초마다")
         logger.info(f"   - 보유 종목 체크: {config.get('check_position_interval_seconds')}초마다")
         logger.info(f"   - 일일 리포트: 15:20~15:30 (장 마감 후)")
-        logger.info(f"   - 🔔 장 시작 알림: 매일 09:00 (영업일만)")  # 🔥 추가!
+        logger.info(f"   - 🔔 장 시작 알림: 매일 09:00 (영업일만)")
+        logger.info(f"   - 💰 입출금 감지: 매일 {config.get('deposit_check_time', '09:05')} (영업일만)")  # 🆕 추가
 
     def stop(self):
         """봇 중지"""

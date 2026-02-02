@@ -1043,6 +1043,91 @@ class Kiwoom_Common:
             self.logger.error(f"호가잔량 상위 조회 예외: {e}")
             return None
 
+    def GetTransactionHistory(self, start_date, end_date, transaction_type="0"):
+        """
+        위탁종합거래내역 조회 (kt00015)
+        
+        Args:
+            start_date: 시작일자 (YYYYMMDD 형식, 예: "20250201")
+            end_date: 종료일자 (YYYYMMDD 형식, 예: "20250203")
+            transaction_type: 거래구분
+                "0": 전체
+                "1": 입출금
+                "6": 입금만
+                "7": 출금만
+                "3": 매매
+        
+        Returns:
+            list: 거래내역 리스트
+            [
+                {
+                    "Date": "20250203",
+                    "Time": "14:30:25",
+                    "Type": "deposit",  # deposit or withdraw
+                    "TypeName": "입금",
+                    "Amount": 500000,
+                    "Balance": 1000000,
+                    "Depositor": "홍길동",
+                    "Remark": "실시간 입금",
+                    ...
+                }
+            ]
+        """
+        try:
+            url = f"{self.GetBaseURL()}/api/dostk/acnt"
+            
+            body = {
+                "strt_dt": start_date,
+                "end_dt": end_date,
+                "tp": transaction_type,
+                "stk_cd": "",
+                "crnc_cd": "",
+                "gds_tp": "1",          # 1:국내주식
+                "frgn_stex_code": "",
+                "dmst_stex_tp": "%"     # 전체
+            }
+            
+            result = self.CallAPI(url, "kt00015", body)
+            
+            if result and result.get("return_code") == 0:
+                raw_data = result.get("trst_ovrl_trde_prps_array", [])
+                
+                # 데이터 파싱
+                transaction_list = []
+                for tx in raw_data:
+                    io_tp = tx.get("io_tp", "")
+                    
+                    # 입출금이 아닌 경우 스킵 (매매 등)
+                    if transaction_type == "1" and io_tp not in ["0", "1"]:
+                        continue
+                    
+                    transaction_dict = {
+                        "Date": tx.get("trde_dt", ""),
+                        "Time": tx.get("proc_tm", ""),
+                        "Type": "deposit" if io_tp == "0" else "withdraw",
+                        "TypeName": tx.get("io_tp_nm", ""),
+                        "Amount": int(tx.get("exct_amt", "0")),
+                        "Balance": int(tx.get("entra_remn", "0")),
+                        "Depositor": tx.get("rcpmnyer", "").strip(),
+                        "Remark": tx.get("rmrk_nm", "").strip(),
+                        "StockName": tx.get("stk_nm", "").strip(),
+                        "StockCode": tx.get("stk_cd", "").replace("A", "").strip(),
+                        "TradeType": tx.get("trde_kind_nm", ""),
+                        "OriginalDealNo": tx.get("orig_deal_no", ""),
+                        "Currency": tx.get("crnc_cd", "KRW")
+                    }
+                    transaction_list.append(transaction_dict)
+                
+                self.logger.info(f"거래내역 조회 성공: {start_date}~{end_date}, {len(transaction_list)}건")
+                return transaction_list
+            else:
+                self.logger.error(f"거래내역 조회 실패: {result.get('return_msg') if result else 'No response'}")
+                return []
+                
+        except Exception as e:
+            self.logger.error(f"거래내역 조회 예외: {e}")
+            return []
+
     def GetUnfilledOrders(self, stock_code="", exchange_type="0"):
         """미체결 조회 (ka10075)"""
         try:
