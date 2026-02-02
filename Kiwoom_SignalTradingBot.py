@@ -56,21 +56,76 @@ logger.addHandler(console_handler)
 
 ################################### 로깅 처리 끝 ##################################
 
-# 키움 API 초기화
-try:
-    KiwoomAPI = KiwoomKR.Kiwoom_Common(log_level=logging.INFO)
-    
-    if not KiwoomAPI.LoadConfigData():
-        logger.error("❌ 키움 API 설정 로드 실패")
-        exit(1)
-    
-    if not KiwoomAPI.GetAccessToken():
-        logger.error("❌ 키움 API 토큰 발급 실패")
-        exit(1)
-    
-    logger.info("✅ 키움 API 초기화 성공")
-except Exception as e:
-    logger.error(f"❌ 키움 API 초기화 중 오류: {str(e)}")
+# 키움 API 초기화 (재시도 로직 추가)
+max_init_retry = 3
+init_success = False
+
+for init_attempt in range(1, max_init_retry + 1):
+    try:
+        logger.info("=" * 60)
+        logger.info(f"🔧 키움 API 초기화 시도 {init_attempt}/{max_init_retry}")
+        logger.info("=" * 60)
+        
+        # 1. API 객체 생성
+        KiwoomAPI = KiwoomKR.Kiwoom_Common(log_level=logging.INFO)
+        
+        # 2. 설정 파일 로드
+        if not KiwoomAPI.LoadConfigData():
+            logger.error("❌ 키움 API 설정 로드 실패")
+            logger.error("💡 myStockInfo.yaml 파일을 확인하세요")
+            if init_attempt < max_init_retry:
+                wait_time = 3
+                logger.warning(f"⏳ {wait_time}초 후 재시도...")
+                time.sleep(wait_time)
+                continue
+            else:
+                logger.error("=" * 60)
+                logger.error("❌ 최종 실패: 설정 파일 로드 불가")
+                logger.error("=" * 60)
+                exit(1)
+        
+        # 3. 토큰 발급 (GetAccessToken 내부에서 재시도 처리됨)
+        if not KiwoomAPI.GetAccessToken():
+            logger.error(f"❌ 키움 API 토큰 발급 실패 (시도 {init_attempt}/{max_init_retry})")
+            if init_attempt < max_init_retry:
+                wait_time = 5
+                logger.warning(f"⏳ {wait_time}초 후 재시도...")
+                time.sleep(wait_time)
+                continue
+            else:
+                logger.error("=" * 60)
+                logger.error("❌ 최종 실패: 토큰 발급 불가")
+                logger.error("=" * 60)
+                exit(1)
+        
+        # 4. 초기화 성공
+        logger.info("=" * 60)
+        logger.info(f"✅ 키움 API 초기화 성공 (시도 {init_attempt}회)")
+        logger.info("=" * 60)
+        init_success = True
+        break  # 성공하면 루프 탈출
+        
+    except Exception as e:
+        logger.error(f"❌ 키움 API 초기화 중 예외 발생 (시도 {init_attempt}/{max_init_retry})")
+        logger.error(f"예외 내용: {str(e)}")
+        
+        if init_attempt < max_init_retry:
+            wait_time = 5
+            logger.warning(f"⏳ {wait_time}초 후 재시도...")
+            time.sleep(wait_time)
+        else:
+            logger.error("=" * 60)
+            logger.error("❌ 최종 실패: 예외 발생으로 초기화 불가")
+            logger.error("=" * 60)
+            import traceback
+            logger.error(traceback.format_exc())
+            exit(1)
+
+# 초기화 실패 시 종료
+if not init_success:
+    logger.error("=" * 60)
+    logger.error("❌ 키움 API 초기화 최종 실패 - 봇 종료")
+    logger.error("=" * 60)
     exit(1)
 
 ################################### 설정 관리 (3개 파일 분리) ##################################

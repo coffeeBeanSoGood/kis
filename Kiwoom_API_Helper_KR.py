@@ -176,32 +176,53 @@ class Kiwoom_Common:
         except Exception as e:
             self.logger.error(f"토큰 저장 실패: {e}")
             return False
-    
+        
     def LoadTokenFromFile(self):
-        """파일에서 토큰 로드"""
+        """
+        파일에서 토큰 로드 (만료된 토큰은 메모리에 저장하지 않음)
+        
+        Returns:
+            bool: 유효한 토큰 로드 성공 시 True
+        """
         try:
             with open(self.token_path, 'r', encoding='UTF-8') as f:
                 token_data = json.load(f)
             
-            self.access_token = token_data.get("access_token", "")
-            self.token_expires = token_data.get("expires_dt", "")
+            # 🔥 먼저 임시 변수에 저장 (만료 체크 전)
+            temp_token = token_data.get("access_token", "")
+            temp_expires = token_data.get("expires_dt", "")
             
             # 토큰 만료 체크
-            if self.token_expires:
-                expire_time = datetime.strptime(self.token_expires, "%Y%m%d%H%M%S")
-                now = datetime.now()
-                
-                if now < expire_time:
-                    self.logger.info(f"토큰 로드 성공 (만료: {self.token_expires})")
-                    return True
-                else:
-                    self.logger.warning(f"토큰 만료됨 (만료일: {self.token_expires})")
+            if temp_expires:
+                try:
+                    expire_time = datetime.strptime(temp_expires, "%Y%m%d%H%M%S")
+                    now = datetime.now()
+                    
+                    if now < expire_time:
+                        # ✅ 유효한 토큰만 메모리에 저장
+                        self.access_token = temp_token
+                        self.token_expires = temp_expires
+                        
+                        # 남은 시간 계산
+                        time_left = (expire_time - now).total_seconds() / 60
+                        self.logger.info(f"✅ 토큰 로드 성공 (만료까지 {time_left:.1f}분 남음)")
+                        return True
+                    else:
+                        # ⚠️ 만료된 토큰은 메모리에 저장 안 함!
+                        self.logger.warning(f"⚠️ 토큰 만료됨 (만료일: {temp_expires}) - 재발급 필요")
+                        return False
+                except ValueError as e:
+                    self.logger.error(f"토큰 만료일 파싱 실패: {e}")
                     return False
             
+            self.logger.warning("토큰 만료일 정보 없음")
             return False
             
         except FileNotFoundError:
             self.logger.debug(f"토큰 파일 없음: {self.token_path}")
+            return False
+        except json.JSONDecodeError as e:
+            self.logger.error(f"토큰 파일 파싱 실패: {e}")
             return False
         except Exception as e:
             self.logger.error(f"토큰 로드 실패: {e}")
@@ -270,57 +291,109 @@ class Kiwoom_Common:
             self.logger.error(f"토큰 유효성 보장 실패: {e}")
             return False
 
-    def GetAccessToken(self, force_refresh=False):
-        """접근 토큰 발급 (au10001)"""
-        try:
-            # 기존 토큰 확인 (강제 갱신이 아닌 경우)
-            if not force_refresh:
-                if self.LoadTokenFromFile():
-                    return True
-            
-            # 새 토큰 발급
-            url = f"{self.GetBaseURL()}/oauth2/token"
-            
-            headers = {
-                "api-id": "au10001",
-                "Content-Type": "application/json;charset=UTF-8"
-            }
-            
-            body = {
-                "grant_type": "client_credentials",
-                "appkey": self.appkey,
-                "secretkey": self.secretkey
-            }
-            
-            self.logger.info("접근 토큰 발급 요청...")
-            response = requests.post(url, headers=headers, json=body)
-            
-            if response.status_code == 200:
-                result = response.json()
-                
-                if result.get("return_code") == 0:
-                    self.access_token = result.get("token", "")
-                    self.token_expires = result.get("expires_dt", "")
-                    
-                    # 토큰 파일 저장
-                    self.SaveTokenToFile()
-                    
-                    self.logger.info("="*60)
-                    self.logger.info("토큰 발급 성공")
-                    self.logger.info(f"만료일시: {self.token_expires}")
-                    self.logger.info("="*60)
-                    return True
+    def GetAccessToken(self, force_refresh=False, max_retry=3):
+        """
+        접근 토큰 발급 (au10001) - 재시도 기능 추가
+        
+        Args:
+            force_refresh: 강제 재발급 여부 (기본 False)
+            max_retry: 최대 재시도 횟수 (기본 3회)
+        
+        Returns:
+            bool: 토큰 발급 성공 시 True, 실패 시 False
+        """
+        # 기존 토큰 확인 (강제 갱신이 아닌 경우)
+        if not force_refresh:
+            if self.LoadTokenFromFile():
+                return True
+            self.logger.info("기존 토큰 없거나 만료됨 - 신규 발급 시작")
+        else:
+            self.logger.info("강제 토큰 재발급 시작")
+        
+        # 🆕 재시도 로직 추가
+        for attempt in range(1, max_retry + 1):
+            try:
+                if max_retry > 1:
+                    self.logger.info(f"🔑 토큰 발급 시도 {attempt}/{max_retry}...")
                 else:
-                    self.logger.error(f"토큰 발급 실패: {result.get('return_msg')}")
-                    return False
-            else:
-                self.logger.error(f"HTTP 오류: {response.status_code}")
-                self.logger.error(f"응답: {response.text}")
-                return False
+                    self.logger.info(f"🔑 토큰 발급 요청...")
                 
-        except Exception as e:
-            self.logger.error(f"토큰 발급 예외: {e}")
-            return False
+                # 새 토큰 발급 API 호출
+                url = f"{self.GetBaseURL()}/oauth2/token"
+                
+                headers = {
+                    "api-id": "au10001",
+                    "Content-Type": "application/json;charset=UTF-8"
+                }
+                
+                body = {
+                    "grant_type": "client_credentials",
+                    "appkey": self.appkey,
+                    "secretkey": self.secretkey
+                }
+                
+                response = requests.post(url, headers=headers, json=body, timeout=10)
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    
+                    if result.get("return_code") == 0:
+                        self.access_token = result.get("token", "")
+                        self.token_expires = result.get("expires_dt", "")
+                        
+                        # 토큰 파일 저장
+                        if self.SaveTokenToFile():
+                            self.logger.info("="*60)
+                            self.logger.info(f"✅ 토큰 발급 성공 (시도 {attempt}회)")
+                            self.logger.info(f"📅 만료일시: {self.token_expires}")
+                            self.logger.info("="*60)
+                            return True
+                        else:
+                            self.logger.warning("토큰 파일 저장 실패했지만 메모리에는 존재")
+                            return True
+                    else:
+                        error_msg = result.get('return_msg', 'Unknown error')
+                        self.logger.error(f"❌ 토큰 발급 실패: {error_msg}")
+                else:
+                    self.logger.error(f"❌ HTTP 오류: {response.status_code}")
+                    self.logger.error(f"응답 내용: {response.text[:200]}")
+                
+                # 🆕 재시도 전 대기 (마지막 시도가 아닌 경우)
+                if attempt < max_retry:
+                    wait_time = attempt * 2  # 2초, 4초, 6초...
+                    self.logger.warning(f"⏳ {wait_time}초 후 재시도...")
+                    time.sleep(wait_time)
+                        
+            except requests.exceptions.Timeout:
+                self.logger.error(f"❌ 토큰 발급 타임아웃 (시도 {attempt}/{max_retry})")
+                if attempt < max_retry:
+                    wait_time = attempt * 2
+                    self.logger.warning(f"⏳ {wait_time}초 후 재시도...")
+                    time.sleep(wait_time)
+                    
+            except requests.exceptions.ConnectionError as e:
+                self.logger.error(f"❌ 네트워크 연결 오류 (시도 {attempt}/{max_retry}): {e}")
+                if attempt < max_retry:
+                    wait_time = attempt * 2
+                    self.logger.warning(f"⏳ {wait_time}초 후 재시도...")
+                    time.sleep(wait_time)
+                    
+            except Exception as e:
+                self.logger.error(f"❌ 토큰 발급 예외 (시도 {attempt}/{max_retry}): {e}")
+                if attempt < max_retry:
+                    wait_time = attempt * 2
+                    self.logger.warning(f"⏳ {wait_time}초 후 재시도...")
+                    time.sleep(wait_time)
+        
+        # 모든 재시도 실패
+        self.logger.error("="*60)
+        self.logger.error(f"❌ 토큰 발급 최종 실패 ({max_retry}회 시도)")
+        self.logger.error("💡 해결 방법:")
+        self.logger.error("  1. 네트워크 연결 확인")
+        self.logger.error("  2. myStockInfo.yaml의 APP_KEY/SECRET_KEY 확인")
+        self.logger.error("  3. 키움 API 서버 상태 확인")
+        self.logger.error("="*60)
+        return False
     
     def RevokeAccessToken(self):
         """접근 토큰 폐기 (au10002)"""
