@@ -777,10 +777,10 @@ class SignalTradingBot:
 
             # 🔥🔥🔥 [여기까지 추가] 🔥🔥🔥
 
-            # 5️⃣ 각 매수 신호 처리
+            # 5️⃣ 각 매수 신호 처리(정렬된 순서대로)
             processed_count = 0
             
-            for signal in buy_signals:
+            for signal in buy_signals_sorted:
                 stock_code = signal.get('stock_code', '')
                 stock_name = signal.get('stock_name', '')
                 signal_type = signal.get('signal', '')
