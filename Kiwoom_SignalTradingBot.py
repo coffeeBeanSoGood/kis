@@ -1326,7 +1326,7 @@ class SignalTradingBot:
         미체결 주문 체크 (매수 + 매도)
         - 체결 확인: 실제 체결가(FilledPrice) 사용
         - 재시도: 최대 3회
-        - 시장가 전환: 3회 실패 후
+        - 🔥 지정가 고수 전략: 재주문 시 원래 지정가 유지
         """
         try:
             with self.lock:
@@ -1395,128 +1395,119 @@ class SignalTradingBot:
                             filled_qty = pending['order_quantity']
                         
                         logger.info(f"✅ {stock_name} {order_type.upper()} 체결 완료!")
-                        logger.info(f"   주문가: {pending['order_price']:,}원 → 체결가: {filled_price:,}원")
-                        if commission > 0 or tax > 0:
-                            logger.info(f"   수수료: {commission:,}원, 세금: {tax:,}원")
+                        logger.info(f"   체결가: {filled_price:,}원 × {filled_qty}주")
+                        logger.info(f"   수수료: {commission:,}원, 세금: {tax:,}원")
                         
-                        with self.lock:
-                            if order_type == 'buy':
-                                # 매수 체결: positions에 추가
+                        # 주문가와 체결가 차이 로그
+                        price_diff = filled_price - pending['order_price']
+                        if price_diff != 0:
+                            emoji = "💰" if price_diff > 0 else "📊"
+                            logger.info(f"   {emoji} 체결가-주문가: {price_diff:+,}원")
+                        
+                        # 매수 체결 처리
+                        if order_type == 'buy':
+                            with self.lock:
                                 self.positions[stock_code] = {
                                     'stock_name': stock_name,
-                                    'entry_price': filled_price,  # ✅ 실제 체결가 사용
+                                    'quantity': filled_qty,
+                                    'entry_price': filled_price,  # 실제 체결가 사용!
                                     'entry_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                    'quantity': filled_qty,       # ✅ 실제 체결수량
                                     'highest_price': filled_price,
-                                    'trailing_stop_price': filled_price * (1 - config.get("trailing_stop_rate", 0.01)),
-                                    'target_profit_price': filled_price * (1 + config.get("target_profit_rate", 0.03)),
-                                    'signal_score': pending.get('signal_score', 0),
-                                    'signal_confidence': pending.get('signal_confidence', 0),
+                                    'trailing_stop_price': 0,
                                     'breakeven_protected': False,
                                     'tight_trailing_active': False,
-                                    # 🔥 추가 정보 기록
-                                    'order_price': pending['order_price'],  # 참고용
-                                    'entry_commission': commission
+                                    'signal': pending.get('signal', ''),
+                                    'score': pending.get('score', 0)
                                 }
                                 
-                                price_diff = filled_price - pending['order_price']
-                                msg = f"✅ **매수 체결!**\n"
-                                msg += f"종목: {stock_name} ({stock_code})\n"
-                                msg += f"체결가: {filled_price:,}원 × {filled_qty}주\n"
-                                if price_diff != 0:
-                                    emoji = "💰" if price_diff < 0 else "📊"
-                                    msg += f"{emoji} 주문가: {pending['order_price']:,}원 ({price_diff:+,}원)\n"
-                                msg += f"투자금: {filled_price * filled_qty:,}원\n"
-                                if commission > 0:
-                                    msg += f"수수료: {commission:,}원\n"
-                                msg += f"목표가: {self.positions[stock_code]['target_profit_price']:,.0f}원 (+3%)\n"
-                                msg += f"트레일링: {self.positions[stock_code]['trailing_stop_price']:,.0f}원 (-1%)"
-                                
-                            else:  # sell
-                                # 🔥 매도 체결: 실제 체결가로 수익 재계산
-                                if stock_code in self.positions:
-                                    entry_price = self.positions[stock_code]['entry_price']
-                                    entry_commission = self.positions[stock_code].get('entry_commission', 0)
-                                    
-                                    # 실제 수익 계산 (매수 수수료 + 매도 수수료 + 세금)
-                                    profit = (filled_price - entry_price) * filled_qty - entry_commission - commission - tax
-                                    profit_rate = (filled_price - entry_price) / entry_price
-                                    
-                                    del self.positions[stock_code]
-                                else:
-                                    # positions에 없으면 pending_orders에서 가져옴
-                                    entry_price = pending.get('entry_price', 0)
-                                    profit = (filled_price - entry_price) * filled_qty - commission - tax
-                                    profit_rate = (filled_price - entry_price) / entry_price if entry_price > 0 else 0
-                                    entry_commission = 0
-                                
-                                cooldown_hours = config.get("cooldown_hours", 8)
-                                cooldown_until = datetime.now() + timedelta(hours=cooldown_hours)
-                                
+                                del self.pending_orders[stock_code]
+                            
+                            self.save_positions()
+                            self.save_pending_orders()
+                            
+                            msg = f"✅ **매수 체결!**\n"
+                            msg += f"종목: {stock_name} ({stock_code})\n"
+                            msg += f"주문번호: {order_no}\n"
+                            msg += f"체결가: {filled_price:,}원 × {filled_qty}주\n"
+                            if price_diff != 0:
+                                emoji2 = "💰" if price_diff > 0 else "📊"
+                                msg += f"{emoji2} 주문가: {pending['order_price']:,}원 ({price_diff:+,}원)\n"
+                            msg += f"투자금: {filled_price * filled_qty:,}원"
+                            
+                            logger.info(msg)
+                            
+                            if config.get("use_discord", True):
+                                discord_alert.SendMessage(msg)
+                            
+                            continue
+                        
+                        # 매도 체결 처리
+                        else:  # sell
+                            entry_price = pending.get('entry_price', 0)
+                            profit = (filled_price - entry_price) * filled_qty - commission - tax
+                            profit_rate = (filled_price - entry_price) / entry_price if entry_price > 0 else 0
+                            
+                            # 성과 업데이트
+                            config.update_performance('total_realized_profit', profit)
+                            config.update_performance('net_realized_profit', profit)
+                            
+                            total_trades = config.get('performance.total_trades', 0) + 1
+                            config.set('performance.total_trades', total_trades)
+                            
+                            if profit > 0:
+                                winning_trades = config.get('performance.winning_trades', 0) + 1
+                                config.set('performance.winning_trades', winning_trades)
+                            else:
+                                losing_trades = config.get('performance.losing_trades', 0) + 1
+                                config.set('performance.losing_trades', losing_trades)
+                            
+                            # 승률 계산
+                            winning_trades = config.get('performance.winning_trades', 0)
+                            win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+                            config.set('performance.win_rate', win_rate)
+                            
+                            # 쿨다운 등록
+                            cooldown_hours = config.get("cooldown_hours", 8)
+                            cooldown_until = (datetime.now() + timedelta(hours=cooldown_hours)).strftime("%Y-%m-%d %H:%M:%S")
+                            
+                            net_profit = config.get('performance.net_realized_profit', 0)
+                            
+                            with self.lock:
                                 self.cooldowns[stock_code] = {
                                     'stock_name': stock_name,
-                                    'sell_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                    'cooldown_until': cooldown_until.strftime("%Y-%m-%d %H:%M:%S"),
-                                    'sell_reason': pending.get('sell_reason', ''),
-                                    'entry_price': entry_price,
-                                    'sell_price': filled_price,
-                                    'quantity': filled_qty,
+                                    'cooldown_until': cooldown_until,
+                                    'reason': pending.get('sell_reason', ''),
                                     'profit': profit,
-                                    'profit_rate': profit_rate,
-                                    'commission': commission,
-                                    'entry_commission': entry_commission,
-                                    'tax': tax
+                                    'profit_rate': profit_rate
                                 }
                                 
-                                # 🔥🔥🔥 성과 기록 업데이트 (여기가 핵심!)
-                                config.update_performance('total_trades', 1)
+                                if stock_code in self.positions:
+                                    del self.positions[stock_code]
                                 
-                                if profit > 0:
-                                    config.update_performance('total_realized_profit', profit)
-                                    config.update_performance('winning_trades', 1)
-                                else:
-                                    config.update_performance('total_realized_loss', abs(profit))
-                                    config.update_performance('losing_trades', 1)
-                                
-                                # 순 실현 수익 계산
-                                perf = config.get('performance', {})
-                                total_profit = perf.get('total_realized_profit', 0)
-                                total_loss = perf.get('total_realized_loss', 0)
-                                net_profit = total_profit - total_loss
-                                config.set('performance.net_realized_profit', net_profit)
-                                
-                                # 승률 계산
-                                total_trades = perf.get('total_trades', 0)
-                                winning_trades = perf.get('winning_trades', 0)
-                                win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
-                                config.set('performance.win_rate', win_rate)
-                                
-                                price_diff = filled_price - pending['order_price']
-                                emoji = "🎉" if profit > 0 else "😢"
-                                msg = f"{emoji} **매도 체결!**\n"
-                                msg += f"종목: {stock_name} ({stock_code})\n"
-                                msg += f"주문번호: {order_no}\n"
-                                msg += f"체결가: {filled_price:,}원 × {filled_qty}주\n"
-                                if price_diff != 0:
-                                    emoji2 = "💰" if price_diff > 0 else "📊"
-                                    msg += f"{emoji2} 주문가: {pending['order_price']:,}원 ({price_diff:+,}원)\n"
-                                msg += f"실현 수익: {profit:+,}원 ({profit_rate*100:+.2f}%)\n"
-                                msg += f"사유: {pending.get('sell_reason', '')}\n"
-                                msg += f"💰 누적 순수익: {net_profit:+,}원\n"
-                                msg += f"📊 승률: {win_rate:.1f}% ({winning_trades}/{total_trades})"
+                                del self.pending_orders[stock_code]
                             
-                            del self.pending_orders[stock_code]
-                        
-                        self.save_positions()
-                        self.save_cooldowns()
-                        self.save_pending_orders()
-                        
-                        logger.info(msg)
-                        
-                        if config.get("use_discord", True):
-                            discord_alert.SendMessage(msg)
-                        
-                        continue
+                            self.save_positions()
+                            self.save_cooldowns()
+                            self.save_pending_orders()
+                            
+                            msg = f"💸 **매도 체결!**\n"
+                            msg += f"종목: {stock_name} ({stock_code})\n"
+                            msg += f"주문번호: {order_no}\n"
+                            msg += f"체결가: {filled_price:,}원 × {filled_qty}주\n"
+                            if price_diff != 0:
+                                emoji2 = "💰" if price_diff > 0 else "📊"
+                                msg += f"{emoji2} 주문가: {pending['order_price']:,}원 ({price_diff:+,}원)\n"
+                            msg += f"실현 수익: {profit:+,}원 ({profit_rate*100:+.2f}%)\n"
+                            msg += f"사유: {pending.get('sell_reason', '')}\n"
+                            msg += f"💰 누적 순수익: {net_profit:+,}원\n"
+                            msg += f"📊 승률: {win_rate:.1f}% ({winning_trades}/{total_trades})"
+                            
+                            logger.info(msg)
+                            
+                            if config.get("use_discord", True):
+                                discord_alert.SendMessage(msg)
+                            
+                            continue
                     else:
                         # ❓ 미체결도 체결도 아님 (API 지연 가능성)
                         logger.debug(f"🤔 {stock_name} 주문 상태 불명확 - 다음 체크 대기")
@@ -1561,54 +1552,102 @@ class SignalTradingBot:
                         
                         continue
                     
-                    # 재주문 시도
-                    logger.info(f"🔄 {stock_name} 재주문 시도 ({retry_count + 1}/{max_retry})")
-                    
-                    cancel_result = KiwoomAPI.CancelOrder(order_no, stock_code)
-                    time.sleep(1)
-                    
-                    stock_info = KiwoomAPI.GetStockInfo(stock_code)
-                    if not stock_info:
-                        logger.error(f"❌ 현재가 조회 실패 - 재시도 중단")
-                        with self.lock:
-                            if stock_code in self.pending_orders:
-                                del self.pending_orders[stock_code]
-                        self.save_pending_orders()
-                        continue
-                    
-                    current_price = stock_info.get('CurrentPrice', 0)
-                    adjusted_price = self.adjust_price_to_tick(current_price, is_buy=(order_type=='buy'))
-                    
-                    quantity = pending['order_quantity']
-                    
-                    # 재주문
-                    if order_type == 'buy':
-                        retry_result = KiwoomAPI.MakeBuyLimitOrder(stock_code, quantity, adjusted_price)
                     else:
-                        retry_result = KiwoomAPI.MakeSellLimitOrder(stock_code, quantity, adjusted_price)
-                    
-                    if retry_result.get('success', False):
-                        new_order_no = retry_result.get('order_no', '')
+                        # 🔥🔥🔥 재주문 시도 (지정가 고수 전략) 🔥🔥🔥
+                        logger.info(f"🔄 {stock_name} 재주문 시도 ({retry_count + 1}/{max_retry})")
+                        logger.info(f"   💡 전략: 지정가 고수 (원래 지정가 유지)")
                         
-                        with self.lock:
-                            self.pending_orders[stock_code]['order_no'] = new_order_no
-                            self.pending_orders[stock_code]['order_price'] = adjusted_price
-                            self.pending_orders[stock_code]['order_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            self.pending_orders[stock_code]['retry_count'] = retry_count + 1
+                        # 🔥 원래 지정가 사용 (현재가 조회 없음!)
+                        original_price = pending.get('original_price')
+                        
+                        if not original_price:
+                            # 하위 호환성: original_price 없으면 order_price 사용
+                            original_price = pending.get('order_price', 0)
+                            logger.warning(f"   ⚠️ original_price 없음 - order_price 사용: {original_price:,}원")
+                        
+                        if original_price <= 0:
+                            logger.error(f"❌ {stock_name} 유효하지 않은 주문가 - 재주문 스킵")
+                            continue
+                        
+                        # 🔥 원래 지정가로 재주문 (상향 조정 없음!)
+                        adjusted_price = original_price
+                        quantity = pending.get('order_quantity', 0)
+                        
+                        logger.info(f"   📊 재주문 가격: {adjusted_price:,}원 (최초 지정가 유지)")
+                        
+                        # 기존 주문 취소
+                        logger.info(f"   1️⃣ 기존 주문 취소 중...")
+                        
+                        try:
+                            cancel_result = call_with_timeout(
+                                KiwoomAPI.CancelOrder,
+                                timeout=10,
+                                order_no=order_no,
+                                stock_code=stock_code
+                            )
+                        except TimeoutError:
+                            logger.error(f"   ❌ 주문 취소 타임아웃 - 재주문 스킵")
+                            continue
+                        
+                        if not cancel_result:
+                            logger.warning(f"   ⚠️ 기존 주문 취소 실패 - 재주문 스킵")
+                            continue
+                        
+                        logger.info(f"   ✅ 기존 주문 취소 완료")
+                        
+                        # 재주문
+                        logger.info(f"   2️⃣ 재주문 실행 중...")
+                        logger.info(f"      가격: {adjusted_price:,}원 (최초 지정가)")
+                        logger.info(f"      수량: {quantity}주")
+                        
+                        try:
+                            if order_type == 'buy':
+                                new_order_result = call_with_timeout(
+                                    KiwoomAPI.MakeBuyLimitOrder,
+                                    timeout=10,
+                                    stock_code=stock_code,
+                                    quantity=quantity,
+                                    price=adjusted_price  # 🔥 원래 지정가!
+                                )
+                            else:  # sell
+                                new_order_result = call_with_timeout(
+                                    KiwoomAPI.MakeSellLimitOrder,
+                                    timeout=10,
+                                    stock_code=stock_code,
+                                    quantity=quantity,
+                                    price=adjusted_price  # 🔥 원래 지정가!
+                                )
+                        except TimeoutError:
+                            logger.error(f"   ❌ 재주문 타임아웃")
+                            continue
+                        
+                        if new_order_result and new_order_result.get('success'):
+                            new_order_no = new_order_result.get('order_no', '')
                             
-                            # 매도인 경우 예상 수익 재계산
-                            if order_type == 'sell':
-                                entry_price = pending['entry_price']
-                                profit = (adjusted_price - entry_price) * quantity
-                                profit_rate = (adjusted_price - entry_price) / entry_price if entry_price > 0 else 0
-                                self.pending_orders[stock_code]['expected_profit'] = profit
-                                self.pending_orders[stock_code]['expected_profit_rate'] = profit_rate
-                        
-                        self.save_pending_orders()
-                        
-                        logger.info(f"✅ {stock_name} 재주문 완료 (새 주문번호: {new_order_no})")
-                    else:
-                        logger.error(f"❌ {stock_name} 재주문 실패")
+                            with self.lock:
+                                self.pending_orders[stock_code]['order_no'] = new_order_no
+                                self.pending_orders[stock_code]['order_price'] = adjusted_price
+                                # 🔥 original_price는 유지! (변경 안 함)
+                                # self.pending_orders[stock_code]['original_price'] = original_price  # 이미 있음
+                                self.pending_orders[stock_code]['order_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                self.pending_orders[stock_code]['retry_count'] = retry_count + 1
+                                
+                                # 매도인 경우 예상 수익 재계산
+                                if order_type == 'sell':
+                                    entry_price = pending['entry_price']
+                                    profit = (adjusted_price - entry_price) * quantity
+                                    profit_rate = (adjusted_price - entry_price) / entry_price if entry_price > 0 else 0
+                                    self.pending_orders[stock_code]['expected_profit'] = profit
+                                    self.pending_orders[stock_code]['expected_profit_rate'] = profit_rate
+                            
+                            self.save_pending_orders()
+                            
+                            logger.info(f"   ✅ {stock_name} 재주문 완료")
+                            logger.info(f"      새 주문번호: {new_order_no}")
+                            logger.info(f"      유지된 가격: {adjusted_price:,}원")
+                            logger.info(f"      재시도 횟수: {retry_count + 1}/{max_retry}")
+                        else:
+                            logger.error(f"   ❌ {stock_name} 재주문 실패")
             
         except Exception as e:
             logger.error(f"미체결 주문 체크 실패: {e}")
@@ -2722,20 +2761,19 @@ class SignalTradingBot:
                     self.pending_orders[stock_code] = {
                         'stock_name': stock_name,
                         'order_no': order_no,
-                        'order_type': 'sell',  # 매도 타입
+                        'order_type': 'sell',
                         'order_price': adjusted_price,
+                        'original_price': adjusted_price,  # 🔥 최초 지정가 저장 (일관성)
                         'order_quantity': quantity,
                         'order_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        'status': 'pending',
                         'retry_count': 0,
-                        'sell_reason': reason,
                         'entry_price': entry_price,
                         'expected_profit': profit,
-                        'expected_profit_rate': profit_rate
+                        'expected_profit_rate': profit_rate,
+                        'sell_reason': reason
                     }
-                
+               
                 # positions는 유지! (체결 확인 후 삭제)
-                
                 self.save_pending_orders()
                 
                 msg = f"💸 **매도 주문 완료!**\n"
