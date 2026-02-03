@@ -3069,7 +3069,7 @@ class SignalTradingBot:
                     today_date = now.date()
                     
                     # 영업일이고, 15:20~15:30 사이이며, 오늘 아직 전송 안 했으면
-                    if (KiwoomAPI.IsTodayOpenCheck() and 
+                    if (now.weekday() < 5 and  # 월~금요일
                         now.hour == 15 and 
                         20 <= now.minute < 40 and
                         report_sent_date != today_date):
@@ -3097,11 +3097,11 @@ class SignalTradingBot:
                     today_date = now.date()
                     
                     # 영업일이고, 09:00이며, 오늘 아직 전송 안 했으면
-                    if (KiwoomAPI.IsTodayOpenCheck() and 
+                    if (now.weekday() < 5 and  # 월~금요일
                         now.hour == 9 and 
                         now.minute == 0 and
                         alert_sent_today != today_date):
-                        
+                      
                         logger.info("🔔 장이 열렸습니다! 알림 전송 중...")
                         self.send_market_open_alert()
                         
@@ -3135,9 +3135,10 @@ class SignalTradingBot:
                         now.minute == check_minute and 
                         last_check_day != today):
                         
-                        # 영업일에만 점검
-                        if KiwoomAPI.IsTodayOpenCheck():
+                        # 영업일에만 점검 (평일 체크)
+                        if now.weekday() < 5:  # 월~금요일
                             logger.info(f"⏰ 점검 시각 도달: {check_time_str}")
+
                             self.check_deposit_withdraw()
                             last_check_day = today
                             
