@@ -174,12 +174,49 @@ class ConfigManager:
             
             # 매도 설정
             "sell_signals": ["SELL", "STRONG_SELL"],
-            "target_profit_rate": 0.025,              # 🔥 1.5% → 2.5%
-            "breakeven_protection_rate": 0.015,       # 🔥 1.0% → 1.5%
-            "tight_trailing_threshold": 0.020,        # 🔥 3.0% → 2.0%
-            "tight_trailing_rate": 0.002,             # 🔥 0.3% → 0.2%
-            "trailing_stop_rate": 0.003,              # 🔥 0.5% → 0.3%
-            "min_profit_for_trailing": 0.006,         # 🔥 0.8% → 0.6%
+            "target_profit_rate": 0.025,
+            "breakeven_protection_rate": 0.015,
+            "tight_trailing_threshold": 0.020,
+            "tight_trailing_rate": 0.002,
+            
+            # ⚠️ 여기 수정 필요!
+            "trailing_stop_rate": 0.003,              # 🔥 0.005로 변경!
+            "min_profit_for_trailing": 0.006,         # 🔥 0.008로 변경!
+            "ultra_tight_trailing_rate": 0.0005,      # 🆕 추가 필요!
+            
+            # 🆕 기술적 지표 설정 (전체 추가 필요!)
+            "use_technical_trailing": True,
+            "technical_indicators": {
+                "use_rsi": True,
+                "use_bollinger": True,
+                "use_ma": True,
+                "use_volume": True,
+                
+                "rsi_weight": 30,
+                "bollinger_weight": 30,
+                "ma_weight": 20,
+                "volume_weight": 20,
+                
+                "rsi_period": 14,
+                "bollinger_period": 20,
+                "bollinger_std": 2,
+                "ma_short_period": 5,
+                "ma_long_period": 20
+            },
+            
+            "technical_multiplier": {
+                "strong_bull": 2.0,
+                "bull": 1.3,
+                "neutral": 1.0,
+                "bear": 0.7,
+                "strong_bear": 0.4
+            },
+            
+            # 🆕 신호 기반 트레일링 유예 (전체 추가 필요!)
+            "trailing_signal_override": True,
+            "trailing_override_confidence": 0.6,
+            "trailing_override_signals": ["STRONG_BUY", "CONFIRMED_BUY", "BUY"],
+            "trailing_override_max_loss": 0.005,
             
             # 손절 설정
             "emergency_stop_loss": -0.03,
