@@ -1672,19 +1672,12 @@ class SignalTradingBot:
 
     def update_trailing_stop(self, stock_code):
         """
-        트레일링 스탑 업데이트 (완전 개선: 적극적 수익 보호)
+        트레일링 스탑 업데이트 (기술적 지표 결합)
         
-        🔥🔥🔥 핵심 개선 사항:
-        1. 본전 보호 시 수수료 반영 (진짜 본전)
-        2. return 제거 → 소수익도 보호
-        3. 0.3% 기본 트레일링 (더 촘촘하게)           # 🔥 수정
-        4. 2% 달성 시 0.2% 초타이트                   # 🔥 수정
-        
-        3단계 시스템:
-        - 0.6% 달성: 트레일링 시작
-        - 1.5% 달성: 본전 보호 (수수료 포함)          # 🔥 수정
-        - 1.5~2% 구간: 0.3% 트레일링                 # 🔥 수정
-        - 2% 이상: 0.2% 초타이트 트레일링            # 🔥 수정
+        🔥 완전한 수익보호 시스템:
+        1. 수익률 기반 기본 트레일링 간격 결정
+        2. 기술적 지표로 간격 동적 조정
+        3. 본전 보호 적용
         """
         try:
             with self.lock:
@@ -1711,26 +1704,73 @@ class SignalTradingBot:
                 
                 logger.debug(f"📈 {stock_code} 최고가 갱신: {current_price:,}원 (수익률: {profit_rate*100:+.2f}%)")
             
-            # 🔥🔥🔥 조건부 트레일링 활성화 체크
-            min_profit_for_trailing = config.get("min_profit_for_trailing", 0.006)  # 🔥 default 0.01 → 0.006
-
+            # 트레일링 활성화 체크 (0.8%)
+            min_profit_for_trailing = config.get("min_profit_for_trailing", 0.008)
             if profit_rate < min_profit_for_trailing:
                 logger.debug(f"  ⏸️ {stock_code} 트레일링 대기: 수익률 {profit_rate*100:+.2f}% < {min_profit_for_trailing*100:.1f}%")
-                logger.debug(f"  💡 ATR 손절만 사용 (소폭 상승에 민감하지 않게)")
                 return
             
-            # 🔥🔥🔥 핵심 개선: 수수료 반영한 진짜 본전 가격 계산
+            # 🔥🔥🔥 수수료 반영한 진짜 본전 가격
             commission_rate = config.get("commission_rate", 0.004)
             breakeven_price = int(entry_price * (1 + commission_rate))
             
-            # 🔥 1단계: 본전 보호 활성화 (1.5% 달성)             # 🔥 주석 수정: 1% → 1.5%
-            breakeven_threshold = config.get("breakeven_protection_rate", 0.015)  # 🔥 default 0.01 → 0.015
+            # 플래그 가져오기
             breakeven_protected = position.get('breakeven_protected', False)
+            tight_trailing_active = position.get('tight_trailing_active', False)
+            ultra_tight_active = position.get('ultra_tight_active', False)
+            
+            # 🆕 4단계: 울트라 타이트 활성화 (2.5% 달성)
+            target_profit = config.get("target_profit_rate", 0.025)
+            
+            if not ultra_tight_active and profit_rate >= target_profit:
+                with self.lock:
+                    self.positions[stock_code]['ultra_tight_active'] = True
+                    ultra_rate = config.get("ultra_tight_trailing_rate", 0.0005)
+                    new_trailing_stop = highest_price * (1 - ultra_rate)
+                    new_trailing_stop = max(breakeven_price, int(new_trailing_stop))
+                    self.positions[stock_code]['trailing_stop_price'] = new_trailing_stop
+                
+                self.save_positions()
+                
+                logger.info(f"🚀 {stock_code} 울트라 타이트 트레일링! (수익률: {profit_rate*100:+.2f}%)")
+                logger.info(f"   최고가: {highest_price:,}원")
+                logger.info(f"   트레일링: {new_trailing_stop:,}원 (-0.05%)")
+                logger.info(f"   💡 목표 달성! 이제 0.05%만 떨어져도 매도")
+                
+                if config.get("use_discord", True):
+                    stock_name = position.get('stock_name', stock_code)
+                    msg = f"🚀 **울트라 타이트 모드!**\n"
+                    msg += f"종목: {stock_name} ({stock_code})\n"
+                    msg += f"목표 수익: {profit_rate*100:+.2f}% 달성!\n"
+                    msg += f"최고가: {highest_price:,}원\n"
+                    msg += f"트레일링: {new_trailing_stop:,}원 (-0.05%)\n"
+                    msg += f"💎 고점 추적 중..."
+                    discord_alert.SendMessage(msg)
+            
+            # 3단계: 타이트 트레일링 (2.0% 달성)
+            tight_threshold = config.get("tight_trailing_threshold", 0.020)
+            
+            if not tight_trailing_active and profit_rate >= tight_threshold:
+                with self.lock:
+                    self.positions[stock_code]['tight_trailing_active'] = True
+                    tight_rate = config.get("tight_trailing_rate", 0.002)
+                    new_trailing_stop = highest_price * (1 - tight_rate)
+                    new_trailing_stop = max(breakeven_price, int(new_trailing_stop))
+                    self.positions[stock_code]['trailing_stop_price'] = new_trailing_stop
+                
+                self.save_positions()
+                
+                logger.info(f"🎯 {stock_code} 타이트 트레일링! (수익률: {profit_rate*100:+.2f}%)")
+                logger.info(f"   최고가: {highest_price:,}원")
+                logger.info(f"   트레일링: {new_trailing_stop:,}원 (-0.2%)")
+            
+            # 2단계: 본전 보호 (1.5% 달성)
+            breakeven_threshold = config.get("breakeven_protection_rate", 0.015)
             
             if not breakeven_protected and profit_rate >= breakeven_threshold:
                 with self.lock:
                     self.positions[stock_code]['breakeven_protected'] = True
-                    self.positions[stock_code]['trailing_stop_price'] = breakeven_price  # ✅ 수수료 반영!
+                    self.positions[stock_code]['trailing_stop_price'] = breakeven_price
                 
                 self.save_positions()
                 
@@ -1750,56 +1790,57 @@ class SignalTradingBot:
                     msg += f"거래비용: {commission_amount:,}원\n"
                     msg += f"손절선: {breakeven_price:,}원 (본전+수수료)"
                     discord_alert.SendMessage(msg)
-                
-                # 🔥🔥🔥 return 제거! 아래 트레일링 로직도 실행됨
-           
-            # 🔥 2단계: 초타이트 트레일링 활성화 (2% 달성)    # 🔥 주석 수정: 3% → 2%
-            tight_threshold = config.get("tight_trailing_threshold", 0.020)  # 🔥 default 0.03 → 0.020
-            tight_trailing_active = position.get('tight_trailing_active', False)
             
-            if not tight_trailing_active and profit_rate >= tight_threshold:
-                with self.lock:
-                    self.positions[stock_code]['tight_trailing_active'] = True
-                    tight_rate = config.get("tight_trailing_rate", 0.002)  # 🔥 default 0.003 → 0.002, 0.2%
-                    new_trailing_stop = highest_price * (1 - tight_rate)
-                    # 본전 이하로 내려가지 않도록 보장
-                    new_trailing_stop = max(breakeven_price, int(new_trailing_stop))
-                    self.positions[stock_code]['trailing_stop_price'] = new_trailing_stop
+            # 🔥 최고가 갱신 시 트레일링 업데이트
+            if current_price == highest_price:
+                logger.info(f"    ┌─ 트레일링 업데이트 ─┐")
+                logger.info(f"    │ 최고가 갱신: {highest_price:,}원")
                 
-                self.save_positions()
-                
-                logger.info(f"🎯 {stock_code} 초타이트 트레일링 시작! (수익률: {profit_rate*100:+.2f}%)")
-                logger.info(f"   최고가: {highest_price:,}원")
-                logger.info(f"   트레일링: {new_trailing_stop:,}원 (-0.2%)")  # 🔥 메시지 수정: -0.3% → -0.2%
-                
-                if config.get("use_discord", True):
-                    stock_name = position.get('stock_name', stock_code)
-                    msg = f"🎯 **초타이트 트레일링!**\n"
-                    msg += f"종목: {stock_name} ({stock_code})\n"
-                    msg += f"진입가: {entry_price:,}원\n"
-                    msg += f"최고가: {highest_price:,}원 ({profit_rate*100:+.2f}%)\n"
-                    msg += f"트레일링: {new_trailing_stop:,}원 (-0.2%)"  # 🔥 메시지 수정: -0.3% → -0.2%
-                    discord_alert.SendMessage(msg)
-                
-                # 🔥🔥🔥 return 제거! 아래 로직도 실행
-            
-            # 🔥 3단계: 트레일링 스탑 업데이트 (최고가 갱신 시)
-            if current_price == highest_price:  # 방금 최고가 갱신됨
-                if tight_trailing_active:
-                    # 초타이트 트레일링 모드 (2% 이상)                # 🔥 주석 수정: 3% → 2%
-                    tight_rate = config.get("tight_trailing_rate", 0.002)  # 🔥 default 0.003 → 0.002, 0.2%
-                    new_trailing_stop = highest_price * (1 - tight_rate)
+                # 1️⃣ 수익률 기반 기본 간격 결정
+                if ultra_tight_active:
+                    base_rate = config.get("ultra_tight_trailing_rate", 0.0005)
+                    stage = "울트라 타이트 (2.5% 이상)"
+                elif tight_trailing_active:
+                    base_rate = config.get("tight_trailing_rate", 0.002)
+                    stage = "타이트 (2.0~2.5%)"
                 elif breakeven_protected:
-                    # 본전 보호 모드 (1.5~2% 구간)                    # 🔥 주석 수정: 1~3% → 1.5~2%
-                    # 🔥 0.3% 트레일링 적용                           # 🔥 주석 수정: 0.5% → 0.3%
-                    trailing_rate = config.get("trailing_stop_rate", 0.003)  # 🔥 default 0.005 → 0.003, 0.3%
-                    new_trailing_stop = highest_price * (1 - trailing_rate)
+                    base_rate = config.get("trailing_stop_rate", 0.005)
+                    stage = "본전보호 (1.5~2.0%)"
                 else:
-                    # 일반 트레일링 (0.6~1.5% 구간, 본전 보호 미활성화)  # 🔥 주석 수정: 1~3% → 0.6~1.5%
-                    trailing_rate = config.get("trailing_stop_rate", 0.003)  # 🔥 default 0.005 → 0.003, 0.3%
-                    new_trailing_stop = highest_price * (1 - trailing_rate)
+                    base_rate = config.get("trailing_stop_rate", 0.005)
+                    stage = "일반 (0.8~1.5%)"
                 
-                # 🔥🔥🔥 핵심: 진짜 본전(수수료 포함) 이하로 절대 내려가지 않음
+                logger.info(f"    │ 수익 단계: {stage}")
+                logger.info(f"    │ 기본 간격: {base_rate*100:.2f}%")
+                
+                # 2️⃣ 기술적 지표로 간격 조정
+                use_technical = config.get("use_technical_trailing", True)
+                
+                if use_technical:
+                    logger.info(f"    │")
+                    logger.info(f"    │ 🔬 기술적 지표 분석 시작...")
+                    
+                    minute_data = KiwoomAPI.GetMinuteData(stock_code, count=25)
+                    
+                    if minute_data and len(minute_data) >= 20:
+                        technical_score = self._calculate_technical_score(stock_code, minute_data)
+                        multiplier = self._get_technical_multiplier(technical_score)
+                        
+                        adjusted_rate = base_rate * multiplier
+                        
+                        logger.info(f"    │")
+                        logger.info(f"    │ 최종 간격: {base_rate*100:.2f}% × {multiplier:.1f} = {adjusted_rate*100:.3f}%")
+                    else:
+                        logger.warning(f"    │ ⚠️ 분봉 데이터 부족 → 기본 간격 사용")
+                        adjusted_rate = base_rate
+                else:
+                    logger.info(f"    │ 기술적 지표 미사용 → 기본 간격")
+                    adjusted_rate = base_rate
+                
+                # 3️⃣ 트레일링 스탑 계산
+                new_trailing_stop = highest_price * (1 - adjusted_rate)
+                
+                # 본전 이하로 절대 안 내려감
                 new_trailing_stop = max(breakeven_price, int(new_trailing_stop))
                 
                 with self.lock:
@@ -1808,7 +1849,12 @@ class SignalTradingBot:
                 self.save_positions()
                 
                 trailing_profit = (new_trailing_stop - entry_price) / entry_price
-                logger.debug(f"🔄 {stock_code} 트레일링 업데이트: {new_trailing_stop:,}원 (보장수익: {trailing_profit*100:+.2f}%)")
+                
+                logger.info(f"    │")
+                logger.info(f"    │ ✅ 트레일링 업데이트 완료")
+                logger.info(f"    │ 새 손절선: {new_trailing_stop:,}원")
+                logger.info(f"    │ 보장 수익: {trailing_profit*100:+.2f}%")
+                logger.info(f"    └─────────────────────┘")
             
         except Exception as e:
             logger.error(f"트레일링 스탑 업데이트 실패: {e}")
@@ -1817,14 +1863,15 @@ class SignalTradingBot:
 
     def check_sell_conditions(self, stock_code, current_signal=None):
         """
-        매도 조건 체크 (🔥 로깅 대폭 강화)
+        매도 조건 체크 (완전한 수익보호 시스템)
         
         우선순위:
-        1. 목표 수익 달성 (2.5%)        # 🔥 3% → 2.5%
-        2. 트레일링 스탑 발동
-        3. 손절 신호 (SELL/STRONG_SELL)
-        4. 긴급 손절 (-3%)
-        5. ATR 기반 동적 손절
+        1. 트레일링 스탑 발동 (기술적 지표 + 신호 유예)
+        2. 손절 신호 (SELL/STRONG_SELL)
+        3. 긴급 손절 (-3%)
+        4. ATR 기반 동적 손절
+        
+        ⚠️ 목표 수익 즉시 매도 제거! (울트라 타이트 트레일링으로 대체)
         
         Returns:
             tuple: (should_sell: bool, reason: str)
@@ -1846,7 +1893,6 @@ class SignalTradingBot:
             entry_time_str = position.get('entry_time', '')
             highest_price = position.get('highest_price', entry_price)
             trailing_stop_price = position.get('trailing_stop_price', 0)
-            target_profit_price = position.get('target_profit_price', 0)
             
             # 수익률 계산
             profit_rate = (current_price - entry_price) / entry_price if entry_price > 0 else 0
@@ -1883,33 +1929,70 @@ class SignalTradingBot:
 
             logger.info(f"    │   ✅ 유예 완료: {holding_minutes:.0f}분 >= {grace_period_minutes}분")
 
-            # 🔥 1️⃣ 목표 수익 체크
-            logger.info(f"    │ [1/6] 목표 수익 체크")
-            target_profit_rate = config.get("target_profit_rate", 0.03)
+            # ❌ 목표 수익 체크 제거!
+            # 울트라 타이트 트레일링으로 대체됨
+            # logger.info(f"    │ [1/6] 목표 수익 체크")
+            # if current_price >= target_profit_price:
+            #     return True, "목표 수익 달성"
 
-            if current_price >= target_profit_price:
-                reason = f"목표 수익 달성 ({profit_rate*100:+.2f}% >= {target_profit_rate*100:.0f}%)"
-                logger.info(f"    │   ✅ 만족: {current_price:,}원 >= {target_profit_price:,}원")
-                logger.info(f"    └─────────────────────┘")
-                return True, reason
-            else:
-                logger.info(f"    │   ❌ 미만족: {current_price:,}원 < {target_profit_price:,}원 (차이: {(target_profit_price-current_price):,}원)")
-
-            # 🔥 2️⃣ 트레일링 스탑 체크
-            logger.info(f"    │ [2/6] 트레일링 스탑 체크")
+            # 🔥 1️⃣ 트레일링 스탑 체크 (우선순위 상향!)
+            logger.info(f"    │ [1/6] 트레일링 스탑 체크")
 
             if current_price <= trailing_stop_price:
                 trailing_loss = (trailing_stop_price - current_price) / current_price
-                reason = f"트레일링 스탑 ({profit_rate*100:+.2f}%, 최고가 대비 -{trailing_loss*100:.2f}%)"
-                logger.info(f"    │   ✅ 발동: {current_price:,}원 <= {trailing_stop_price:,}원")
+                
+                logger.info(f"    │   ⚠️ 트레일링 도달!")
+                logger.info(f"    │   현재가: {current_price:,}원 <= 손절선: {trailing_stop_price:,}원")
                 logger.info(f"    │   최고가: {highest_price:,}원 → 현재가: {current_price:,}원")
+                
+                # 🆕 신호 기반 트레일링 유예 체크
+                use_signal_override = config.get("trailing_signal_override", True)
+                
+                if use_signal_override and current_signal:
+                    signal_type = current_signal.get('signal', 'HOLD')
+                    signal_confidence = current_signal.get('confidence', 0)
+                    override_confidence = config.get("trailing_override_confidence", 0.6)
+                    override_signals = config.get("trailing_override_signals", ["STRONG_BUY", "CONFIRMED_BUY", "BUY"])
+                    
+                    logger.info(f"    │")
+                    logger.info(f"    │   🔍 신호 기반 유예 검토...")
+                    logger.info(f"    │   현재 신호: {signal_type} (신뢰도: {signal_confidence:.1%})")
+                    
+                    if signal_type in override_signals and signal_confidence >= override_confidence:
+                        # 강한 매수 신호 → 유예 검토
+                        
+                        # 단, 너무 큰 손실은 유예 불가
+                        max_override_loss = config.get("trailing_override_max_loss", 0.005)
+                        current_loss = (entry_price - current_price) / entry_price
+                        
+                        if current_loss <= max_override_loss:
+                            logger.info(f"    │   ✅ {signal_type} 신호 감지!")
+                            logger.info(f"    │   신뢰도: {signal_confidence:.1%} >= {override_confidence:.1%}")
+                            logger.info(f"    │   현재 손익: {profit_rate*100:+.2f}% (유예 가능 범위)")
+                            logger.info(f"    │   → 트레일링 유예! 보유 유지")
+                            logger.info(f"    └─────────────────────┘")
+                            return False, f"트레일링 유예 ({signal_type} 신호)"
+                        else:
+                            logger.info(f"    │   ⚠️ {signal_type} 신호 있으나 손실 과다")
+                            logger.info(f"    │   손실: {current_loss*100:.2f}% > 한도: {max_override_loss*100:.1f}%")
+                            logger.info(f"    │   → 유예 불가, 매도 진행")
+                    else:
+                        logger.info(f"    │   ❌ 유예 조건 미충족")
+                        if signal_type not in override_signals:
+                            logger.info(f"    │   이유: 신호 유형 ({signal_type})")
+                        else:
+                            logger.info(f"    │   이유: 신뢰도 부족 ({signal_confidence:.1%} < {override_confidence:.1%})")
+                
+                reason = f"트레일링 스탑 ({profit_rate*100:+.2f}%, 최고가 대비 -{trailing_loss*100:.2f}%)"
+                logger.info(f"    │   💥 트레일링 발동 → 매도")
                 logger.info(f"    └─────────────────────┘")
                 return True, reason
             else:
-                logger.info(f"    │   ❌ 미발동: {current_price:,}원 > {trailing_stop_price:,}원 (여유: {(current_price-trailing_stop_price):,}원)")
+                logger.info(f"    │   ✅ 미발동: {current_price:,}원 > {trailing_stop_price:,}원")
+                logger.info(f"    │   여유: {(current_price-trailing_stop_price):,}원 ({((current_price-trailing_stop_price)/current_price)*100:.2f}%)")
 
-            # 🔥 3️⃣ 긴급 손절 체크
-            logger.info(f"    │ [3/6] 긴급 손절 체크")
+            # 🔥 2️⃣ 긴급 손절 체크
+            logger.info(f"    │ [2/6] 긴급 손절 체크")
             emergency_stop = config.get("emergency_stop_loss", -0.03)
 
             if profit_rate <= emergency_stop:
@@ -1920,8 +2003,8 @@ class SignalTradingBot:
             else:
                 logger.info(f"    │   ❌ 미발동: {profit_rate*100:.2f}% > {emergency_stop*100:.0f}% (여유: {(profit_rate-emergency_stop)*100:.2f}%p)")
 
-            # 🔥 4️⃣ ATR 기반 동적 손절 (유예 로직 제거!)
-            logger.info(f"    │ [4/6] ATR 동적 손절선 계산")
+            # 🔥 3️⃣ ATR 기반 동적 손절
+            logger.info(f"    │ [3/6] ATR 동적 손절선 계산")
             logger.info(f"    │   🔍 ATR 동적 손절선 계산 중...")
             dynamic_stop = self._calculate_dynamic_stop_loss(stock_code, current_price)
 
@@ -1933,7 +2016,7 @@ class SignalTradingBot:
             logger.info(f"    │   📡 신호: {signal_type} (신뢰도: {signal_confidence:.1%})")
             logger.info(f"    │   💰 현재 손익: {profit_rate*100:+.2f}%")
 
-            logger.info(f"    │ [5/6] 통합 손절 판단 시작...")
+            logger.info(f"    │ [4/6] 통합 손절 판단 시작...")
             should_stop, stop_reason = self._integrated_stop_decision(
                 stock_code,
                 profit_rate,
@@ -2492,6 +2575,311 @@ class SignalTradingBot:
             import traceback
             logger.error(traceback.format_exc())
             return self._get_default_stop_loss(stock_code)
+
+    def _calculate_rsi(self, minute_data, period=14):
+        """
+        RSI(Relative Strength Index) 계산
+        
+        Args:
+            minute_data: 분봉 리스트 (최신순)
+            period: RSI 계산 기간 (기본 14)
+        
+        Returns:
+            float: RSI 값 (0~100)
+        """
+        try:
+            if len(minute_data) < period + 1:
+                return 50  # 데이터 부족 시 중립값
+            
+            closes = [float(d.get('ClosePrice', 0)) for d in minute_data[:period+1]]
+            
+            gains = []
+            losses = []
+            
+            for i in range(len(closes)-1):
+                change = closes[i] - closes[i+1]
+                if change > 0:
+                    gains.append(change)
+                    losses.append(0)
+                else:
+                    gains.append(0)
+                    losses.append(abs(change))
+            
+            avg_gain = sum(gains) / period
+            avg_loss = sum(losses) / period
+            
+            if avg_loss == 0:
+                return 100
+            
+            rs = avg_gain / avg_loss
+            rsi = 100 - (100 / (1 + rs))
+            
+            return rsi
+            
+        except Exception as e:
+            logger.error(f"RSI 계산 오류: {e}")
+            return 50
+
+    def _calculate_bollinger_bands(self, minute_data, period=20, std_dev=2):
+        """
+        볼린저 밴드 계산
+        
+        Args:
+            minute_data: 분봉 리스트
+            period: 이동평균 기간
+            std_dev: 표준편차 배수
+        
+        Returns:
+            dict: {upper, middle, lower, current, position}
+        """
+        try:
+            if len(minute_data) < period:
+                return None
+            
+            closes = [float(d.get('ClosePrice', 0)) for d in minute_data[:period]]
+            current = closes[0]
+            
+            ma = sum(closes) / period
+            variance = sum((x - ma) ** 2 for x in closes) / period
+            std = variance ** 0.5
+            
+            upper_band = ma + (std_dev * std)
+            lower_band = ma - (std_dev * std)
+            
+            # 밴드 내 위치 (0~1)
+            band_width = upper_band - lower_band
+            position_in_band = (current - lower_band) / band_width if band_width > 0 else 0.5
+            
+            return {
+                'upper': upper_band,
+                'middle': ma,
+                'lower': lower_band,
+                'current': current,
+                'position': position_in_band
+            }
+            
+        except Exception as e:
+            logger.error(f"볼린저 밴드 계산 오류: {e}")
+            return None
+
+    def _calculate_moving_averages(self, minute_data):
+        """
+        이동평균선 계산 및 배열 분석
+        
+        Returns:
+            dict: {ma5, ma20, current, alignment}
+        """
+        try:
+            if len(minute_data) < 20:
+                return None
+            
+            closes = [float(d.get('ClosePrice', 0)) for d in minute_data]
+            current = closes[0]
+            
+            ma5 = sum(closes[:5]) / 5
+            ma20 = sum(closes[:20]) / 20
+            
+            # 정배열/역배열 판단
+            if current > ma5 > ma20:
+                alignment = "정배열"
+            elif current < ma5 < ma20:
+                alignment = "역배열"
+            else:
+                alignment = "혼재"
+            
+            # 5분선과의 거리 (%)
+            distance = (current - ma5) / ma5 * 100 if ma5 > 0 else 0
+            
+            return {
+                'ma5': ma5,
+                'ma20': ma20,
+                'current': current,
+                'alignment': alignment,
+                'distance_from_ma5': distance
+            }
+            
+        except Exception as e:
+            logger.error(f"이동평균 계산 오류: {e}")
+            return None
+
+    def _calculate_volume_strength(self, minute_data):
+        """
+        거래량 강도 분석
+        
+        Returns:
+            float: 거래량 비율 (최근/평균)
+        """
+        try:
+            if len(minute_data) < 5:
+                return 1.0
+            
+            recent_volume = float(minute_data[0].get('Volume', 0))
+            avg_volume = sum(float(d.get('Volume', 0)) for d in minute_data[:5]) / 5
+            
+            if avg_volume == 0:
+                return 1.0
+            
+            volume_ratio = recent_volume / avg_volume
+            
+            return volume_ratio
+            
+        except Exception as e:
+            logger.error(f"거래량 분석 오류: {e}")
+            return 1.0
+
+    def _calculate_technical_score(self, stock_code, minute_data):
+        """
+        기술적 지표 종합 점수 계산 (0~100점)
+        
+        점수가 높을수록 강세 → 트레일링 완화
+        점수가 낮을수록 약세 → 트레일링 강화
+        
+        Returns:
+            float: 종합 점수 (0~100)
+        """
+        try:
+            tech_config = config.get("technical_indicators", {})
+            
+            if not tech_config.get("use_rsi") and not tech_config.get("use_bollinger") and \
+            not tech_config.get("use_ma") and not tech_config.get("use_volume"):
+                return 50  # 지표 미사용 시 중립
+            
+            score = 0
+            max_score = 0
+            
+            logger.info(f"    ┌─ 기술적 지표 분석 ─┐")
+            
+            # 1️⃣ RSI 평가
+            if tech_config.get("use_rsi", True):
+                rsi_period = tech_config.get("rsi_period", 14)
+                rsi = self._calculate_rsi(minute_data, period=rsi_period)
+                rsi_weight = tech_config.get("rsi_weight", 30)
+                
+                if rsi <= 30:
+                    rsi_score = rsi_weight  # 과매도 → 만점
+                elif rsi >= 70:
+                    rsi_score = 0   # 과매수 → 0점
+                else:
+                    # 40~60이 최적 (중립 근처)
+                    rsi_score = rsi_weight * (1 - abs(50 - rsi) / 50)
+                
+                score += rsi_score
+                max_score += rsi_weight
+                logger.info(f"    │ 📊 RSI: {rsi:.1f} → {rsi_score:.0f}/{rsi_weight}점")
+            
+            # 2️⃣ 볼린저 밴드 평가
+            if tech_config.get("use_bollinger", True):
+                bb_period = tech_config.get("bollinger_period", 20)
+                bb_std = tech_config.get("bollinger_std", 2)
+                bb = self._calculate_bollinger_bands(minute_data, period=bb_period, std_dev=bb_std)
+                bb_weight = tech_config.get("bollinger_weight", 30)
+                
+                if bb:
+                    position = bb['position']
+                    
+                    if position <= 0.2:
+                        bb_score = bb_weight  # 하단 → 만점
+                    elif position >= 0.8:
+                        bb_score = 0   # 상단 → 0점
+                    else:
+                        # 중심(0.5)에 가까울수록 높은 점수
+                        bb_score = bb_weight * (1 - abs(0.5 - position) * 2)
+                    
+                    score += bb_score
+                    max_score += bb_weight
+                    logger.info(f"    │ 📊 볼린저: {position*100:.0f}% → {bb_score:.0f}/{bb_weight}점")
+                else:
+                    logger.info(f"    │ ⚠️ 볼린저: 계산 실패")
+            
+            # 3️⃣ 이동평균 배열 평가
+            if tech_config.get("use_ma", True):
+                ma = self._calculate_moving_averages(minute_data)
+                ma_weight = tech_config.get("ma_weight", 20)
+                
+                if ma:
+                    if ma['alignment'] == "정배열":
+                        ma_score = ma_weight  # 정배열 → 만점
+                    elif ma['alignment'] == "역배열":
+                        ma_score = 0   # 역배열 → 0점
+                    else:
+                        ma_score = ma_weight * 0.5  # 혼재 → 중간
+                    
+                    score += ma_score
+                    max_score += ma_weight
+                    logger.info(f"    │ 📊 이평: {ma['alignment']} → {ma_score:.0f}/{ma_weight}점")
+                else:
+                    logger.info(f"    │ ⚠️ 이평: 계산 실패")
+            
+            # 4️⃣ 거래량 강도 평가
+            if tech_config.get("use_volume", True):
+                volume_ratio = self._calculate_volume_strength(minute_data)
+                volume_weight = tech_config.get("volume_weight", 20)
+                
+                if volume_ratio > 1.5:
+                    volume_score = volume_weight  # 거래량 급증 → 만점
+                elif volume_ratio > 1.2:
+                    volume_score = volume_weight * 0.75
+                elif volume_ratio < 0.8:
+                    volume_score = volume_weight * 0.25  # 거래량 감소 → 낮은 점수
+                else:
+                    volume_score = volume_weight * 0.5
+                
+                score += volume_score
+                max_score += volume_weight
+                logger.info(f"    │ 📊 거래량: {volume_ratio:.1f}배 → {volume_score:.0f}/{volume_weight}점")
+            
+            # 최종 점수 정규화 (0~100)
+            final_score = (score / max_score * 100) if max_score > 0 else 50
+            
+            logger.info(f"    │")
+            logger.info(f"    │ 🎯 종합 점수: {final_score:.1f}/100점")
+            logger.info(f"    └─────────────────────┘")
+            
+            return final_score
+            
+        except Exception as e:
+            logger.error(f"기술적 점수 계산 오류: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return 50  # 오류 시 중립
+
+    def _get_technical_multiplier(self, technical_score):
+        """
+        기술적 점수에 따른 트레일링 배율 반환
+        
+        Args:
+            technical_score: 0~100 점수
+        
+        Returns:
+            float: 트레일링 간격 배율
+        """
+        multipliers = config.get("technical_multiplier", {
+            "strong_bull": 2.0,
+            "bull": 1.3,
+            "neutral": 1.0,
+            "bear": 0.7,
+            "strong_bear": 0.4
+        })
+        
+        if technical_score >= 70:
+            multiplier = multipliers.get("strong_bull", 2.0)
+            status = "🟢 강세"
+        elif technical_score >= 50:
+            multiplier = multipliers.get("bull", 1.3)
+            status = "🟡 중강세"
+        elif technical_score >= 40:
+            multiplier = multipliers.get("neutral", 1.0)
+            status = "⚪ 중립"
+        elif technical_score >= 30:
+            multiplier = multipliers.get("bear", 0.7)
+            status = "🟠 약세"
+        else:
+            multiplier = multipliers.get("strong_bear", 0.4)
+            status = "🔴 강약세"
+        
+        logger.info(f"    📊 기술적 배율: {status} → ×{multiplier:.1f}")
+        
+        return multiplier
 
     def _calculate_atr(self, minute_data, period=14):
         """
