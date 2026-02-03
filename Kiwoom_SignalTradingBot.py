@@ -3487,9 +3487,9 @@ class SignalTradingBot:
             if worst_rate < 0:
                 msg += f"• 최저 수익률: {worst_rate:+.2f}% ({worst_date})\n"
             
-            msg += f"\n{'━'*30}\n"
-            msg += f"💡 추가 입금 시 config 파일에서\n"
-            msg += f"   baseline_asset을 수동 업데이트하세요."
+            # msg += f"\n{'━'*30}\n"
+            # msg += f"💡 추가 입금 시 config 파일에서\n"
+            # msg += f"   baseline_asset을 수동 업데이트하세요."
 
             logger.info("✅ 일일 리포트 생성 완료")
             logger.info(msg)
