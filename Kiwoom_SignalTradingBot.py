@@ -1634,7 +1634,7 @@ class SignalTradingBot:
                         except TimeoutError:
                             logger.error(f"   ❌ 재주문 타임아웃")
                             continue
-                        
+
                         if new_order_result and new_order_result.get('success'):
                             new_order_no = new_order_result.get('order_no', '')
                             
@@ -1642,7 +1642,8 @@ class SignalTradingBot:
                                 self.pending_orders[stock_code]['order_no'] = new_order_no
                                 self.pending_orders[stock_code]['order_price'] = adjusted_price
                                 # 🔥 original_price는 유지! (변경 안 함)
-                                self.pending_orders[stock_code]['order_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                # 🔥🔥🔥 order_time도 유지! (최초 주문 시간 기준으로 타임아웃 체크)
+                                # self.pending_orders[stock_code]['order_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # ← 삭제!
                                 self.pending_orders[stock_code]['retry_count'] = retry_count + 1
                                 
                                 # 매도인 경우 예상 수익 재계산
@@ -1659,6 +1660,8 @@ class SignalTradingBot:
                             logger.info(f"      새 주문번호: {new_order_no}")
                             logger.info(f"      유지된 가격: {adjusted_price:,}원")
                             logger.info(f"      재시도 횟수: {retry_count + 1}/{max_retry}")
+                            logger.info(f"      💡 최초 주문 시간 유지 → 타임아웃 누적 계산")  # 🆕 추가
+
                         else:
                             logger.error(f"   ❌ {stock_name} 재주문 실패")
             
