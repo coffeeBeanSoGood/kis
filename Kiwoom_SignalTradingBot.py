@@ -655,7 +655,6 @@ def call_with_timeout(func, timeout=10, *args, **kwargs):
     
     return result[0]
 
-
 class SignalTradingBot:
     """신호 기반 자동매매 봇 (watchdog + 멀티스레드)"""
     
@@ -2075,31 +2074,6 @@ class SignalTradingBot:
             logger.error(traceback.format_exc())
             return False, f"체크 실패: {str(e)}"
 
-    def calculate_unrealized_profit(self):
-        """미실현 손익 계산"""
-        try:
-            total_unrealized = 0
-            
-            with self.lock:
-                for stock_code, position in self.positions.items():
-                    stock_info = KiwoomAPI.GetStockInfo(stock_code)
-                    if not stock_info:
-                        continue
-                    
-                    current_price = stock_info.get('CurrentPrice', 0)
-                    entry_price = position.get('entry_price', 0)
-                    quantity = position.get('quantity', 0)
-                    
-                    if current_price > 0 and entry_price > 0:
-                        unrealized = (current_price - entry_price) * quantity
-                        total_unrealized += unrealized
-            
-            return total_unrealized
-            
-        except Exception as e:
-            logger.error(f"미실현 손익 계산 실패: {e}")
-            return 0
-
     def send_market_open_alert(self):
         """
         장 시작 알림 전송 (09:00)
@@ -2111,6 +2085,10 @@ class SignalTradingBot:
             logger.info("=" * 60)
             logger.info("🔔 장 시작 알림 생성 중...")
             logger.info("=" * 60)
+            
+            # 🔥 설정 파일 다시 로드 (최신 데이터 반영)
+            config.reload_all()
+            logger.info("✅ 모든 config 파일 재로드 완료")
             
             # 1️⃣ 자산 정보 조회
             asset_info = self.calculate_total_asset()
@@ -2125,8 +2103,9 @@ class SignalTradingBot:
             
             # 2️⃣ 기준 자산 대비 증감 계산
             perf = config.get('performance', {})
-            baseline_asset = perf.get('baseline_asset', total_asset)
-            baseline_date = perf.get('baseline_date', '-')
+            # baseline_asset은 budget_config에서 가져와야 함 (perf에 포함되어 있지만 명시적으로 확인)
+            baseline_asset = perf.get('baseline_asset', config.get('baseline_asset', total_asset))
+            baseline_date = perf.get('baseline_date', config.get('baseline_date', '-'))
             
             asset_diff = total_asset - baseline_asset
             asset_diff_rate = (asset_diff / baseline_asset * 100) if baseline_asset > 0 else 0
@@ -2159,13 +2138,13 @@ class SignalTradingBot:
                 if self.positions:
                     for stock_code, position in self.positions.items():
                         stock_name = position.get('stock_name', stock_code)
-                        qty = position.get('qty', 0)
+                        qty = position.get('quantity', 0)
                         avg_price = position.get('avg_price', 0)
                         
                         # 현재가 조회
                         try:
-                            current_price_info = KiwoomAPI.GetCurrentPrice(stock_code)
-                            current_price = current_price_info.get('CurrentPrice', avg_price) if current_price_info else avg_price
+                            stock_info = KiwoomAPI.GetStockInfo(stock_code)
+                            current_price = stock_info.get('CurrentPrice', avg_price) if stock_info else avg_price
                         except:
                             current_price = avg_price
                         
@@ -2196,251 +2175,6 @@ class SignalTradingBot:
             
         except Exception as e:
             logger.error(f"❌ 장 시작 알림 생성 실패: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-
-    def send_daily_report(self):
-        """일일 리포트 전송 (장 마감 후)"""
-        try:
-            logger.info("=" * 60)
-            logger.info("📊 일일 리포트 생성 중...")
-            logger.info("=" * 60)
-
-            # 🔥🔥🔥 올바른 방법! 🔥🔥🔥
-            # config 파일 다시 로드 (최신 데이터 반영)
-            config.reload_all()
-            logger.info("✅ 모든 config 파일 재로드 완료")
-            # 🔥🔥🔥 여기까지 추가 🔥🔥🔥
-
-            # 1️⃣ 성과 데이터 가져오기
-            perf = config.get('performance', {})
-            total_trades = perf.get('total_trades', 0)
-            winning_trades = perf.get('winning_trades', 0)
-            net_realized_profit = perf.get('net_realized_profit', 0)
-            total_loss = perf.get('total_loss', 0)
-            canceled_orders = perf.get('canceled_orders', 0)
-            
-            # 2️⃣ 현재 자산 계산
-            asset_info = self.calculate_total_asset()
-            if not asset_info:
-                logger.warning("⚠️ 자산 정보 조회 실패")
-                return
-            
-            total_asset = asset_info['total_asset']
-            orderable_amt = asset_info['orderable_amt']
-            holding_value = asset_info['holding_value']
-            pending_value = asset_info['pending_value']
-            
-            # 3️⃣ 미실현 손익 계산
-            unrealized_profit = self.calculate_unrealized_profit()
-            
-            # 4️⃣ 승률 계산
-            win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
-            net_profit = net_realized_profit + total_loss  # total_loss는 음수
-            
-            # 5️⃣ 보유 종목 상세
-            holdings_detail = ""
-            with self.lock:
-                if self.positions:
-                    holdings_detail = "\n**📈 보유 종목:**\n"
-                    for stock_code, position in self.positions.items():
-                        stock_name = position.get('stock_name', '')
-                        quantity = position.get('quantity', 0)
-                        entry_price = position.get('entry_price', 0)
-                        
-                        stock_info = KiwoomAPI.GetStockInfo(stock_code)
-                        current_price = stock_info.get('CurrentPrice', 0) if stock_info else 0
-                        
-                        if current_price > 0:
-                            profit_rate = ((current_price - entry_price) / entry_price) * 100
-                            profit_amt = (current_price - entry_price) * quantity
-                            holdings_detail += f"• {stock_name} ({stock_code})\n"
-                            holdings_detail += f"  └─ {quantity}주, {profit_rate:+.2f}% ({profit_amt:+,}원)\n"
-                else:
-                    holdings_detail = "\n**📈 보유 종목:** 없음\n"
-            
-            # 6️⃣ 디스코드 메시지 생성
-            msg = f"📊 **{BOT_NAME} 일일 리포트**\n"
-            msg += f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
-            msg += "=" * 30 + "\n\n"
-            
-            msg += "**💰 자산 현황**\n"
-            msg += f"• 총 자산: {total_asset:,}원\n"
-            msg += f"• 현금: {orderable_amt:,}원\n"
-            msg += f"• 보유 평가: {holding_value:,}원\n"
-            msg += f"• 미체결: {pending_value:,}원\n"
-            msg += f"• 미실현 손익: {unrealized_profit:+,}원\n\n"
-            
-            msg += "**📈 거래 성과**\n"
-            msg += f"• 총 거래: {total_trades}회\n"
-            msg += f"• 승률: {win_rate:.1f}% ({winning_trades}승/{total_trades-winning_trades}패)\n"
-            msg += f"• 실현 수익: {net_realized_profit:+,}원\n"
-            msg += f"• 실현 손실: {total_loss:+,}원\n"
-            msg += f"• 순 손익: {net_profit:+,}원\n"
-            msg += f"• 취소 주문: {canceled_orders}회\n"
-            
-            msg += holdings_detail
-            
-            msg += f"\n**🔄 쿨다운 종목**\n"
-            with self.lock:
-                if self.cooldowns:
-                    for stock_code, cooldown in self.cooldowns.items():
-                        stock_name = cooldown.get('stock_name', '')
-                        cooldown_until = cooldown.get('cooldown_until', '')
-                        msg += f"• {stock_name} ({stock_code}): {cooldown_until}까지\n"
-                else:
-                    msg += "• 없음\n"
-            
-            # 7️⃣ 전송
-            logger.info("✅ 일일 리포트 생성 완료")
-            logger.info(msg)
-
-            # 🔥 수정: use_discord로 변경 + 상세 로그 추가
-            if config.get("use_discord", True):
-                try:
-                    discord_alert.SendMessage(msg)
-                    logger.info("✅ Discord 일일 리포트 전송 완료")
-                except Exception as discord_e:
-                    logger.error(f"❌ Discord 전송 실패: {discord_e}")
-            else:
-                logger.warning("⚠️ Discord 알림이 비활성화되어 있습니다")
-            
-        except Exception as e:
-            logger.error(f"일일 리포트 생성 실패: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-
-    def check_deposit_withdraw(self):
-        """
-        kt00015 API를 사용한 입출금 내역 확인 및 baseline 자동 업데이트
-        
-        - 마지막 점검일 이후 입출금 내역 조회
-        - baseline_asset 자동 업데이트
-        - 이력 기록 및 Discord 알림
-        """
-        try:
-            logger.info("=" * 60)
-            logger.info("💰 입출금 자동 감지 시작")
-            logger.info("=" * 60)
-            
-            # 1️⃣ 설정 확인
-            if not config.get('auto_deposit_check', True):
-                logger.info("⚠️ 자동 입출금 감지가 비활성화되어 있습니다")
-                return
-            
-            # 2️⃣ 조회 기간 설정
-            last_checked = config.get('last_deposit_check_date', '')
-            today = datetime.now().strftime("%Y%m%d")
-            
-            # 첫 실행이거나 마지막 점검일이 없으면 어제부터 조회
-            if not last_checked:
-                last_checked = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
-                logger.info(f"📅 첫 실행: 어제({last_checked})부터 조회")
-            
-            # 이미 오늘 점검했으면 스킵
-            if last_checked == today:
-                logger.info(f"✅ 오늘 이미 점검 완료: {today}")
-                return
-            
-            logger.info(f"📅 조회 기간: {last_checked} ~ {today}")
-            
-            # 3️⃣ kt00015 API 호출 (입출금만)
-            transactions = KiwoomAPI.GetTransactionHistory(
-                start_date=last_checked,
-                end_date=today,
-                transaction_type="1"  # 입출금만
-            )
-            
-            if not transactions:
-                logger.info("✅ 신규 입출금 내역 없음")
-                config.set('last_deposit_check_date', today)
-                return
-            
-            # 4️⃣ 입출금 내역 분석
-            total_change = 0
-            deposit_count = 0
-            withdraw_count = 0
-            deposit_details = []
-            withdraw_details = []
-            
-            for tx in transactions:
-                tx_type = tx['Type']  # deposit or withdraw
-                amount = tx['Amount']
-                date = tx['Date']
-                time = tx['Time']
-                depositor = tx['Depositor']
-                remark = tx['Remark']
-                
-                if tx_type == 'deposit':
-                    total_change += amount
-                    deposit_count += 1
-                    deposit_details.append(f"  💰 {date} {time}: +{amount:,}원 ({depositor or remark})")
-                    logger.info(f"💰 입금 감지: +{amount:,}원 ({date} {time}, {depositor or remark})")
-                elif tx_type == 'withdraw':
-                    total_change -= amount
-                    withdraw_count += 1
-                    withdraw_details.append(f"  💸 {date} {time}: -{amount:,}원 ({remark})")
-                    logger.info(f"💸 출금 감지: -{amount:,}원 ({date} {time}, {remark})")
-                
-                # 이력 기록
-                config.add_deposit_withdraw_history(
-                    date=date,
-                    time=time,
-                    tx_type=tx_type,
-                    amount=amount,
-                    depositor=depositor
-                )
-            
-            # 5️⃣ baseline_asset 업데이트
-            if total_change != 0:
-                current_baseline = config.get('baseline_asset', 0)
-                new_baseline = current_baseline + total_change
-                
-                logger.info(f"📊 Baseline 업데이트: {current_baseline:,}원 → {new_baseline:,}원 ({total_change:+,}원)")
-                
-                config.set('baseline_asset', new_baseline)
-                config.set('baseline_date', datetime.now().strftime("%Y-%m-%d"))
-                config.set('baseline_note', f"자동 업데이트: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-                
-                # 6️⃣ Discord 알림
-                msg = f"💰 **입출금 자동 감지 및 Baseline 업데이트**\n"
-                msg += f"{'━'*40}\n"
-                msg += f"📅 점검 기간: {last_checked} ~ {today}\n\n"
-                
-                if deposit_count > 0:
-                    msg += f"📥 **입금: {deposit_count}건**\n"
-                    msg += "\n".join(deposit_details[:5])  # 최대 5건만 표시
-                    if len(deposit_details) > 5:
-                        msg += f"\n  ... 외 {len(deposit_details) - 5}건\n"
-                    msg += "\n\n"
-                
-                if withdraw_count > 0:
-                    msg += f"📤 **출금: {withdraw_count}건**\n"
-                    msg += "\n".join(withdraw_details[:5])
-                    if len(withdraw_details) > 5:
-                        msg += f"\n  ... 외 {len(withdraw_details) - 5}건\n"
-                    msg += "\n\n"
-                
-                msg += f"💵 **순 변동: {total_change:+,}원**\n"
-                msg += f"📊 **Baseline 업데이트**\n"
-                msg += f"  • 이전: {current_baseline:,}원\n"
-                msg += f"  • 현재: {new_baseline:,}원\n"
-                msg += f"{'━'*40}\n"
-                msg += f"✅ 성과 계산 기준이 자동으로 조정되었습니다!"
-                
-                if config.get("use_discord", True):
-                    discord_alert.SendMessage(msg)
-                
-                logger.info("✅ Baseline 자동 업데이트 완료")
-            else:
-                logger.info("✅ 입출금 합계: 0원 (baseline 변경 없음)")
-            
-            # 7️⃣ 마지막 점검일 갱신
-            config.set('last_deposit_check_date', today)
-            logger.info(f"✅ 입출금 감지 완료: {today}")
-            
-        except Exception as e:
-            logger.error(f"❌ 입출금 감지 중 오류: {e}")
             import traceback
             logger.error(traceback.format_exc())
 
@@ -3826,6 +3560,10 @@ class SignalTradingBot:
             logger.info("=" * 60)
             logger.info("📊 일일 성과 리포트 생성 중...")
             logger.info("=" * 60)
+            
+            # 🔥 설정 파일 다시 로드 (최신 데이터 반영)
+            config.reload_all()
+            logger.info("✅ 모든 config 파일 재로드 완료")
             
             # 1. 현재 자산 조회
             asset_info = self.calculate_total_asset()
