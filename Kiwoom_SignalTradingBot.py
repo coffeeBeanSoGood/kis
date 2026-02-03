@@ -1220,13 +1220,14 @@ class SignalTradingBot:
             if remaining_slots <= 0:
                 logger.warning(f"❌ 슬롯 부족")
                 return False
-            
-            # 🔥🔥🔥 3️⃣ 동적 예산 계산
-            budget_per_stock = total_asset / remaining_slots
-            
+
+            # 🔥🔥🔥 3️⃣ 동적 예산 계산 (현금만 사용)
+            budget_per_stock = orderable_amt / remaining_slots
+
             logger.info(f"💵 예산 배분:")
-            logger.info(f"   종목당 예산: {budget_per_stock:,.0f}원 (총 자산 {total_asset:,}원 ÷ 남은 슬롯 {remaining_slots}개)")
-            
+            logger.info(f"   종목당 예산: {budget_per_stock:,.0f}원 (사용가능 현금 {orderable_amt:,}원 ÷ 남은 슬롯 {remaining_slots}개)")
+            logger.info(f"   💡 보유주식({holding_value:,}원)과 미체결({pending_value:,}원)은 예산 계산에서 제외")
+
             # 🔥 4️⃣ 현재가 조회 및 호가 조정
             try:
                 stock_info = call_with_timeout(
