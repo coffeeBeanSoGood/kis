@@ -1170,7 +1170,7 @@ class SignalTradingBot:
             try:
                 can_buy, reason = call_with_timeout(
                     self.can_buy,
-                    timeout=40,  # can_buy 전체는 40초 타임아웃
+                    timeout=40,
                     stock_code=stock_code
                 )
             except TimeoutError as e:
@@ -1204,51 +1204,47 @@ class SignalTradingBot:
             
             # 🔥🔥🔥 2️⃣ 남은 슬롯 계산
             max_positions = config.get("max_positions", 3)
-            current_stocks = len(self.positions) + len(self.pending_orders)
-            remaining_slots = max_positions - current_stocks
             
-            logger.info(f"📊 포지션:")
-            logger.info(f"   현재: {current_stocks}종목")
+            with self.lock:
+                current_positions = len(self.positions)
+                current_pending = len(self.pending_orders)
+            
+            occupied_slots = current_positions + current_pending
+            remaining_slots = max_positions - occupied_slots
+            
+            logger.info(f"📊 슬롯 현황:")
+            logger.info(f"   최대 슬롯: {max_positions}개")
+            logger.info(f"   사용 중: {occupied_slots}개 (보유: {current_positions}, 미체결: {current_pending})")
             logger.info(f"   남은 슬롯: {remaining_slots}개")
             
-            # 🔥🔥🔥 3️⃣ 남은 자산 계산
-            used_asset = holding_value + pending_value
-            remaining_asset = total_asset - used_asset
-            
-            logger.info(f"💵 사용 가능 자산:")
-            logger.info(f"   전체: {total_asset:,}원")
-            logger.info(f"   사용 중: {used_asset:,}원")
-            logger.info(f"   남은 금액: {remaining_asset:,}원")
-            
-            # 🔥🔥🔥 4️⃣ 종목당 예산 계산 (남은 자산 균등배분)
-            if remaining_slots > 0:
-                budget_per_stock = remaining_asset / remaining_slots
-            else:
-                logger.warning(f"❌ 남은 슬롯 없음")
+            if remaining_slots <= 0:
+                logger.warning(f"❌ 슬롯 부족")
                 return False
             
-            logger.info(f"🎯 이번 매수 예산: {budget_per_stock:,.0f}원")
-            logger.info(f"   ({remaining_asset:,}원 ÷ {remaining_slots}개)")
+            # 🔥🔥🔥 3️⃣ 동적 예산 계산
+            budget_per_stock = total_asset / remaining_slots
             
-            # 최소 매수 금액 체크
-            if budget_per_stock < 10000:
-                logger.warning(f"❌ 매수 금액 부족 (최소 1만원 필요, 현재: {budget_per_stock:,.0f}원)")
+            logger.info(f"💵 예산 배분:")
+            logger.info(f"   종목당 예산: {budget_per_stock:,.0f}원 (총 자산 {total_asset:,}원 ÷ 남은 슬롯 {remaining_slots}개)")
+            
+            # 🔥 4️⃣ 현재가 조회 및 호가 조정
+            try:
+                stock_info = call_with_timeout(
+                    KiwoomAPI.GetStockInfo,
+                    timeout=10,
+                    stock_code=stock_code
+                )
+            except TimeoutError:
+                logger.error(f"❌ 현재가 조회 타임아웃")
                 return False
             
-            # 실제 주문가능금액 체크
-            if budget_per_stock > orderable_amt:
-                logger.warning(f"⚠️ 예산 조정: {budget_per_stock:,.0f}원 → {orderable_amt:,}원 (현금 부족)")
-                budget_per_stock = orderable_amt
-            
-            # 현재가 조회
-            stock_info = KiwoomAPI.GetStockInfo(stock_code)
             if not stock_info:
                 logger.error(f"❌ 현재가 조회 실패")
                 return False
             
             current_price = stock_info.get('CurrentPrice', 0)
             
-            # 🔥 호가 단위 적용 (매수: 내림)
+            # 호가 단위 적용 (매수: 내림)
             adjusted_price = self.adjust_price_to_tick(current_price, is_buy=True)
             
             # 🔥 5️⃣ 매수 수량 계산
@@ -1279,10 +1275,12 @@ class SignalTradingBot:
                         'order_no': order_no,
                         'order_type': 'buy',
                         'order_price': adjusted_price,
+                        'original_price': adjusted_price,  # 🔥 추가: 최초 지정가 저장
                         'order_quantity': buy_quantity,
                         'order_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         'status': 'pending',
                         'retry_count': 0,
+                        'signal': signal.get('signal', ''),  # 🔥 추가: 신호 타입 저장
                         'signal_score': signal.get('score', 0),
                         'signal_confidence': signal.get('confidence', 0)
                     }
@@ -1291,6 +1289,9 @@ class SignalTradingBot:
                 
                 # 매수 후 남은 슬롯
                 new_remaining_slots = remaining_slots - 1
+                
+                # 남은 자산
+                remaining_asset = total_asset - actual_investment
                 
                 msg = f"🚀 **매수 주문 완료!**\n"
                 msg += f"종목: {stock_name} ({stock_code})\n"
@@ -1416,8 +1417,8 @@ class SignalTradingBot:
                                     'trailing_stop_price': 0,
                                     'breakeven_protected': False,
                                     'tight_trailing_active': False,
-                                    'signal': pending.get('signal', ''),
-                                    'score': pending.get('score', 0)
+                                    'signal': pending.get('signal', ''),  # 🔥 수정: signal 필드 사용
+                                    'score': pending.get('signal_score', 0)  # 🔥 수정: signal_score 사용
                                 }
                                 
                                 del self.pending_orders[stock_code]
@@ -1628,7 +1629,6 @@ class SignalTradingBot:
                                 self.pending_orders[stock_code]['order_no'] = new_order_no
                                 self.pending_orders[stock_code]['order_price'] = adjusted_price
                                 # 🔥 original_price는 유지! (변경 안 함)
-                                # self.pending_orders[stock_code]['original_price'] = original_price  # 이미 있음
                                 self.pending_orders[stock_code]['order_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                                 self.pending_orders[stock_code]['retry_count'] = retry_count + 1
                                 
