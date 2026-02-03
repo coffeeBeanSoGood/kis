@@ -189,7 +189,11 @@ MONITOR_CONFIG = {
     "discord_only_strong_signals": True,
     "resend_alert_hours": 0,
     "skip_downgrade_alerts": True,
-    
+
+    # 🆕 알림 중복 방지 설정 (시간 기반 쿨다운)
+    "alert_cooldown_minutes": 20,        # 같은 신호 쿨다운 시간 (분)
+    "alert_score_change_threshold": 5,   # 점수 변화 임계값 (점)
+
     # 신호 점수 정규화 설정
     "use_normalized_score": True,
     "min_required_indicators": 2,
@@ -1964,21 +1968,57 @@ class SignalMonitor:
             import traceback
             logger.error(traceback.format_exc())
             return None
-    
+
     def should_send_alert(self, stock_code, result):
-        """알림 발송 여부 판단"""
+        """알림 발송 여부 판단 (기존 로직 유지 + 쿨다운 추가)"""
         try:
             current_signal = result["signal"]
+            current_score = result["score"]
             current_time = datetime.now()
+            
+            # 설정값 로드
+            cooldown_minutes = MONITOR_CONFIG.get("alert_cooldown_minutes", 20)
+            score_threshold = MONITOR_CONFIG.get("alert_score_change_threshold", 5)
             
             if stock_code in self.last_alerts:
                 last_alert = self.last_alerts[stock_code]
                 last_signal = last_alert.get("signal")
+                last_score = last_alert.get("score", 0)
+                last_time = last_alert.get("time")
                 
+                # ===== 기존 로직 1: 같은 신호 체크 =====
                 if current_signal == last_signal:
+                    # 🆕 추가: 쿨다운 시간 체크
+                    time_elapsed = (current_time - last_time).total_seconds() / 60
+                    
+                    if time_elapsed >= cooldown_minutes:
+                        # 쿨다운 경과 → 재알림 허용
+                        logger.info(f"⏰ 쿨다운 경과: {current_signal} ({time_elapsed:.1f}분 경과, 재알림)")
+                        self.last_alerts[stock_code] = {
+                            "signal": current_signal,
+                            "time": current_time,
+                            "score": current_score,
+                            "confidence": result.get("confidence", 0)
+                        }
+                        return True
+                    
+                    # 🆕 추가: 점수 크게 변화시 재알림
+                    score_change = abs(current_score - last_score)
+                    if score_change >= score_threshold:
+                        logger.info(f"📊 점수 크게 변화: {last_score:.1f} → {current_score:.1f} (+{score_change:.1f}점, 재알림)")
+                        self.last_alerts[stock_code] = {
+                            "signal": current_signal,
+                            "time": current_time,
+                            "score": current_score,
+                            "confidence": result.get("confidence", 0)
+                        }
+                        return True
+                    
+                    # 기존 로직: 쿨다운 미경과 + 점수 변화 적음 → 차단
                     logger.debug(f"중복 신호 스킵: {stock_code} - {current_signal}")
                     return False
                 
+                # ===== 기존 로직 2: 신호 다운그레이드 필터 =====
                 if MONITOR_CONFIG.get("skip_downgrade_alerts", True):
                     signal_priority = {
                         "STRONG_BUY": 5,
@@ -2000,11 +2040,12 @@ class SignalMonitor:
                             logger.debug(f"매도 신호 다운그레이드 스킵: {last_signal} → {current_signal}")
                             return False
             
+            # ===== 기존 로직 3: 신호 변경 또는 첫 신호 → 알림 허용 =====
             logger.info(f"신호 변경 감지: {self.last_alerts.get(stock_code, {}).get('signal', 'NONE')} → {current_signal}")
             self.last_alerts[stock_code] = {
                 "signal": current_signal,
                 "time": current_time,
-                "score": result["score"],
+                "score": current_score,
                 "confidence": result.get("confidence", 0)
             }
             
