@@ -1404,25 +1404,37 @@ class SignalTradingBot:
                         if price_diff != 0:
                             emoji = "💰" if price_diff > 0 else "📊"
                             logger.info(f"   {emoji} 체결가-주문가: {price_diff:+,}원")
-                        
+
                         # 매수 체결 처리
                         if order_type == 'buy':
+                            # 🔥 목표 수익 가격 계산
+                            target_profit_rate = config.get("target_profit_rate", 0.03)
+                            target_profit_price = int(filled_price * (1 + target_profit_rate))
+                            
+                            # 🔥 본전 보호 가격 계산 (수수료 포함)
+                            commission_rate = config.get("commission_rate", 0.00015)
+                            tax_rate = config.get("tax_rate", 0.0)
+                            total_cost_rate = commission_rate * 2 + tax_rate
+                            breakeven_price = int(filled_price * (1 + total_cost_rate))
+                            
                             with self.lock:
                                 self.positions[stock_code] = {
                                     'stock_name': stock_name,
                                     'quantity': filled_qty,
-                                    'entry_price': filled_price,  # 실제 체결가 사용!
+                                    'entry_price': filled_price,
                                     'entry_time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                                     'highest_price': filled_price,
-                                    'trailing_stop_price': 0,
+                                    'trailing_stop_price': breakeven_price,  # 🔥 초기값: 본전 가격
+                                    'target_profit_price': target_profit_price,  # 🔥 추가!
+                                    'breakeven_price': breakeven_price,  # 🔥 추가!
                                     'breakeven_protected': False,
                                     'tight_trailing_active': False,
-                                    'signal': pending.get('signal', ''),  # 🔥 수정: signal 필드 사용
-                                    'score': pending.get('signal_score', 0)  # 🔥 수정: signal_score 사용
+                                    'signal': pending.get('signal', ''),
+                                    'score': pending.get('signal_score', 0)
                                 }
                                 
                                 del self.pending_orders[stock_code]
-                            
+
                             self.save_positions()
                             self.save_pending_orders()
                             
@@ -1843,48 +1855,11 @@ class SignalTradingBot:
                 holding_minutes = 0
             
             logger.info(f"    ┌─ 매도 조건 상세 체크 ─┐")
-            
-            # 🔥 1️⃣ 목표 수익 체크
-            logger.info(f"    │ [1/5] 목표 수익 체크")
-            target_profit_rate = config.get("target_profit_rate", 0.03)
-            
-            if current_price >= target_profit_price:
-                reason = f"목표 수익 달성 ({profit_rate*100:+.2f}% >= {target_profit_rate*100:.0f}%)"
-                logger.info(f"    │   ✅ 만족: {current_price:,}원 >= {target_profit_price:,}원")
-                logger.info(f"    └─────────────────────┘")
-                return True, reason
-            else:
-                logger.info(f"    │   ❌ 미만족: {current_price:,}원 < {target_profit_price:,}원 (차이: {(target_profit_price-current_price):,}원)")
-            
-            # 🔥 2️⃣ 트레일링 스탑 체크
-            logger.info(f"    │ [2/5] 트레일링 스탑 체크")
-            
-            if current_price <= trailing_stop_price:
-                trailing_loss = (trailing_stop_price - current_price) / current_price
-                reason = f"트레일링 스탑 ({profit_rate*100:+.2f}%, 최고가 대비 -{trailing_loss*100:.2f}%)"
-                logger.info(f"    │   ✅ 발동: {current_price:,}원 <= {trailing_stop_price:,}원")
-                logger.info(f"    │   최고가: {highest_price:,}원 → 현재가: {current_price:,}원")
-                logger.info(f"    └─────────────────────┘")
-                return True, reason
-            else:
-                logger.info(f"    │   ❌ 미발동: {current_price:,}원 > {trailing_stop_price:,}원 (여유: {(current_price-trailing_stop_price):,}원)")
-            
-            # 🔥 3️⃣ 긴급 손절 체크
-            logger.info(f"    │ [3/5] 긴급 손절 체크")
-            emergency_stop = config.get("emergency_stop_loss", -0.03)
-            
-            if profit_rate <= emergency_stop:
-                reason = f"긴급 손절 ({profit_rate*100:+.2f}% <= {emergency_stop*100:.0f}%)"
-                logger.info(f"    │   ✅ 발동: {profit_rate*100:.2f}% <= {emergency_stop*100:.0f}%")
-                logger.info(f"    └─────────────────────┘")
-                return True, reason
-            else:
-                logger.info(f"    │   ❌ 미발동: {profit_rate*100:.2f}% > {emergency_stop*100:.0f}% (여유: {(profit_rate-emergency_stop)*100:.2f}%p)")
-            
-            # 🔥 4️⃣ 유예 기간 체크
-            logger.info(f"    │ [4/5] 유예 기간 / ATR 손절 체크")
+
+            # 🔥 0️⃣ 유예 기간 체크 (맨 앞으로 이동!)
+            logger.info(f"    │ [0/6] 유예 기간 체크")
             grace_period_minutes = config.get("stop_loss_grace_period_minutes", 10)
-            
+
             if holding_minutes < grace_period_minutes:
                 logger.info(f"    │   ⏰ 유예 중: {holding_minutes:.0f}분 < {grace_period_minutes}분")
                 
@@ -1897,24 +1872,63 @@ class SignalTradingBot:
                     return True, reason
                 else:
                     logger.info(f"    │   ✅ 극단 손절 미발동: {profit_rate*100:.2f}% > {extreme_stop*100:.0f}%")
+                    logger.info(f"    │   → 유예 기간까지 대기 ({grace_period_minutes - holding_minutes:.0f}분 남음)")
                     logger.info(f"    └─────────────────────┘")
                     return False, f"유예 중 ({holding_minutes:.0f}분/{grace_period_minutes}분)"
-            
+
             logger.info(f"    │   ✅ 유예 완료: {holding_minutes:.0f}분 >= {grace_period_minutes}분")
-            
-            # 🔥 5️⃣ ATR 기반 동적 손절
+
+            # 🔥 1️⃣ 목표 수익 체크
+            logger.info(f"    │ [1/6] 목표 수익 체크")
+            target_profit_rate = config.get("target_profit_rate", 0.03)
+
+            if current_price >= target_profit_price:
+                reason = f"목표 수익 달성 ({profit_rate*100:+.2f}% >= {target_profit_rate*100:.0f}%)"
+                logger.info(f"    │   ✅ 만족: {current_price:,}원 >= {target_profit_price:,}원")
+                logger.info(f"    └─────────────────────┘")
+                return True, reason
+            else:
+                logger.info(f"    │   ❌ 미만족: {current_price:,}원 < {target_profit_price:,}원 (차이: {(target_profit_price-current_price):,}원)")
+
+            # 🔥 2️⃣ 트레일링 스탑 체크
+            logger.info(f"    │ [2/6] 트레일링 스탑 체크")
+
+            if current_price <= trailing_stop_price:
+                trailing_loss = (trailing_stop_price - current_price) / current_price
+                reason = f"트레일링 스탑 ({profit_rate*100:+.2f}%, 최고가 대비 -{trailing_loss*100:.2f}%)"
+                logger.info(f"    │   ✅ 발동: {current_price:,}원 <= {trailing_stop_price:,}원")
+                logger.info(f"    │   최고가: {highest_price:,}원 → 현재가: {current_price:,}원")
+                logger.info(f"    └─────────────────────┘")
+                return True, reason
+            else:
+                logger.info(f"    │   ❌ 미발동: {current_price:,}원 > {trailing_stop_price:,}원 (여유: {(current_price-trailing_stop_price):,}원)")
+
+            # 🔥 3️⃣ 긴급 손절 체크
+            logger.info(f"    │ [3/6] 긴급 손절 체크")
+            emergency_stop = config.get("emergency_stop_loss", -0.03)
+
+            if profit_rate <= emergency_stop:
+                reason = f"긴급 손절 ({profit_rate*100:+.2f}% <= {emergency_stop*100:.0f}%)"
+                logger.info(f"    │   ✅ 발동: {profit_rate*100:.2f}% <= {emergency_stop*100:.0f}%")
+                logger.info(f"    └─────────────────────┘")
+                return True, reason
+            else:
+                logger.info(f"    │   ❌ 미발동: {profit_rate*100:.2f}% > {emergency_stop*100:.0f}% (여유: {(profit_rate-emergency_stop)*100:.2f}%p)")
+
+            # 🔥 4️⃣ ATR 기반 동적 손절 (유예 로직 제거!)
+            logger.info(f"    │ [4/6] ATR 동적 손절선 계산")
             logger.info(f"    │   🔍 ATR 동적 손절선 계산 중...")
             dynamic_stop = self._calculate_dynamic_stop_loss(stock_code, current_price)
-            
+
             # 신호와 변동성 통합 판단
             signal_type = current_signal.get('signal', 'HOLD') if current_signal else 'HOLD'
             signal_confidence = current_signal.get('confidence', 0) if current_signal else 0
-            
+
             logger.info(f"    │   📊 ATR 손절선: {dynamic_stop*100:.2f}%")
             logger.info(f"    │   📡 신호: {signal_type} (신뢰도: {signal_confidence:.1%})")
             logger.info(f"    │   💰 현재 손익: {profit_rate*100:+.2f}%")
-            
-            logger.info(f"    │ [5/5] 통합 손절 판단 시작...")
+
+            logger.info(f"    │ [5/6] 통합 손절 판단 시작...")
             should_stop, stop_reason = self._integrated_stop_decision(
                 stock_code,
                 profit_rate,
@@ -1922,12 +1936,12 @@ class SignalTradingBot:
                 signal_type,
                 signal_confidence
             )
-            
+
             logger.info(f"    └─────────────────────┘")
-            
+
             if should_stop:
                 return True, stop_reason
-            
+
             return False, "모든 매도 조건 미충족"
             
         except Exception as e:
