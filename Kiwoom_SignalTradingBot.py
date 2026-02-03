@@ -1578,12 +1578,12 @@ class SignalTradingBot:
                         
                         # 기존 주문 취소
                         logger.info(f"   1️⃣ 기존 주문 취소 중...")
-                        
+
                         try:
                             cancel_result = call_with_timeout(
                                 KiwoomAPI.CancelOrder,
                                 timeout=10,
-                                order_no=order_no,
+                                original_order_no=order_no,   # ✅ 올바른 파라미터명
                                 stock_code=stock_code
                             )
                         except TimeoutError:
