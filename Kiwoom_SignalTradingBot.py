@@ -158,7 +158,7 @@ class ConfigManager:
     # ============================================
     # 기본 설정값 (3개 파일 분리)
     # ============================================
-    
+
     @property
     def default_config(self):
         """매매 전략 기본값"""
@@ -174,12 +174,12 @@ class ConfigManager:
             
             # 매도 설정
             "sell_signals": ["SELL", "STRONG_SELL"],
-            "target_profit_rate": 0.02,
-            "breakeven_protection_rate": 0.012,
-            "tight_trailing_threshold": 0.03,
-            "tight_trailing_rate": 0.003,
-            "trailing_stop_rate": 0.005,
-            "min_profit_for_trailing": 0.008,
+            "target_profit_rate": 0.025,              # 🔥 1.5% → 2.5%
+            "breakeven_protection_rate": 0.015,       # 🔥 1.0% → 1.5%
+            "tight_trailing_threshold": 0.020,        # 🔥 3.0% → 2.0%
+            "tight_trailing_rate": 0.002,             # 🔥 0.3% → 0.2%
+            "trailing_stop_rate": 0.003,              # 🔥 0.5% → 0.3%
+            "min_profit_for_trailing": 0.006,         # 🔥 0.8% → 0.6%
             
             # 손절 설정
             "emergency_stop_loss": -0.03,
@@ -1673,13 +1673,14 @@ class SignalTradingBot:
         🔥🔥🔥 핵심 개선 사항:
         1. 본전 보호 시 수수료 반영 (진짜 본전)
         2. return 제거 → 소수익도 보호
-        3. 0.5% 기본 트레일링 (2배 촘촘)
-        4. 3% 달성 시 0.3% 초타이트
+        3. 0.3% 기본 트레일링 (더 촘촘하게)           # 🔥 수정
+        4. 2% 달성 시 0.2% 초타이트                   # 🔥 수정
         
         3단계 시스템:
-        - 1% 달성: 본전 보호 (수수료 포함)
-        - 1~3% 구간: 0.5% 트레일링
-        - 3% 이상: 0.3% 초타이트 트레일링
+        - 0.6% 달성: 트레일링 시작
+        - 1.5% 달성: 본전 보호 (수수료 포함)          # 🔥 수정
+        - 1.5~2% 구간: 0.3% 트레일링                 # 🔥 수정
+        - 2% 이상: 0.2% 초타이트 트레일링            # 🔥 수정
         """
         try:
             with self.lock:
@@ -1707,10 +1708,10 @@ class SignalTradingBot:
                 logger.debug(f"📈 {stock_code} 최고가 갱신: {current_price:,}원 (수익률: {profit_rate*100:+.2f}%)")
             
             # 🔥🔥🔥 조건부 트레일링 활성화 체크
-            min_profit_for_trailing = config.get("min_profit_for_trailing", 0.01)
-            
+            min_profit_for_trailing = config.get("min_profit_for_trailing", 0.006)  # 🔥 default 0.01 → 0.006
+
             if profit_rate < min_profit_for_trailing:
-                logger.debug(f"  ⏸️ {stock_code} 트레일링 대기: 수익률 {profit_rate*100:+.2f}% < {min_profit_for_trailing*100:.0f}%")
+                logger.debug(f"  ⏸️ {stock_code} 트레일링 대기: 수익률 {profit_rate*100:+.2f}% < {min_profit_for_trailing*100:.1f}%")
                 logger.debug(f"  💡 ATR 손절만 사용 (소폭 상승에 민감하지 않게)")
                 return
             
@@ -1718,8 +1719,8 @@ class SignalTradingBot:
             commission_rate = config.get("commission_rate", 0.004)
             breakeven_price = int(entry_price * (1 + commission_rate))
             
-            # 🔥 1단계: 본전 보호 활성화 (1% 달성)
-            breakeven_threshold = config.get("breakeven_protection_rate", 0.01)
+            # 🔥 1단계: 본전 보호 활성화 (1.5% 달성)             # 🔥 주석 수정: 1% → 1.5%
+            breakeven_threshold = config.get("breakeven_protection_rate", 0.015)  # 🔥 default 0.01 → 0.015
             breakeven_protected = position.get('breakeven_protected', False)
             
             if not breakeven_protected and profit_rate >= breakeven_threshold:
@@ -1747,15 +1748,15 @@ class SignalTradingBot:
                     discord_alert.SendMessage(msg)
                 
                 # 🔥🔥🔥 return 제거! 아래 트레일링 로직도 실행됨
-            
-            # 🔥 2단계: 초타이트 트레일링 활성화 (3% 달성)
-            tight_threshold = config.get("tight_trailing_threshold", 0.03)
+           
+            # 🔥 2단계: 초타이트 트레일링 활성화 (2% 달성)    # 🔥 주석 수정: 3% → 2%
+            tight_threshold = config.get("tight_trailing_threshold", 0.020)  # 🔥 default 0.03 → 0.020
             tight_trailing_active = position.get('tight_trailing_active', False)
             
             if not tight_trailing_active and profit_rate >= tight_threshold:
                 with self.lock:
                     self.positions[stock_code]['tight_trailing_active'] = True
-                    tight_rate = config.get("tight_trailing_rate", 0.003)  # 0.3%
+                    tight_rate = config.get("tight_trailing_rate", 0.002)  # 🔥 default 0.003 → 0.002, 0.2%
                     new_trailing_stop = highest_price * (1 - tight_rate)
                     # 본전 이하로 내려가지 않도록 보장
                     new_trailing_stop = max(breakeven_price, int(new_trailing_stop))
@@ -1765,7 +1766,7 @@ class SignalTradingBot:
                 
                 logger.info(f"🎯 {stock_code} 초타이트 트레일링 시작! (수익률: {profit_rate*100:+.2f}%)")
                 logger.info(f"   최고가: {highest_price:,}원")
-                logger.info(f"   트레일링: {new_trailing_stop:,}원 (-0.3%)")
+                logger.info(f"   트레일링: {new_trailing_stop:,}원 (-0.2%)")  # 🔥 메시지 수정: -0.3% → -0.2%
                 
                 if config.get("use_discord", True):
                     stock_name = position.get('stock_name', stock_code)
@@ -1773,7 +1774,7 @@ class SignalTradingBot:
                     msg += f"종목: {stock_name} ({stock_code})\n"
                     msg += f"진입가: {entry_price:,}원\n"
                     msg += f"최고가: {highest_price:,}원 ({profit_rate*100:+.2f}%)\n"
-                    msg += f"트레일링: {new_trailing_stop:,}원 (-0.3%)"
+                    msg += f"트레일링: {new_trailing_stop:,}원 (-0.2%)"  # 🔥 메시지 수정: -0.3% → -0.2%
                     discord_alert.SendMessage(msg)
                 
                 # 🔥🔥🔥 return 제거! 아래 로직도 실행
@@ -1781,17 +1782,17 @@ class SignalTradingBot:
             # 🔥 3단계: 트레일링 스탑 업데이트 (최고가 갱신 시)
             if current_price == highest_price:  # 방금 최고가 갱신됨
                 if tight_trailing_active:
-                    # 초타이트 트레일링 모드 (3% 이상)
-                    tight_rate = config.get("tight_trailing_rate", 0.003)  # 0.3%
+                    # 초타이트 트레일링 모드 (2% 이상)                # 🔥 주석 수정: 3% → 2%
+                    tight_rate = config.get("tight_trailing_rate", 0.002)  # 🔥 default 0.003 → 0.002, 0.2%
                     new_trailing_stop = highest_price * (1 - tight_rate)
                 elif breakeven_protected:
-                    # 본전 보호 모드 (1~3% 구간)
-                    # 🔥 0.5% 트레일링 적용 (기존 1%보다 2배 촘촘)
-                    trailing_rate = config.get("trailing_stop_rate", 0.005)  # 0.5%
+                    # 본전 보호 모드 (1.5~2% 구간)                    # 🔥 주석 수정: 1~3% → 1.5~2%
+                    # 🔥 0.3% 트레일링 적용                           # 🔥 주석 수정: 0.5% → 0.3%
+                    trailing_rate = config.get("trailing_stop_rate", 0.003)  # 🔥 default 0.005 → 0.003, 0.3%
                     new_trailing_stop = highest_price * (1 - trailing_rate)
                 else:
-                    # 일반 트레일링 (1~3% 구간, 본전 보호 미활성화)
-                    trailing_rate = config.get("trailing_stop_rate", 0.005)  # 0.5%
+                    # 일반 트레일링 (0.6~1.5% 구간, 본전 보호 미활성화)  # 🔥 주석 수정: 1~3% → 0.6~1.5%
+                    trailing_rate = config.get("trailing_stop_rate", 0.003)  # 🔥 default 0.005 → 0.003, 0.3%
                     new_trailing_stop = highest_price * (1 - trailing_rate)
                 
                 # 🔥🔥🔥 핵심: 진짜 본전(수수료 포함) 이하로 절대 내려가지 않음
@@ -1815,7 +1816,7 @@ class SignalTradingBot:
         매도 조건 체크 (🔥 로깅 대폭 강화)
         
         우선순위:
-        1. 목표 수익 달성 (3%)
+        1. 목표 수익 달성 (2.5%)        # 🔥 3% → 2.5%
         2. 트레일링 스탑 발동
         3. 손절 신호 (SELL/STRONG_SELL)
         4. 긴급 손절 (-3%)
@@ -3567,11 +3568,10 @@ def main():
         start_msg += f"• 총 자산 기준 실시간 배분\n"
         start_msg += f"• ATR 기반 동적 손절\n"
         start_msg += f"\n📈 **매도 전략**\n"
-        start_msg += f"• 목표 수익: +{config.get('target_profit_rate', 0.03)*100:.0f}%\n"
-        # start_msg += f"• 일반 트레일링: -{config.get('trailing_stop_rate', 0.01)*100:.0f}%\n"
-        start_msg += f"• 일반 트레일링: -{config.get('trailing_stop_rate', 0.01)*100:.1f}%\n"  # ← .0f를 .1f로!
-        start_msg += f"• 타이트 트레일링: -{config.get('tight_trailing_rate', 0.005)*100:.1f}% (+3% 달성 시)\n"
-        start_msg += f"• 본전 보호: +{config.get('breakeven_protection_rate', 0.02)*100:.0f}% 달성 시\n"
+        start_msg += f"• 목표 수익: +{config.get('target_profit_rate', 0.025)*100:.1f}%\n"  # 🔥 default 0.03 → 0.025
+        start_msg += f"• 일반 트레일링: -{config.get('trailing_stop_rate', 0.003)*100:.1f}%\n"  # 🔥 default 0.01 → 0.003
+        start_msg += f"• 타이트 트레일링: -{config.get('tight_trailing_rate', 0.002)*100:.1f}% (+2% 달성 시)\n"  # 🔥 default 0.005 → 0.002, 주석 +3% → +2%
+        start_msg += f"• 본전 보호: +{config.get('breakeven_protection_rate', 0.015)*100:.1f}% 달성 시\n"  # 🔥 default 0.02 → 0.015
         start_msg += f"• 긴급 손절: {config.get('emergency_stop_loss', -0.03)*100:.0f}%\n"
         start_msg += f"• 쿨다운: {config.get('cooldown_hours')}시간\n"
         start_msg += f"{'─'*30}\n"
