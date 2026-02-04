@@ -218,13 +218,13 @@ class ConfigManager:
             "trailing_override_signals": ["STRONG_BUY", "CONFIRMED_BUY", "BUY"],
             "trailing_override_max_loss": 0.005,
             
-            # 손절 설정
-            "emergency_stop_loss": -0.03,
+            # 손절 설정 (ATR 기반 동적 손절이 메인)
+            # "emergency_stop_loss" 제거 → ATR이 메인 손절 담당
             "stop_loss_grace_period_minutes": 10,
-            "extreme_stop_loss": -0.05,
+            "extreme_stop_loss": -0.12,           # 극단 손절: ATR 실패 시 최후의 안전장치 (-12%)
             "atr_stop_multiplier": 2.0,
-            "atr_min_stop_loss": 0.02,
-            "atr_max_stop_loss": 0.08,
+            "atr_min_stop_loss": 0.02,            # ATR 손절 최소 (-2%, 타이트)
+            "atr_max_stop_loss": 0.08,            # ATR 손절 최대 (-8%, 고변동성 종목)
             "signal_override_buffer": 0.02,
             
             # 기타 설정
@@ -1466,6 +1466,7 @@ class SignalTradingBot:
                                     'breakeven_price': breakeven_price,  # 🔥 추가!
                                     'breakeven_protected': False,
                                     'tight_trailing_active': False,
+                                    'ultra_tight_active': False,  # 🔥 추가: 누락된 초기화
                                     'signal': pending.get('signal', ''),
                                     'score': pending.get('signal_score', 0)
                                 }
@@ -1676,10 +1677,10 @@ class SignalTradingBot:
                             
                             if adjusted_price < breakeven_price:
                                 current_loss = (entry_price - current_price) / entry_price if current_price > 0 else 0
-                                emergency_threshold = config.get("emergency_stop_loss", -0.03)
-                                
-                                if current_loss < emergency_threshold:
-                                    logger.warning(f"   🚨 긴급 손절 상황! (손실: {current_loss*100:.2f}%)")
+                                extreme_threshold = config.get("extreme_stop_loss", -0.12)
+
+                                if current_loss < extreme_threshold:
+                                    logger.warning(f"   🚨 극단 손절 상황! (손실: {current_loss*100:.2f}%)")
                                     logger.warning(f"      → 본전({breakeven_price:,}원) 무시, 현재가 매도")
                                 else:
                                     adjusted_price = breakeven_price
@@ -1827,14 +1828,17 @@ class SignalTradingBot:
                     new_trailing_stop = highest_price * (1 - ultra_rate)
                     new_trailing_stop = max(breakeven_price, int(new_trailing_stop))
                     self.positions[stock_code]['trailing_stop_price'] = new_trailing_stop
-                
+
+                # 🔥 로컬 변수 업데이트 - 하위 단계 중복 활성화 방지
+                ultra_tight_active = True
+
                 self.save_positions()
-                
+
                 logger.info(f"🚀 {stock_code} 울트라 타이트 트레일링! (수익률: {profit_rate*100:+.2f}%)")
                 logger.info(f"   최고가: {highest_price:,}원")
                 logger.info(f"   트레일링: {new_trailing_stop:,}원 (-0.05%)")
                 logger.info(f"   💡 목표 달성! 이제 0.05%만 떨어져도 매도")
-                
+
                 if config.get("use_discord", True):
                     stock_name = position.get('stock_name', stock_code)
                     msg = f"🚀 **울트라 타이트 모드!**\n"
@@ -1845,27 +1849,32 @@ class SignalTradingBot:
                     msg += f"💎 고점 추적 중..."
                     discord_alert.SendMessage(msg)
             
-            # 3단계: 타이트 트레일링 (2.0% 달성)
+            # 3단계: 타이트 트레일링 (2.0% 달성) - 상위 단계 미활성 시에만 실행
             tight_threshold = config.get("tight_trailing_threshold", 0.020)
-            
-            if not tight_trailing_active and profit_rate >= tight_threshold:
+
+            # 🔥 수정: 울트라 타이트가 활성화되면 타이트 활성화 스킵
+            if not tight_trailing_active and not ultra_tight_active and profit_rate >= tight_threshold:
                 with self.lock:
                     self.positions[stock_code]['tight_trailing_active'] = True
                     tight_rate = config.get("tight_trailing_rate", 0.002)
                     new_trailing_stop = highest_price * (1 - tight_rate)
                     new_trailing_stop = max(breakeven_price, int(new_trailing_stop))
                     self.positions[stock_code]['trailing_stop_price'] = new_trailing_stop
-                
+
+                # 🔥 로컬 변수 업데이트 - 본전 보호 중복 활성화 방지
+                tight_trailing_active = True
+
                 self.save_positions()
-                
+
                 logger.info(f"🎯 {stock_code} 타이트 트레일링! (수익률: {profit_rate*100:+.2f}%)")
                 logger.info(f"   최고가: {highest_price:,}원")
                 logger.info(f"   트레일링: {new_trailing_stop:,}원 (-0.2%)")
             
-            # 2단계: 본전 보호 (1.5% 달성)
+            # 2단계: 본전 보호 (1.5% 달성) - 상위 단계가 활성화되면 스킵
             breakeven_threshold = config.get("breakeven_protection_rate", 0.015)
-            
-            if not breakeven_protected and profit_rate >= breakeven_threshold:
+
+            # 🔥 수정: 상위 단계(울트라/타이트)가 활성화되면 본전 보호 trailing 설정 스킵
+            if not breakeven_protected and not ultra_tight_active and not tight_trailing_active and profit_rate >= breakeven_threshold:
                 with self.lock:
                     self.positions[stock_code]['breakeven_protected'] = True
                     self.positions[stock_code]['trailing_stop_price'] = breakeven_price
@@ -2109,14 +2118,14 @@ class SignalTradingBot:
             logger.info(f"    ┌─ 매도 조건 상세 체크 ─┐")
 
             # 🔥 0️⃣ 유예 기간 체크 (맨 앞으로 이동!)
-            logger.info(f"    │ [0/6] 유예 기간 체크")
+            logger.info(f"    │ [0/5] 유예 기간 체크")
             grace_period_minutes = config.get("stop_loss_grace_period_minutes", 10)
 
             if holding_minutes < grace_period_minutes:
                 logger.info(f"    │   ⏰ 유예 중: {holding_minutes:.0f}분 < {grace_period_minutes}분")
-                
-                # 유예 기간 중 극단 손절만 체크
-                extreme_stop = config.get("extreme_stop_loss", -0.05)
+
+                # 유예 기간 중 극단 손절만 체크 (최후의 안전장치)
+                extreme_stop = config.get("extreme_stop_loss", -0.12)
                 if profit_rate <= extreme_stop:
                     reason = f"극단 손절 ({profit_rate*100:+.2f}%, 보유 {holding_minutes:.0f}분)"
                     logger.info(f"    │   🚨 극단 손절 발동: {profit_rate*100:.2f}% <= {extreme_stop*100:.0f}%")
@@ -2137,10 +2146,11 @@ class SignalTradingBot:
             #     return True, "목표 수익 달성"
 
             # 🔥 1️⃣ 트레일링 스탑 체크 (우선순위 상향!)
-            logger.info(f"    │ [1/6] 트레일링 스탑 체크")
+            logger.info(f"    │ [1/5] 트레일링 스탑 체크")
 
             if current_price <= trailing_stop_price:
-                trailing_loss = (trailing_stop_price - current_price) / current_price
+                # 🔥 수정: 최고가 대비 하락률로 계산 (기존: 손절가 기준 → 의미 없는 값)
+                trailing_loss = (highest_price - current_price) / highest_price if highest_price > 0 else 0
                 
                 logger.info(f"    │   ⚠️ 트레일링 도달!")
                 logger.info(f"    │   현재가: {current_price:,}원 <= 손절선: {trailing_stop_price:,}원")
@@ -2183,7 +2193,8 @@ class SignalTradingBot:
                             logger.info(f"    │   이유: 신호 유형 ({signal_type})")
                         else:
                             logger.info(f"    │   이유: 신뢰도 부족 ({signal_confidence:.1%} < {override_confidence:.1%})")
-                
+
+                # 🔥 구조 개선: 위에서 return False로 유예되지 않은 모든 경우 → 매도 진행
                 reason = f"트레일링 스탑 ({profit_rate*100:+.2f}%, 최고가 대비 -{trailing_loss*100:.2f}%)"
                 logger.info(f"    │   💥 트레일링 발동 → 매도")
                 logger.info(f"    └─────────────────────┘")
@@ -2192,20 +2203,8 @@ class SignalTradingBot:
                 logger.info(f"    │   ✅ 미발동: {current_price:,}원 > {trailing_stop_price:,}원")
                 logger.info(f"    │   여유: {(current_price-trailing_stop_price):,}원 ({((current_price-trailing_stop_price)/current_price)*100:.2f}%)")
 
-            # 🔥 2️⃣ 긴급 손절 체크
-            logger.info(f"    │ [2/6] 긴급 손절 체크")
-            emergency_stop = config.get("emergency_stop_loss", -0.03)
-
-            if profit_rate <= emergency_stop:
-                reason = f"긴급 손절 ({profit_rate*100:+.2f}% <= {emergency_stop*100:.0f}%)"
-                logger.info(f"    │   ✅ 발동: {profit_rate*100:.2f}% <= {emergency_stop*100:.0f}%")
-                logger.info(f"    └─────────────────────┘")
-                return True, reason
-            else:
-                logger.info(f"    │   ❌ 미발동: {profit_rate*100:.2f}% > {emergency_stop*100:.0f}% (여유: {(profit_rate-emergency_stop)*100:.2f}%p)")
-
-            # 🔥 3️⃣ ATR 기반 동적 손절
-            logger.info(f"    │ [3/6] ATR 동적 손절선 계산")
+            # 🔥 2️⃣ ATR 기반 동적 손절 (메인 손절)
+            logger.info(f"    │ [2/5] ATR 동적 손절선 계산")
             logger.info(f"    │   🔍 ATR 동적 손절선 계산 중...")
             dynamic_stop = self._calculate_dynamic_stop_loss(stock_code, current_price)
 
@@ -2217,7 +2216,7 @@ class SignalTradingBot:
             logger.info(f"    │   📡 신호: {signal_type} (신뢰도: {signal_confidence:.1%})")
             logger.info(f"    │   💰 현재 손익: {profit_rate*100:+.2f}%")
 
-            logger.info(f"    │ [4/6] 통합 손절 판단 시작...")
+            logger.info(f"    │ [3/5] 통합 손절 판단 시작...")
             should_stop, stop_reason = self._integrated_stop_decision(
                 stock_code,
                 profit_rate,
@@ -2226,10 +2225,24 @@ class SignalTradingBot:
                 signal_confidence
             )
 
-            logger.info(f"    └─────────────────────┘")
-
             if should_stop:
+                logger.info(f"    └─────────────────────┘")
                 return True, stop_reason
+
+            # 🔥 4️⃣ 극단 손절 (최후의 안전장치 - ATR 실패 시 백업)
+            logger.info(f"    │ [4/5] 극단 손절 체크 (최후의 안전장치)")
+            extreme_stop = config.get("extreme_stop_loss", -0.12)
+
+            if profit_rate <= extreme_stop:
+                reason = f"극단 손절 ({profit_rate*100:+.2f}% <= {extreme_stop*100:.0f}%)"
+                logger.info(f"    │   🚨 발동: {profit_rate*100:.2f}% <= {extreme_stop*100:.0f}%")
+                logger.info(f"    └─────────────────────┘")
+                return True, reason
+            else:
+                logger.info(f"    │   ✅ 미발동: {profit_rate*100:.2f}% > {extreme_stop*100:.0f}%")
+
+            logger.info(f"    │ [5/5] 모든 손절 조건 미충족 → 보유 유지")
+            logger.info(f"    └─────────────────────┘")
 
             return False, "모든 매도 조건 미충족"
             
@@ -2940,7 +2953,7 @@ class SignalTradingBot:
             logger.info(f"        │ [상황3] SELL 신호 복합 판단")
             
             if signal_type == "SELL" and signal_confidence >= min_confidence:
-                atr_buffer = dynamic_stop - profit_rate
+                # 🔥 atr_buffer 제거 (미사용 변수)
                 atr_usage = (profit_rate / dynamic_stop) * 100 if dynamic_stop != 0 else 0
                 
                 logger.info(f"        │   ⚠️ SELL 신호 발생!")
@@ -3813,7 +3826,8 @@ def main():
         start_msg += f"• 일반 트레일링: -{config.get('trailing_stop_rate', 0.003)*100:.1f}%\n"  # 🔥 default 0.01 → 0.003
         start_msg += f"• 타이트 트레일링: -{config.get('tight_trailing_rate', 0.002)*100:.1f}% (+2% 달성 시)\n"  # 🔥 default 0.005 → 0.002, 주석 +3% → +2%
         start_msg += f"• 본전 보호: +{config.get('breakeven_protection_rate', 0.015)*100:.1f}% 달성 시\n"  # 🔥 default 0.02 → 0.015
-        start_msg += f"• 긴급 손절: {config.get('emergency_stop_loss', -0.03)*100:.0f}%\n"
+        start_msg += f"• ATR 손절: {config.get('atr_min_stop_loss', 0.02)*100:.0f}%~{config.get('atr_max_stop_loss', 0.08)*100:.0f}% (메인)\n"
+        start_msg += f"• 극단 손절: {config.get('extreme_stop_loss', -0.12)*100:.0f}% (최후 안전장치)\n"
         start_msg += f"• 쿨다운: {config.get('cooldown_hours')}시간\n"
         start_msg += f"{'─'*30}\n"
         start_msg += "✅ 시스템 준비 완료!"
