@@ -1775,32 +1775,16 @@ class SignalTradingBot:
             logger.error(traceback.format_exc())
 
     def update_trailing_stop(self, stock_code):
-        """
-        트레일링 스탑 업데이트 (기술적 지표 결합)
-        
-        🔥 완전한 수익보호 시스템:
-        1. 수익률 기반 기본 트레일링 간격 결정
-        2. 기술적 지표로 간격 동적 조정
-        3. 본전 보호 적용
-        """
         try:
             with self.lock:
                 if stock_code not in self.positions:
                     return
                 position = self.positions[stock_code].copy()
             
-            # 🔥 타임아웃 추가!
-            try:
-                stock_info = call_with_timeout(
-                    KiwoomAPI.GetStockInfo,
-                    timeout=10,
-                    stock_code=stock_code
-                )
-            except TimeoutError:
-                logger.warning(f"⚠️ {stock_code} 현재가 조회 타임아웃 - 트레일링 스킵")
-                return
-            
+            # 🔥 내부 타임아웃 활용 (이중 래핑 제거)
+            stock_info = KiwoomAPI.GetStockInfo(stock_code)
             if not stock_info:
+                logger.warning(f"⚠️ {stock_code} 현재가 조회 실패 - 트레일링 스킵")
                 return
             
             current_price = stock_info.get('CurrentPrice', 0)
@@ -1934,20 +1918,41 @@ class SignalTradingBot:
                     logger.info(f"    │")
                     logger.info(f"    │ 🔬 기술적 지표 분석 시작...")
                     
-                    # 🔥 타임아웃 추가!
-                    try:
-                        minute_data = call_with_timeout(
-                            KiwoomAPI.GetMinuteData,
-                            timeout=10,
-                            stock_code=stock_code,
-                            count=25
-                        )
-                    except TimeoutError:
-                        logger.warning(f"    │ ⚠️ 분봉 조회 타임아웃 - 기본 간격 사용")
-                        minute_data = None
+                    # 🔥 최적화: count 줄임 (25→10), timeout 증가 (10→30), 주기적 조회
+                    # 3번에 1번만 실제 조회 (API 부하 감소)
+                    if not hasattr(self, '_tech_check_counter'):
+                        self._tech_check_counter = {}
                     
-                    if minute_data and len(minute_data) >= 20:
+                    counter = self._tech_check_counter.get(stock_code, 0)
+                    
+                    if counter % 3 == 0:  # 3번에 1번 (3분마다)
+                        try:
+                            minute_data = call_with_timeout(
+                                KiwoomAPI.GetMinuteData,
+                                timeout=30,  # ← 10초→30초
+                                stock_code=stock_code,
+                                count=10  # ← 25→10
+                            )
+                            # 조회 성공 시 캐시 저장
+                            if not hasattr(self, '_minute_data_cache'):
+                                self._minute_data_cache = {}
+                            self._minute_data_cache[stock_code] = minute_data
+                        except TimeoutError:
+                            logger.warning(f"    │ ⚠️ 분봉 조회 타임아웃 - 캐시 사용 또는 기본 간격")
+                            minute_data = self._minute_data_cache.get(stock_code, None)
+                    else:
+                        # 캐시된 데이터 재사용
+                        if hasattr(self, '_minute_data_cache'):
+                            minute_data = self._minute_data_cache.get(stock_code, None)
+                            logger.info(f"    │ 📦 캐시된 분봉 데이터 사용")
+                        else:
+                            minute_data = None
+                    
+                    self._tech_check_counter[stock_code] = counter + 1
+                    
+                    if minute_data and len(minute_data) >= 10:  # ← 20→10
                         technical_score = self._calculate_technical_score(stock_code, minute_data)
+
                         multiplier = self._get_technical_multiplier(technical_score)
                         adjusted_rate = base_rate * multiplier
                         
@@ -2071,20 +2076,6 @@ class SignalTradingBot:
             logger.error(traceback.format_exc())
 
     def check_sell_conditions(self, stock_code, current_signal=None):
-        """
-        매도 조건 체크 (완전한 수익보호 시스템)
-        
-        우선순위:
-        1. 트레일링 스탑 발동 (기술적 지표 + 신호 유예)
-        2. 손절 신호 (SELL/STRONG_SELL)
-        3. 긴급 손절 (-3%)
-        4. ATR 기반 동적 손절
-        
-        ⚠️ 목표 수익 즉시 매도 제거! (울트라 타이트 트레일링으로 대체)
-        
-        Returns:
-            tuple: (should_sell: bool, reason: str)
-        """
         try:
             with self.lock:
                 if stock_code not in self.positions:
@@ -2092,20 +2083,12 @@ class SignalTradingBot:
                 
                 position = self.positions[stock_code].copy()
             
-            # 기본 정보 - 🔥 타임아웃 추가!
-            try:
-                stock_info = call_with_timeout(
-                    KiwoomAPI.GetStockInfo,
-                    timeout=10,
-                    stock_code=stock_code
-                )
-            except TimeoutError:
-                logger.warning(f"⚠️ {stock_code} 현재가 조회 타임아웃")
-                return False, "현재가 조회 타임아웃"
-            
+            # 기본 정보 - 🔥 내부 타임아웃 활용
+            stock_info = KiwoomAPI.GetStockInfo(stock_code)
             if not stock_info:
+                logger.warning(f"⚠️ {stock_code} 현재가 조회 실패")
                 return False, "현재가 조회 실패"
-            
+           
             current_price = stock_info.get('CurrentPrice', 0)
             entry_price = position.get('entry_price', 0)
             entry_time_str = position.get('entry_time', '')
@@ -2497,13 +2480,13 @@ class SignalTradingBot:
     def _calculate_dynamic_stop_loss(self, stock_code, current_price):
         """ATR 기반 동적 손절선 계산 (Kiwoom API 연속조회 활용)"""
         try:
-            # 🔥 타임아웃 추가!
+            # 🔥 최적화: count 줄임 (20→15), timeout 증가 (10→30)
             try:
                 minute_data = call_with_timeout(
                     KiwoomAPI.GetMinuteData,
-                    timeout=10,
+                    timeout=30,  # ← 10초→30초
                     stock_code=stock_code,
-                    count=20
+                    count=15  # ← 20→15 (ATR 14개 필요하므로 15면 충분)
                 )
             except TimeoutError:
                 logger.warning(f"⚠️ {stock_code} 분봉 조회 타임아웃 - 기본 손절선 적용")
