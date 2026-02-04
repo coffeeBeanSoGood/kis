@@ -690,6 +690,7 @@ class SignalTradingBot:
 
         self.positions: dict = self.load_positions()
         self.pending_orders: dict = self.load_pending_orders()
+        self._cleanup_stale_pending_orders()  # 🆕 시작 시 20분 초과 미체결 정리
         self.cooldowns: dict = self.load_cooldowns()
 
         # 🆕 시간대별 필터 설정 (1단계)
@@ -953,7 +954,79 @@ class SignalTradingBot:
                 logger.debug("✅ 미체결 주문 저장 완료")
         except Exception as e:
             logger.error(f"미체결 주문 저장 실패: {e}")
-    
+
+    def _cleanup_stale_pending_orders(self):
+        """
+        🆕 시스템 시작 시 20분 이상 경과한 pending_orders 정리
+        """
+        try:
+            now = datetime.now()
+            stale_stocks = []
+            stale_timeout_minutes = 20
+
+            logger.info("🔍 시작 시 미체결 주문 정리 체크...")
+
+            for stock_code, pending in list(self.pending_orders.items()):
+                try:
+                    order_time_str = pending.get('order_time', '')
+                    order_time = datetime.strptime(order_time_str, "%Y-%m-%d %H:%M:%S")
+                    elapsed = (now - order_time).total_seconds() / 60
+
+                    if elapsed >= stale_timeout_minutes:
+                        stale_stocks.append({
+                            'code': stock_code,
+                            'name': pending.get('stock_name', stock_code),
+                            'elapsed': elapsed,
+                            'order_type': pending.get('order_type', 'buy')
+                        })
+                        logger.warning(f"   ⚠️ 발견: {pending.get('stock_name', stock_code)} ({elapsed:.0f}분 경과)")
+                except Exception as e:
+                    logger.warning(f"   ⚠️ {stock_code} 시간 파싱 실패 - 정리 대상 추가")
+                    stale_stocks.append({
+                        'code': stock_code,
+                        'name': pending.get('stock_name', stock_code),
+                        'elapsed': 0,
+                        'order_type': pending.get('order_type', 'buy')
+                    })
+
+            if not stale_stocks:
+                logger.info("   ✅ 정리할 미체결 주문 없음")
+                return
+
+            # 정리 실행
+            for item in stale_stocks:
+                stock_code = item['code']
+                order_type = item['order_type']
+
+                with self.lock:
+                    if stock_code in self.pending_orders:
+                        del self.pending_orders[stock_code]
+
+                    # 매도인 경우 positions도 정리
+                    if order_type == 'sell' and stock_code in self.positions:
+                        del self.positions[stock_code]
+                        logger.warning(f"   🗑️ {item['name']} positions 제거")
+
+            self.save_pending_orders()
+            self.save_positions()
+
+            logger.warning(f"🗑️ 시작 시 정리 완료: {len(stale_stocks)}건")
+
+            # 디스코드 알림
+            if config.get("use_discord", True) and stale_stocks:
+                msg = f"🔧 **시스템 시작 시 미체결 정리**\n"
+                msg += f"{'─' * 30}\n"
+                msg += f"정리된 주문: {len(stale_stocks)}건\n"
+                for item in stale_stocks[:5]:  # 최대 5건만 표시
+                    msg += f"• {item['name']} ({item['order_type'].upper()}, {item['elapsed']:.0f}분 경과)\n"
+                if len(stale_stocks) > 5:
+                    msg += f"... 외 {len(stale_stocks) - 5}건\n"
+                msg += f"\n⚠️ HTS에서 실제 체결 여부 확인 필요"
+                discord_alert.SendMessage(msg)
+
+        except Exception as e:
+            logger.error(f"시작 시 정리 실패: {e}")
+
     def load_cooldowns(self) -> dict:
         try:
             cooldowns_file = config.get("cooldowns_file", "trading_cooldowns.json")
@@ -1696,35 +1769,144 @@ class SignalTradingBot:
                     continue
                 
                 elapsed_minutes = (now - order_time).total_seconds() / 60
-                
+
+                # 🆕 절대 타임아웃 체크 (20분)
+                absolute_timeout_minutes = 20
+                if elapsed_minutes >= absolute_timeout_minutes:
+                    retry_count = pending.get('retry_count', 0)
+
+                    logger.error("=" * 60)
+                    logger.error(f"🚨 {stock_name} 절대 타임아웃 ({absolute_timeout_minutes}분 초과)")
+                    logger.error(f"   경과 시간: {elapsed_minutes:.1f}분")
+                    logger.error(f"   재시도 횟수: {retry_count}회")
+                    logger.error("=" * 60)
+
+                    # 주문 취소 시도
+                    cancel_result = KiwoomAPI.CancelOrder(order_no, stock_code)
+
+                    with self.lock:
+                        if stock_code in self.pending_orders:
+                            del self.pending_orders[stock_code]
+                    self.save_pending_orders()
+
+                    # 매도인 경우 positions도 정리
+                    if order_type == 'sell':
+                        with self.lock:
+                            if stock_code in self.positions:
+                                del self.positions[stock_code]
+                                logger.warning(f"   ✅ positions에서 제거 완료")
+                        self.save_positions()
+
+                        # 쿨다운 등록 (24시간)
+                        sell_cooldown_hours = config.get("sell_cooldown_hours", 24)
+                        cooldown_until = (datetime.now() + timedelta(hours=sell_cooldown_hours)).strftime("%Y-%m-%d %H:%M:%S")
+
+                        with self.lock:
+                            self.cooldowns[stock_code] = {
+                                'stock_name': stock_name,
+                                'cooldown_until': cooldown_until,
+                                'reason': '절대_타임아웃'
+                            }
+                        self.save_cooldowns()
+                        logger.warning(f"   ✅ 쿨다운 등록: {sell_cooldown_hours}시간")
+
+                    config.update_performance('canceled_orders', 1)
+
+                    # 긴급 알림
+                    msg = f"🚨🚨 **긴급: 절대 타임아웃 발동**\n"
+                    msg += f"{'─' * 30}\n"
+                    msg += f"**종목**: {stock_name} ({stock_code})\n"
+                    msg += f"**경과 시간**: {elapsed_minutes:.1f}분 (한도: {absolute_timeout_minutes}분)\n"
+                    msg += f"**주문 유형**: {order_type.upper()}\n"
+                    msg += f"**주문가**: {pending['order_price']:,}원 × {pending.get('order_quantity', 0)}주\n"
+                    msg += f"**재시도 횟수**: {retry_count}회\n"
+
+                    if order_type == 'sell':
+                        entry_price = pending.get('entry_price', 0)
+                        if entry_price > 0:
+                            profit = (pending['order_price'] - entry_price) * pending.get('order_quantity', 0)
+                            profit_rate = (pending['order_price'] - entry_price) / entry_price
+                            msg += f"**매수가**: {entry_price:,}원\n"
+                            msg += f"**미실현 손익**: {profit:+,}원 ({profit_rate*100:+.2f}%)\n"
+
+                    msg += f"\n⚠️ **즉시 HTS 확인 필요!**"
+
+                    logger.warning(msg)
+
+                    if config.get("use_discord", True):
+                        discord_alert.SendMessage(msg)
+
+                    continue  # 다음 종목으로
+
+                # 기존 5분 타임아웃 체크
                 if elapsed_minutes > timeout_minutes:
                     retry_count = pending.get('retry_count', 0)
                     
                     logger.warning(f"⚠️ {stock_name} 미체결 타임아웃 ({elapsed_minutes:.1f}분)")
                     
                     if retry_count >= max_retry:
-                        logger.error(f"❌ {stock_name} 최대 재시도 초과 - 주문 취소")
-                        
+                        logger.error("=" * 60)
+                        logger.error(f"❌ {stock_name} 최대 재시도 초과 ({retry_count}회) - 주문 취소")
+                        logger.error("=" * 60)
+
                         cancel_result = KiwoomAPI.CancelOrder(order_no, stock_code)
-                        
+
                         with self.lock:
                             if stock_code in self.pending_orders:
                                 del self.pending_orders[stock_code]
-                        
+
                         self.save_pending_orders()
-                        
+
+                        # 🆕 매도인 경우 positions도 정리
+                        if order_type == 'sell':
+                            with self.lock:
+                                if stock_code in self.positions:
+                                    del self.positions[stock_code]
+                                    logger.warning(f"   ✅ positions에서 제거 완료")
+                            self.save_positions()
+
+                            # 🆕 쿨다운 등록 (24시간 재진입 방지)
+                            sell_cooldown_hours = config.get("sell_cooldown_hours", 24)
+                            cooldown_until = (datetime.now() + timedelta(hours=sell_cooldown_hours)).strftime("%Y-%m-%d %H:%M:%S")
+
+                            with self.lock:
+                                self.cooldowns[stock_code] = {
+                                    'stock_name': stock_name,
+                                    'cooldown_until': cooldown_until,
+                                    'reason': '미체결_타임아웃'
+                                }
+                            self.save_cooldowns()
+                            logger.warning(f"   ✅ 쿨다운 등록: {sell_cooldown_hours}시간")
+
                         config.update_performance('canceled_orders', 1)
-                        
-                        msg = f"❌ **주문 취소**\n"
-                        msg += f"종목: {stock_name} ({stock_code})\n"
-                        msg += f"사유: 미체결 타임아웃 (재시도 {retry_count}회)\n"
-                        msg += f"주문가: {pending['order_price']:,}원"
-                        
+
+                        # 🆕 디스코드 긴급 알림 개선
+                        msg = f"🚨 **긴급: 미체결 주문 강제 정리**\n"
+                        msg += f"{'─' * 30}\n"
+                        msg += f"**종목**: {stock_name} ({stock_code})\n"
+                        msg += f"**사유**: 최대 재시도 초과 ({retry_count}회)\n"
+                        msg += f"**주문 유형**: {order_type.upper()}\n"
+                        msg += f"**주문가**: {pending['order_price']:,}원 × {pending.get('order_quantity', 0)}주\n"
+
+                        if order_type == 'sell':
+                            entry_price = pending.get('entry_price', 0)
+                            if entry_price > 0:
+                                profit = (pending['order_price'] - entry_price) * pending.get('order_quantity', 0)
+                                profit_rate = (pending['order_price'] - entry_price) / entry_price
+                                msg += f"**매수가**: {entry_price:,}원\n"
+                                msg += f"**미실현 손익**: {profit:+,}원 ({profit_rate*100:+.2f}%)\n"
+
+                        msg += f"\n⚠️ **수동 처리 필요!**\n"
+                        msg += f"HTS에서 직접 확인:\n"
+                        msg += f"1. 실제 체결 여부 확인\n"
+                        msg += f"2. 미체결 시 수동 처리\n"
+                        msg += f"3. 시스템 데이터는 정리됨"
+
                         logger.warning(msg)
-                        
+
                         if config.get("use_discord", True):
                             discord_alert.SendMessage(msg)
-                        
+
                         continue
                     
                     else:
