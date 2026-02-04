@@ -1603,15 +1603,12 @@ class SignalTradingBot:
                         continue
                     
                     else:
-                        # 🔥🔥🔥 재주문 시도 (지정가 고수 전략) 🔥🔥🔥
+                        # 🔥🔥🔥 재주문 시도 (매수/매도 구분 전략) 🔥🔥🔥
                         logger.info(f"🔄 {stock_name} 재주문 시도 ({retry_count + 1}/{max_retry})")
-                        logger.info(f"   💡 전략: 지정가 고수 (원래 지정가 유지)")
                         
-                        # 🔥 원래 지정가 사용 (현재가 조회 없음!)
+                        # 원래 지정가 가져오기
                         original_price = pending.get('original_price')
-                        
                         if not original_price:
-                            # 하위 호환성: original_price 없으면 order_price 사용
                             original_price = pending.get('order_price', 0)
                             logger.warning(f"   ⚠️ original_price 없음 - order_price 사용: {original_price:,}원")
                         
@@ -1619,10 +1616,81 @@ class SignalTradingBot:
                             logger.error(f"❌ {stock_name} 유효하지 않은 주문가 - 재주문 스킵")
                             continue
                         
-                        # 🔥 원래 지정가로 재주문 (상향 조정 없음!)
-                        adjusted_price = original_price
                         quantity = pending.get('order_quantity', 0)
                         
+                        # 🔥 매수/매도 구분 처리
+                        if order_type == 'sell':
+                            # 🔥 매도: 최신 트레일링 vs 현재가 반영
+                            logger.info(f"   💡 전략: 매도 - 시장 상황 반영")
+                            
+                            # 1️⃣ positions에서 최신 트레일링 가져오기
+                            latest_trailing = original_price
+                            entry_price = pending.get('entry_price', 0)
+                            
+                            with self.lock:
+                                if stock_code in self.positions:
+                                    position = self.positions[stock_code].copy()
+                                    latest_trailing = position.get('trailing_stop_price', original_price)
+                                    entry_price = position.get('entry_price', entry_price)
+                            
+                            # 2️⃣ 현재가 조회
+                            current_price = 0
+                            try:
+                                stock_info = call_with_timeout(
+                                    KiwoomAPI.GetStockInfo,
+                                    timeout=10,
+                                    stock_code=stock_code
+                                )
+                                if stock_info:
+                                    current_price = stock_info.get('CurrentPrice', 0)
+                            except TimeoutError:
+                                logger.warning(f"   ⚠️ 현재가 조회 타임아웃")
+                            
+                            # 3️⃣ 재주문 가격 결정
+                            if current_price > 0:
+                                current_based_price = self.adjust_price_to_tick(current_price, is_buy=False)
+                                
+                                if current_price >= original_price:
+                                    # 상승 중: 최신 트레일링 vs 현재가 중 높은 가격
+                                    adjusted_price = max(latest_trailing, current_based_price)
+                                    logger.info(f"   📈 가격 상승 감지!")
+                                    logger.info(f"      원래 주문: {original_price:,}원")
+                                    logger.info(f"      현재가: {current_price:,}원")
+                                    logger.info(f"      최신 트레일링: {latest_trailing:,}원")
+                                    logger.info(f"      → 재주문: {adjusted_price:,}원 (상향)")
+                                else:
+                                    # 하락 중: 현재가 기준 (빠른 체결)
+                                    adjusted_price = current_based_price
+                                    logger.info(f"   📉 가격 하락 감지!")
+                                    logger.info(f"      원래 주문: {original_price:,}원")
+                                    logger.info(f"      현재가: {current_price:,}원")
+                                    logger.info(f"      → 재주문: {adjusted_price:,}원 (하향)")
+                            else:
+                                # 현재가 조회 실패: 최신 트레일링 사용
+                                adjusted_price = latest_trailing
+                                logger.warning(f"   ⚠️ 현재가 조회 실패 - 최신 트레일링 {adjusted_price:,}원 사용")
+                            
+                            # 4️⃣ 안전장치: 본전 이하 방지
+                            commission_rate = config.get("commission_rate", 0.004)
+                            breakeven_price = int(entry_price * (1 + commission_rate))
+                            
+                            if adjusted_price < breakeven_price:
+                                current_loss = (entry_price - current_price) / entry_price if current_price > 0 else 0
+                                emergency_threshold = config.get("emergency_stop_loss", -0.03)
+                                
+                                if current_loss < emergency_threshold:
+                                    logger.warning(f"   🚨 긴급 손절 상황! (손실: {current_loss*100:.2f}%)")
+                                    logger.warning(f"      → 본전({breakeven_price:,}원) 무시, 현재가 매도")
+                                else:
+                                    adjusted_price = breakeven_price
+                                    logger.info(f"   🛡️ 본전 보호: {breakeven_price:,}원 이상 유지")
+                        
+                        else:  # buy
+                            # 🔥 매수: 지정가 고수 전략 (기존 유지)
+                            logger.info(f"   💡 전략: 매수 - 지정가 고수")
+                            adjusted_price = original_price
+                            logger.info(f"   💰 원래 지정가 유지: {adjusted_price:,}원")
+                       
                         logger.info(f"   📊 재주문 가격: {adjusted_price:,}원 (최초 지정가 유지)")
                         
                         # 기존 주문 취소
@@ -1721,7 +1789,17 @@ class SignalTradingBot:
                     return
                 position = self.positions[stock_code].copy()
             
-            stock_info = KiwoomAPI.GetStockInfo(stock_code)
+            # 🔥 타임아웃 추가!
+            try:
+                stock_info = call_with_timeout(
+                    KiwoomAPI.GetStockInfo,
+                    timeout=10,
+                    stock_code=stock_code
+                )
+            except TimeoutError:
+                logger.warning(f"⚠️ {stock_code} 현재가 조회 타임아웃 - 트레일링 스킵")
+                return
+            
             if not stock_info:
                 return
             
@@ -1851,17 +1929,26 @@ class SignalTradingBot:
                 
                 # 2️⃣ 기술적 지표로 간격 조정
                 use_technical = config.get("use_technical_trailing", True)
-                
+
                 if use_technical:
                     logger.info(f"    │")
                     logger.info(f"    │ 🔬 기술적 지표 분석 시작...")
                     
-                    minute_data = KiwoomAPI.GetMinuteData(stock_code, count=25)
+                    # 🔥 타임아웃 추가!
+                    try:
+                        minute_data = call_with_timeout(
+                            KiwoomAPI.GetMinuteData,
+                            timeout=10,
+                            stock_code=stock_code,
+                            count=25
+                        )
+                    except TimeoutError:
+                        logger.warning(f"    │ ⚠️ 분봉 조회 타임아웃 - 기본 간격 사용")
+                        minute_data = None
                     
                     if minute_data and len(minute_data) >= 20:
                         technical_score = self._calculate_technical_score(stock_code, minute_data)
                         multiplier = self._get_technical_multiplier(technical_score)
-                        
                         adjusted_rate = base_rate * multiplier
                         
                         logger.info(f"    │")
@@ -1885,6 +1972,92 @@ class SignalTradingBot:
                 self.save_positions()
                 
                 trailing_profit = (new_trailing_stop - entry_price) / entry_price
+                
+                logger.info(f"    │")
+
+                # 🔥🔥🔥 신규: 미체결 매도 주문 실시간 추적 🔥🔥🔥
+                with self.lock:
+                    if stock_code in self.pending_orders:
+                        pending = self.pending_orders[stock_code]
+                        if pending.get('order_type') == 'sell':
+                            current_order_price = pending.get('order_price', 0)
+                            
+                            # 새 트레일링이 기존 주문가보다 높으면 주문 업데이트
+                            if new_trailing_stop > current_order_price:
+                                price_diff = new_trailing_stop - current_order_price
+                                
+                                logger.info(f"    │")
+                                logger.info(f"    │ 🔄 미체결 매도 주문 가격 상향 감지!")
+                                logger.info(f"    │   기존 주문: {current_order_price:,}원")
+                                logger.info(f"    │   신규 가격: {new_trailing_stop:,}원 (+{price_diff:,}원)")
+                                
+                                # 기존 주문 취소
+                                order_no = pending.get('order_no', '')
+                                stock_name = pending.get('stock_name', stock_code)
+                                
+                                try:
+                                    logger.info(f"    │   1️⃣ 기존 주문 취소 중...")
+                                    cancel_result = call_with_timeout(
+                                        KiwoomAPI.CancelOrder,
+                                        timeout=10,
+                                        original_order_no=order_no,
+                                        stock_code=stock_code
+                                    )
+                                    
+                                    if cancel_result:
+                                        logger.info(f"    │   ✅ 기존 주문 취소 완료")
+                                        
+                                        # 새 가격으로 재주문
+                                        quantity = pending.get('order_quantity', 0)
+                                        logger.info(f"    │   2️⃣ 신규 주문 실행 중...")
+                                        logger.info(f"    │      가격: {new_trailing_stop:,}원")
+                                        logger.info(f"    │      수량: {quantity}주")
+                                        
+                                        new_order_result = call_with_timeout(
+                                            KiwoomAPI.MakeSellLimitOrder,
+                                            timeout=10,
+                                            stock_code=stock_code,
+                                            quantity=quantity,
+                                            price=new_trailing_stop
+                                        )
+                                        
+                                        if new_order_result and new_order_result.get('success'):
+                                            new_order_no = new_order_result.get('order_no', '')
+                                            
+                                            # pending_orders 업데이트
+                                            self.pending_orders[stock_code]['order_no'] = new_order_no
+                                            self.pending_orders[stock_code]['order_price'] = new_trailing_stop
+                                            # original_price는 유지 (최초 주문 가격 보존)
+                                            
+                                            # 예상 수익 재계산
+                                            entry_price = pending.get('entry_price', 0)
+                                            profit = (new_trailing_stop - entry_price) * quantity
+                                            profit_rate = (new_trailing_stop - entry_price) / entry_price if entry_price > 0 else 0
+                                            self.pending_orders[stock_code]['expected_profit'] = profit
+                                            self.pending_orders[stock_code]['expected_profit_rate'] = profit_rate
+                                            
+                                            self.save_pending_orders()
+                                            
+                                            logger.info(f"    │   ✅ 신규 주문 완료 (주문번호: {new_order_no})")
+                                            logger.info(f"    │   예상 수익: {profit:+,}원 ({profit_rate*100:+.2f}%)")
+                                            
+                                            # Discord 알림
+                                            if config.get("use_discord", True):
+                                                msg = f"🔄 **매도 주문 가격 상향!**\n"
+                                                msg += f"종목: {stock_name} ({stock_code})\n"
+                                                msg += f"기존: {current_order_price:,}원\n"
+                                                msg += f"신규: {new_trailing_stop:,}원 (+{price_diff:,}원)\n"
+                                                msg += f"예상 수익: {profit:+,}원 ({profit_rate*100:+.2f}%)"
+                                                discord_alert.SendMessage(msg)
+                                        else:
+                                            logger.error(f"    │   ❌ 신규 주문 실패 - 기존 상태 유지")
+                                    else:
+                                        logger.warning(f"    │   ⚠️ 기존 주문 취소 실패 - 업데이트 스킵")
+                                        
+                                except TimeoutError:
+                                    logger.error(f"    │   ❌ 주문 취소/재주문 타임아웃")
+                                except Exception as e:
+                                    logger.error(f"    │   ❌ 주문 업데이트 실패: {e}")
                 
                 logger.info(f"    │")
                 logger.info(f"    │ ✅ 트레일링 업데이트 완료")
@@ -1919,8 +2092,17 @@ class SignalTradingBot:
                 
                 position = self.positions[stock_code].copy()
             
-            # 기본 정보
-            stock_info = KiwoomAPI.GetStockInfo(stock_code)
+            # 기본 정보 - 🔥 타임아웃 추가!
+            try:
+                stock_info = call_with_timeout(
+                    KiwoomAPI.GetStockInfo,
+                    timeout=10,
+                    stock_code=stock_code
+                )
+            except TimeoutError:
+                logger.warning(f"⚠️ {stock_code} 현재가 조회 타임아웃")
+                return False, "현재가 조회 타임아웃"
+            
             if not stock_info:
                 return False, "현재가 조회 실패"
             
@@ -2315,8 +2497,17 @@ class SignalTradingBot:
     def _calculate_dynamic_stop_loss(self, stock_code, current_price):
         """ATR 기반 동적 손절선 계산 (Kiwoom API 연속조회 활용)"""
         try:
-            # 🔥 이제 20개 분봉 리스트를 받아옴!
-            minute_data = KiwoomAPI.GetMinuteData(stock_code, count=20)
+            # 🔥 타임아웃 추가!
+            try:
+                minute_data = call_with_timeout(
+                    KiwoomAPI.GetMinuteData,
+                    timeout=10,
+                    stock_code=stock_code,
+                    count=20
+                )
+            except TimeoutError:
+                logger.warning(f"⚠️ {stock_code} 분봉 조회 타임아웃 - 기본 손절선 적용")
+                return self._get_default_stop_loss(stock_code)
             
             if not minute_data or len(minute_data) < 14:
                 logger.debug(f"{stock_code} 분봉 데이터 부족 ({len(minute_data) if minute_data else 0}개), 기본 손절선 적용")
@@ -3007,7 +3198,21 @@ class SignalTradingBot:
                         position = self.positions[stock_code].copy()
                     
                     stock_name = position.get('stock_name', stock_code)
-                    
+
+                    # 🔥🔥🔥 중복 매도 방지: 매도 미체결 주문 확인 🔥🔥🔥
+                    with self.lock:
+                        if stock_code in self.pending_orders:
+                            pending = self.pending_orders[stock_code]
+                            if pending.get('order_type') == 'sell':
+                                logger.info("")
+                                logger.info("─" * 80)
+                                logger.info(f"⏸️ [{stock_name}] 매도 미체결 중 - 매도 체크 스킵")
+                                logger.info(f"   주문번호: {pending.get('order_no', 'N/A')}")
+                                logger.info(f"   주문가격: {pending.get('order_price', 0):,}원")
+                                logger.info(f"   주문시간: {pending.get('order_time', 'N/A')}")
+                                logger.info("─" * 80)
+                                continue
+
                     logger.info("")
                     logger.info("─" * 80)
                     logger.info(f"🔍 [{stock_name}] 매도 조건 체크 시작")
