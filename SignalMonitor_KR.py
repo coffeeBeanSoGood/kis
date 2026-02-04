@@ -528,6 +528,10 @@ class SignalMonitor:
         # 🔥 [여기에 추가!] 연속 BUY 추적기
         self.continuous_buy_tracker = ContinuousBuyTracker()
 
+        # 🆕 섹터 과열도 캐시 (2단계)
+        self.sector_heat_cache = {}  # {sector: {"score": int, "status": str, "timestamp": datetime}}
+        self.sector_cache_validity_hours = 1  # 1시간 유효
+
         self.load_history()
         self.initialize_api()
     
@@ -1240,7 +1244,117 @@ class SignalMonitor:
                 
         except Exception as e:
             logger.error(f"캐시 정리 실패: {e}")
-    
+
+    def get_sector_heat_score(self, sector):
+        """
+        🆕 섹터 과열도 점수 반환 (2단계)
+
+        Args:
+            sector: 섹터명 (예: "battery", "robot")
+
+        Returns:
+            tuple: (heat_score, heat_status)
+            - heat_score: 점수 보정값 (-25 ~ +15)
+            - heat_status: 상태 문자열
+        """
+        try:
+            now = datetime.now()
+
+            # 1️⃣ 캐시 확인 (1시간 이내면 재사용)
+            if sector in self.sector_heat_cache:
+                cache = self.sector_heat_cache[sector]
+                cache_time = cache.get("timestamp")
+                if cache_time:
+                    elapsed_hours = (now - cache_time).total_seconds() / 3600
+                    if elapsed_hours < self.sector_cache_validity_hours:
+                        logger.debug(f"🔥 섹터 과열도 캐시 사용: {sector} ({elapsed_hours:.1f}시간 경과)")
+                        return cache["score"], cache["status"]
+
+            # 2️⃣ 섹터 종목 목록 추출 (최대 5개)
+            sector_stocks = [
+                code for code, info in TARGET_STOCKS.items()
+                if info.get("sector") == sector
+            ][:5]  # 성능 최적화: 최대 5개만
+
+            if not sector_stocks:
+                logger.warning(f"⚠️ {sector} 섹터 종목 없음")
+                self.sector_heat_cache[sector] = {"score": 0, "status": "unknown", "timestamp": now}
+                return 0, "unknown"
+
+            logger.info(f"🔥 {sector} 섹터 과열도 계산 중... (종목 {len(sector_stocks)}개)")
+
+            # 3️⃣ 일봉 데이터 수집 및 일별 평균 계산
+            daily_changes = {0: [], 1: [], 2: []}  # 최근 3일
+
+            for stock_code in sector_stocks:
+                try:
+                    daily_data = self.api_call_with_throttle(
+                        self.kiwoom.GetDailyPrice,
+                        stock_code=stock_code,
+                        count=5
+                    )
+
+                    if daily_data and len(daily_data) >= 3:
+                        for i in range(3):
+                            if i < len(daily_data):
+                                change_rate = daily_data[i].get("ChangeRate", 0)
+                                daily_changes[i].append(change_rate)
+                except Exception as e:
+                    logger.debug(f"   {stock_code} 일봉 조회 실패: {e}")
+                    continue
+
+            # 4️⃣ 일별 평균 등락률 계산
+            avg_changes = []
+            for day in range(3):
+                if daily_changes[day]:
+                    avg = sum(daily_changes[day]) / len(daily_changes[day])
+                    avg_changes.append(avg)
+                else:
+                    avg_changes.append(0)
+
+            logger.debug(f"   {sector} 일별 평균: {[f'{x:.2f}%' for x in avg_changes]}")
+
+            # 5️⃣ 과열도 판정
+            heat_score = 0
+            heat_status = "normal"
+
+            # 3일 연속 +3% 이상 → 과열
+            if len(avg_changes) >= 3 and all(x >= 3.0 for x in avg_changes):
+                heat_score = -25
+                heat_status = "overheated"
+                logger.warning(f"   🔥 {sector} 과열! 3일 연속 +3% 이상")
+
+            # 2일 연속 상승 → 상승세
+            elif len(avg_changes) >= 2 and all(x > 0 for x in avg_changes[:2]):
+                heat_score = -10
+                heat_status = "rising"
+                logger.info(f"   📈 {sector} 상승세: 2일 연속 상승")
+
+            # 최근 반등 + 이전 조정 → 신선 (매수 적기)
+            elif len(avg_changes) >= 2 and avg_changes[0] > 0 and avg_changes[1] < 0:
+                heat_score = 15
+                heat_status = "fresh"
+                logger.info(f"   💎 {sector} 반등 시작: 조정 후 상승 전환")
+
+            else:
+                heat_status = "normal"
+                logger.debug(f"   ➖ {sector} 정상")
+
+            # 6️⃣ 캐시 저장
+            self.sector_heat_cache[sector] = {
+                "score": heat_score,
+                "status": heat_status,
+                "timestamp": now
+            }
+
+            return heat_score, heat_status
+
+        except Exception as e:
+            logger.error(f"섹터 과열도 계산 실패: {e}")
+            # 실패해도 캐시 저장 (재시도 방지)
+            self.sector_heat_cache[sector] = {"score": 0, "status": "error", "timestamp": datetime.now()}
+            return 0, "error"
+
     def api_call_with_throttle(self, api_func, *args, **kwargs):
         """
         🔥 단계2: API 호출 with 스로틀링
@@ -1576,26 +1690,64 @@ class SignalMonitor:
                     reasons.append(f"⚠ 하단 위치 (하위 {100-position_ratio:.0f}%)")
                     logger.info(f"   ⚠ 하단 위치: 하위 {100-position_ratio:.0f}%")
             
-            # 2. 시가 대비 모멘텀
+            # 2. 시가 대비 모멘텀 (🆕 3단계: 등락률 기준 전면 수정)
             if open_price > 0:
                 momentum = ((current_price - open_price) / open_price) * 100
-                
-                if momentum >= 3.0:
+
+                # 🆕 새로운 등락률 점수 기준
+                if 0.5 <= momentum < 1.5:
+                    # 최적 진입 구간 (상승 초입)
+                    trend_score += 20
+                    reasons.append(f"🎯 최적 진입 구간 (+{momentum:.1f}%, 상승 초입)")
+                    logger.info(f"   🎯 최적 진입 구간: +{momentum:.1f}% (상승 초입)")
+
+                elif 0.0 <= momentum < 0.5:
+                    # 횡보 돌파
                     trend_score += 10
-                    reasons.append(f"✅ 강한 상승 모멘텀 (+{momentum:.1f}%)")
-                    logger.info(f"   ✅ 강한 상승 모멘텀: +{momentum:.1f}%")
-                elif momentum >= 1.0:
-                    trend_score += 5
-                    reasons.append(f"✓ 상승 모멘텀 (+{momentum:.1f}%)")
-                    logger.info(f"   ✓ 상승 모멘텀: +{momentum:.1f}%")
-                elif momentum <= -3.0:
-                    trend_score -= 10
-                    reasons.append(f"❌ 강한 하락 모멘텀 ({momentum:.1f}%)")
-                    logger.info(f"   ❌ 강한 하락 모멘텀: {momentum:.1f}%")
-                elif momentum <= -1.0:
+                    reasons.append(f"✅ 횡보 돌파 (+{momentum:.1f}%)")
+                    logger.info(f"   ✅ 횡보 돌파: +{momentum:.1f}%")
+
+                elif 1.5 <= momentum < 2.5:
+                    # 상승 진행 중 (중립)
+                    # trend_score += 0
+                    reasons.append(f"→ 상승 진행 중 (+{momentum:.1f}%)")
+                    logger.info(f"   → 상승 진행 중: +{momentum:.1f}%")
+
+                elif 2.5 <= momentum < 3.5:
+                    # 이미 상승 (추격 위험)
+                    trend_score -= 15
+                    reasons.append(f"⚠️ 이미 상승 (+{momentum:.1f}%, 추격 위험)")
+                    logger.info(f"   ⚠️ 이미 상승: +{momentum:.1f}% (추격 위험)")
+
+                elif momentum >= 3.5:
+                    # 과도한 상승 (추격 금지)
+                    trend_score -= 35
+                    reasons.append(f"🚫 과도한 상승 (+{momentum:.1f}%, 추격 금지)")
+                    logger.info(f"   🚫 과도한 상승: +{momentum:.1f}% (추격 금지)")
+
+                elif -0.5 <= momentum < 0.0:
+                    # 반등 직전 (바닥 근접)
+                    trend_score += 15
+                    reasons.append(f"💎 반등 직전 ({momentum:.1f}%, 바닥 근접)")
+                    logger.info(f"   💎 반등 직전: {momentum:.1f}% (바닥 근접)")
+
+                elif -2.0 <= momentum < -0.5:
+                    # 바닥 반등 준비
+                    trend_score += 10
+                    reasons.append(f"🔄 바닥 반등 준비 ({momentum:.1f}%)")
+                    logger.info(f"   🔄 바닥 반등 준비: {momentum:.1f}%")
+
+                elif -3.0 <= momentum < -2.0:
+                    # 하락
                     trend_score -= 5
-                    reasons.append(f"⚠ 하락 모멘텀 ({momentum:.1f}%)")
-                    logger.info(f"   ⚠ 하락 모멘텀: {momentum:.1f}%")
+                    reasons.append(f"⚠ 하락 ({momentum:.1f}%)")
+                    logger.info(f"   ⚠ 하락: {momentum:.1f}%")
+
+                elif momentum < -3.0:
+                    # 강한 하락
+                    trend_score -= 10
+                    reasons.append(f"❌ 강한 하락 ({momentum:.1f}%)")
+                    logger.info(f"   ❌ 강한 하락: {momentum:.1f}%")
             
             # 3. 상한가/하한가 근접도
             upper_limit = stock_data.get("UpperLimit", 0)
@@ -1841,13 +1993,24 @@ class SignalMonitor:
             
             if use_normalized:
                 score, confidence = self.calculate_normalized_score(
-                    indicator_scores, 
+                    indicator_scores,
                     available_indicators
                 )
             else:
                 score = sum(indicator_scores.values()) / len(indicator_scores) if indicator_scores else 50
                 confidence = len(available_indicators) / 5
-            
+
+            # 🆕 섹터 과열도 보정 (2단계)
+            original_score = score
+            heat_score, heat_status = self.get_sector_heat_score(sector)
+
+            if heat_score != 0:
+                score = max(0, min(100, score + heat_score))  # 0~100 범위 제한
+                logger.info(f"🔥 섹터 과열도 보정: {original_score:.1f} → {score:.1f} ({heat_score:+d}, {heat_status})")
+                reasons.append(f"📊 섹터 상태: {heat_status} ({heat_score:+d}점)")
+            else:
+                logger.debug(f"   섹터 상태: {heat_status} (보정 없음)")
+
             # 신호 판단
             if score >= 75:
                 signal = "STRONG_BUY"

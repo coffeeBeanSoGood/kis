@@ -691,11 +691,40 @@ class SignalTradingBot:
         self.positions: dict = self.load_positions()
         self.pending_orders: dict = self.load_pending_orders()
         self.cooldowns: dict = self.load_cooldowns()
-        
+
+        # 🆕 시간대별 필터 설정 (1단계)
+        self.TIME_ZONES = {
+            "morning_avoid": {
+                "start": "09:00", "end": "09:30",
+                "min_score": 999, "allow_entry": False,
+                "desc": "장 초반 변동성 회피"
+            },
+            "golden": {
+                "start": "09:30", "end": "11:30",
+                "min_score": 70, "allow_entry": True,
+                "desc": "골든타임 (최적 진입)"
+            },
+            "lunch": {
+                "start": "11:30", "end": "13:00",
+                "min_score": 999, "allow_entry": False,
+                "desc": "점심시간 거래량 부족"
+            },
+            "afternoon": {
+                "start": "13:00", "end": "14:30",
+                "min_score": 75, "allow_entry": True,
+                "desc": "오후 세션"
+            },
+            "closing_avoid": {
+                "start": "14:30", "end": "15:30",
+                "min_score": 999, "allow_entry": False,
+                "desc": "장 마감 회피"
+            }
+        }
+
         # 🔥 스레드 제어
         self.running: bool = True
         self.lock: threading.Lock = threading.Lock()  # 데이터 동시 접근 방지
-        
+
         logger.info(f"봇 초기화 완료")
         logger.info(f"현재 보유 종목: {len(self.positions)}개")
         logger.info(f"미체결 주문: {len(self.pending_orders)}개")
@@ -981,34 +1010,106 @@ class SignalTradingBot:
             logger.error(f"신호 읽기 실패: {e}")
             return []
     
+    def get_current_time_zone(self):
+        """
+        🆕 현재 시간대 정보 반환 (1단계)
+
+        Returns:
+            dict: {zone_name, min_score, allow_entry, desc}
+        """
+        try:
+            now = datetime.now()
+            current_time = now.strftime("%H:%M")
+
+            for zone_name, zone_info in self.TIME_ZONES.items():
+                start = zone_info["start"]
+                end = zone_info["end"]
+
+                if start <= current_time < end:
+                    logger.debug(f"⏰ 현재 시간대: {zone_name} ({zone_info['desc']})")
+                    return {
+                        "zone_name": zone_name,
+                        "min_score": zone_info["min_score"],
+                        "allow_entry": zone_info["allow_entry"],
+                        "desc": zone_info["desc"]
+                    }
+
+            # 장 시간 외
+            return {
+                "zone_name": "outside",
+                "min_score": 999,
+                "allow_entry": False,
+                "desc": "장 시간 외"
+            }
+
+        except Exception as e:
+            logger.error(f"시간대 확인 실패: {e}")
+            # 실패 시 보수적으로 진입 차단
+            return {
+                "zone_name": "error",
+                "min_score": 999,
+                "allow_entry": False,
+                "desc": "시간대 확인 오류"
+            }
+
     def filter_valid_signals(self, signals):
         try:
             validity_minutes = config.get("signal_validity_minutes", 10)
             now = datetime.now()
-            
+
+            # 🆕 1단계: 시간대 필터 체크
+            time_zone = self.get_current_time_zone()
+            zone_name = time_zone["zone_name"]
+            min_score = time_zone["min_score"]
+            allow_entry = time_zone["allow_entry"]
+
+            logger.info(f"⏰ 시간대 필터: {zone_name} ({time_zone['desc']})")
+            logger.info(f"   진입 허용: {allow_entry}, 최소 점수: {min_score}")
+
+            # 진입 차단 시간대면 빈 리스트 반환
+            if not allow_entry:
+                logger.info(f"🚫 진입 차단 시간대 → 신호 필터링 스킵")
+                return []
+
             valid_signals = []
-            
+            stats = {"expired": 0, "low_confidence": 0, "low_score": 0, "valid": 0}
+
             for signal in signals:
                 signal_time_str = signal.get('timestamp', '')
                 try:
                     signal_time = datetime.strptime(signal_time_str, "%Y-%m-%d %H:%M:%S")
                 except:
                     continue
-                
+
                 elapsed_minutes = (now - signal_time).total_seconds() / 60
-                
+
+                # 만료 체크
                 if elapsed_minutes > validity_minutes:
+                    stats["expired"] += 1
                     continue
-                
+
+                # 신뢰도 체크
                 confidence = signal.get('confidence', 0)
                 if confidence < 0.4:
+                    stats["low_confidence"] += 1
                     continue
-                
+
+                # 🆕 시간대별 점수 체크
+                signal_score = signal.get('score', 0)
+                if signal_score < min_score:
+                    stats["low_score"] += 1
+                    stock_code = signal.get('stock_code', '?')
+                    logger.debug(f"   ❌ {stock_code} 점수 부족: {signal_score} < {min_score}")
+                    continue
+
                 valid_signals.append(signal)
-            
-            logger.info(f"✅ 유효한 신호: {len(valid_signals)}건 (최근 {validity_minutes}분 이내)")
+                stats["valid"] += 1
+
+            # 필터링 통계 로그
+            logger.info(f"📊 필터링 결과: 만료={stats['expired']}, 신뢰도부족={stats['low_confidence']}, 점수부족={stats['low_score']}, 유효={stats['valid']}")
+            logger.info(f"✅ 유효한 신호: {len(valid_signals)}건 (최근 {validity_minutes}분 이내, 점수 >= {min_score})")
             return valid_signals
-            
+
         except Exception as e:
             logger.error(f"신호 필터링 실패: {e}")
             return []
