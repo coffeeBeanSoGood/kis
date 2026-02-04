@@ -217,15 +217,38 @@ class ConfigManager:
             "trailing_override_confidence": 0.6,
             "trailing_override_signals": ["STRONG_BUY", "CONFIRMED_BUY", "BUY"],
             "trailing_override_max_loss": 0.005,
-            
+
+            # 🆕 유예 시간/횟수 제한 (개선 1️⃣-A,B)
+            "trailing_override_max_minutes": 3,   # 트레일링 유예 최대 3분
+            "atr_override_max_minutes": 5,        # ATR 유예 최대 5분
+            "trailing_override_max_count": 2,     # 트레일링 유예 최대 2회
+            "atr_override_max_count": 1,          # ATR 유예 최대 1회
+
+            # 🆕 유예 추가 검증 조건 (개선 1️⃣-C)
+            "override_require_price_trend": True,  # 가격 상승 추세 필요
+            "override_require_volume": True,       # 거래량 증가 필요
+            "override_price_trend_bars": 3,        # 최근 3봉 기준
+            "override_volume_ratio": 1.2,          # 평균 대비 1.2배 이상
+
             # 손절 설정 (ATR 기반 동적 손절이 메인)
             # "emergency_stop_loss" 제거 → ATR이 메인 손절 담당
             "stop_loss_grace_period_minutes": 10,
             "extreme_stop_loss": -0.12,           # 극단 손절: ATR 실패 시 최후의 안전장치 (-12%)
-            "atr_stop_multiplier": 2.0,
+            "mid_stop_loss": -0.06,               # 🆕 중간 손절: 유예 기간 중 보호 (-6%) (개선 2️⃣-A)
+            "atr_stop_multiplier": 1.5,           # 🔧 2.0 → 1.5 (개선 3️⃣-B)
             "atr_min_stop_loss": 0.02,            # ATR 손절 최소 (-2%, 타이트)
-            "atr_max_stop_loss": 0.08,            # ATR 손절 최대 (-8%, 고변동성 종목)
+            "atr_max_stop_loss": 0.05,            # 🔧 0.08 → 0.05 (개선 3️⃣-A)
             "signal_override_buffer": 0.02,
+
+            # 🆕 종목 변동성별 ATR 배율 (개선 3️⃣-B)
+            "atr_multiplier_by_volatility": {
+                "high": 1.8,      # 고변동성 (바이오, 2차전지 등)
+                "medium": 1.5,    # 중간 변동성 (기본)
+                "low": 1.2        # 저변동성 (대형주)
+            },
+
+            # 🆕 손익비 검증 (개선 3️⃣-C)
+            "min_risk_reward_ratio": 1.0,         # 최소 손익비 1:1
             
             # 기타 설정
             "commission_rate": 0.004,
@@ -2124,18 +2147,31 @@ class SignalTradingBot:
             if holding_minutes < grace_period_minutes:
                 logger.info(f"    │   ⏰ 유예 중: {holding_minutes:.0f}분 < {grace_period_minutes}분")
 
-                # 유예 기간 중 극단 손절만 체크 (최후의 안전장치)
+                # 🆕 개선 2️⃣: 유예 기간 중 2단계 보호체계
                 extreme_stop = config.get("extreme_stop_loss", -0.12)
+                mid_stop = config.get("mid_stop_loss", -0.06)
+
+                # [1단계] 극단 손절 체크 (-12%, 최후의 안전장치)
                 if profit_rate <= extreme_stop:
                     reason = f"극단 손절 ({profit_rate*100:+.2f}%, 보유 {holding_minutes:.0f}분)"
                     logger.info(f"    │   🚨 극단 손절 발동: {profit_rate*100:.2f}% <= {extreme_stop*100:.0f}%")
                     logger.info(f"    └─────────────────────┘")
                     return True, reason
-                else:
-                    logger.info(f"    │   ✅ 극단 손절 미발동: {profit_rate*100:.2f}% > {extreme_stop*100:.0f}%")
-                    logger.info(f"    │   → 유예 기간까지 대기 ({grace_period_minutes - holding_minutes:.0f}분 남음)")
+
+                # [2단계] 중간 손절 체크 (-6%, 유예 기간 중 보호)
+                if profit_rate <= mid_stop:
+                    reason = f"중간 손절 ({profit_rate*100:+.2f}%, 보유 {holding_minutes:.0f}분)"
+                    logger.info(f"    │   ⚠️ 중간 손절 발동: {profit_rate*100:.2f}% <= {mid_stop*100:.0f}%")
+                    logger.info(f"    │   → 유예 기간 강제 종료, 즉시 매도")
                     logger.info(f"    └─────────────────────┘")
-                    return False, f"유예 중 ({holding_minutes:.0f}분/{grace_period_minutes}분)"
+                    return True, reason
+
+                logger.info(f"    │   ✅ 손절 미발동:")
+                logger.info(f"    │      극단({extreme_stop*100:.0f}%) < 손익({profit_rate*100:+.2f}%)")
+                logger.info(f"    │      중간({mid_stop*100:.0f}%) < 손익({profit_rate*100:+.2f}%)")
+                logger.info(f"    │   → 유예 기간까지 대기 ({grace_period_minutes - holding_minutes:.0f}분 남음)")
+                logger.info(f"    └─────────────────────┘")
+                return False, f"유예 중 ({holding_minutes:.0f}분/{grace_period_minutes}분)"
 
             logger.info(f"    │   ✅ 유예 완료: {holding_minutes:.0f}분 >= {grace_period_minutes}분")
 
@@ -2156,37 +2192,89 @@ class SignalTradingBot:
                 logger.info(f"    │   현재가: {current_price:,}원 <= 손절선: {trailing_stop_price:,}원")
                 logger.info(f"    │   최고가: {highest_price:,}원 → 현재가: {current_price:,}원")
                 
-                # 🆕 신호 기반 트레일링 유예 체크
+                # 🆕 신호 기반 트레일링 유예 체크 (개선 1️⃣: 시간/횟수/추가검증 강화)
                 use_signal_override = config.get("trailing_signal_override", True)
-                
+
                 if use_signal_override and current_signal:
                     signal_type = current_signal.get('signal', 'HOLD')
                     signal_confidence = current_signal.get('confidence', 0)
                     override_confidence = config.get("trailing_override_confidence", 0.6)
                     override_signals = config.get("trailing_override_signals", ["STRONG_BUY", "CONFIRMED_BUY", "BUY"])
-                    
+
                     logger.info(f"    │")
                     logger.info(f"    │   🔍 신호 기반 유예 검토...")
                     logger.info(f"    │   현재 신호: {signal_type} (신뢰도: {signal_confidence:.1%})")
-                    
+
                     if signal_type in override_signals and signal_confidence >= override_confidence:
                         # 강한 매수 신호 → 유예 검토
-                        
-                        # 단, 너무 큰 손실은 유예 불가
-                        max_override_loss = config.get("trailing_override_max_loss", 0.005)
-                        current_loss = (entry_price - current_price) / entry_price
-                        
-                        if current_loss <= max_override_loss:
-                            logger.info(f"    │   ✅ {signal_type} 신호 감지!")
-                            logger.info(f"    │   신뢰도: {signal_confidence:.1%} >= {override_confidence:.1%}")
-                            logger.info(f"    │   현재 손익: {profit_rate*100:+.2f}% (유예 가능 범위)")
-                            logger.info(f"    │   → 트레일링 유예! 보유 유지")
-                            logger.info(f"    └─────────────────────┘")
-                            return False, f"트레일링 유예 ({signal_type} 신호)"
+
+                        # 🆕 1️⃣-A: 트레일링 유예 시간 제한 (최대 3분)
+                        trailing_override_max_min = config.get("trailing_override_max_minutes", 3)
+                        first_trailing_hit = position.get('first_trailing_hit_time')
+
+                        if first_trailing_hit:
+                            try:
+                                first_hit_time = datetime.strptime(first_trailing_hit, "%Y-%m-%d %H:%M:%S")
+                                override_elapsed = (datetime.now() - first_hit_time).total_seconds() / 60
+                            except:
+                                override_elapsed = 0
                         else:
-                            logger.info(f"    │   ⚠️ {signal_type} 신호 있으나 손실 과다")
-                            logger.info(f"    │   손실: {current_loss*100:.2f}% > 한도: {max_override_loss*100:.1f}%")
-                            logger.info(f"    │   → 유예 불가, 매도 진행")
+                            # 첫 번째 트레일링 도달 기록
+                            self.positions[stock_code]['first_trailing_hit_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            override_elapsed = 0
+
+                        if override_elapsed > trailing_override_max_min:
+                            logger.info(f"    │   ⏰ 유예 시간 초과: {override_elapsed:.1f}분 > {trailing_override_max_min}분")
+                            logger.info(f"    │   → 강제 매도 진행")
+                        else:
+                            # 🆕 1️⃣-B: 트레일링 유예 횟수 제한 (최대 2회)
+                            trailing_override_max_cnt = config.get("trailing_override_max_count", 2)
+                            trailing_override_count = position.get('trailing_override_count', 0)
+
+                            if trailing_override_count >= trailing_override_max_cnt:
+                                logger.info(f"    │   🚫 유예 횟수 초과: {trailing_override_count}회 >= {trailing_override_max_cnt}회")
+                                logger.info(f"    │   → 강제 매도 진행")
+                            else:
+                                # 단, 너무 큰 손실은 유예 불가
+                                max_override_loss = config.get("trailing_override_max_loss", 0.005)
+                                current_loss = (entry_price - current_price) / entry_price
+
+                                if current_loss <= max_override_loss:
+                                    # 🆕 1️⃣-C: 추가 검증 조건 (가격추세 + 거래량)
+                                    can_override = True
+                                    override_reject_reason = ""
+
+                                    if config.get("override_require_price_trend", True):
+                                        price_trending_up = self._check_price_trend_up(stock_code, config.get("override_price_trend_bars", 3))
+                                        if not price_trending_up:
+                                            can_override = False
+                                            override_reject_reason = "가격 하락 추세"
+
+                                    if can_override and config.get("override_require_volume", True):
+                                        volume_ok = self._check_volume_increase(stock_code, config.get("override_volume_ratio", 1.2))
+                                        if not volume_ok:
+                                            can_override = False
+                                            override_reject_reason = "거래량 부족"
+
+                                    if can_override:
+                                        # 유예 횟수 증가
+                                        self.positions[stock_code]['trailing_override_count'] = trailing_override_count + 1
+
+                                        logger.info(f"    │   ✅ {signal_type} 신호 감지!")
+                                        logger.info(f"    │   신뢰도: {signal_confidence:.1%} >= {override_confidence:.1%}")
+                                        logger.info(f"    │   현재 손익: {profit_rate*100:+.2f}% (유예 가능 범위)")
+                                        logger.info(f"    │   유예 경과: {override_elapsed:.1f}분/{trailing_override_max_min}분")
+                                        logger.info(f"    │   유예 횟수: {trailing_override_count+1}/{trailing_override_max_cnt}회")
+                                        logger.info(f"    │   → 트레일링 유예! 보유 유지")
+                                        logger.info(f"    └─────────────────────┘")
+                                        return False, f"트레일링 유예 ({signal_type} 신호, {trailing_override_count+1}회)"
+                                    else:
+                                        logger.info(f"    │   ⚠️ 추가 검증 실패: {override_reject_reason}")
+                                        logger.info(f"    │   → 유예 불가, 매도 진행")
+                                else:
+                                    logger.info(f"    │   ⚠️ {signal_type} 신호 있으나 손실 과다")
+                                    logger.info(f"    │   손실: {current_loss*100:.2f}% > 한도: {max_override_loss*100:.1f}%")
+                                    logger.info(f"    │   → 유예 불가, 매도 진행")
                     else:
                         logger.info(f"    │   ❌ 유예 조건 미충족")
                         if signal_type not in override_signals:
@@ -2517,14 +2605,24 @@ class SignalTradingBot:
                 return self._get_default_stop_loss(stock_code)
             
             atr_ratio = atr / current_price
-            base_multiplier = config.get("atr_stop_multiplier", 2.0)
-            dynamic_stop = -max(0.02, min(0.08, atr_ratio * base_multiplier))
-            
+
+            # 🆕 개선 3️⃣-B: 종목 변동성별 ATR 배율 적용
+            volatility_level = self._get_stock_volatility_level(stock_code)
+            multiplier_map = config.get("atr_multiplier_by_volatility", {"high": 1.8, "medium": 1.5, "low": 1.2})
+            base_multiplier = multiplier_map.get(volatility_level, config.get("atr_stop_multiplier", 1.5))
+
+            # 🆕 개선 3️⃣-A: 최대 손절 -8% → -5%로 축소
+            min_stop = config.get("atr_min_stop_loss", 0.02)
+            max_stop = config.get("atr_max_stop_loss", 0.05)
+
+            dynamic_stop = -max(min_stop, min(max_stop, atr_ratio * base_multiplier))
+
             logger.info(f"📊 {stock_code} 동적 손절선:")
             logger.info(f"   현재가: {current_price:,}원")
             logger.info(f"   분봉 데이터: {len(minute_data)}개")
             logger.info(f"   ATR: {atr:.0f}원 ({atr_ratio*100:.2f}%)")
-            logger.info(f"   손절선: {dynamic_stop*100:.2f}%")
+            logger.info(f"   변동성: {volatility_level} (배율: {base_multiplier})")
+            logger.info(f"   손절선: {dynamic_stop*100:.2f}% (범위: -{min_stop*100:.0f}%~-{max_stop*100:.0f}%)")
             
             return dynamic_stop
             
@@ -2917,28 +3015,74 @@ class SignalTradingBot:
             
             if profit_rate <= dynamic_stop:
                 logger.info(f"        │   ⚠️ ATR 손절선 도달!")
-                
+
                 # 강한 매수 신호 유지 시 추가 유예
                 if signal_type in ["STRONG_BUY", "BUY"] and signal_confidence >= 0.6:
                     grace_buffer = config.get("signal_override_buffer", 0.02)
                     final_stop = dynamic_stop - grace_buffer
-                    
+
                     logger.info(f"        │   🔄 {signal_type} 신호 감지 → 추가 유예 검토")
                     logger.info(f"        │   신뢰도: {signal_confidence:.1%} >= 60%")
+
+                    # 🆕 개선 1️⃣-A,B: ATR 유예 시간/횟수 제한
+                    position = self.positions.get(stock_code, {})
+
+                    # ATR 유예 시간 제한 (최대 5분)
+                    atr_override_max_min = config.get("atr_override_max_minutes", 5)
+                    first_atr_hit = position.get('first_atr_hit_time')
+
+                    if first_atr_hit:
+                        try:
+                            first_hit_time = datetime.strptime(first_atr_hit, "%Y-%m-%d %H:%M:%S")
+                            atr_override_elapsed = (datetime.now() - first_hit_time).total_seconds() / 60
+                        except:
+                            atr_override_elapsed = 0
+                    else:
+                        # 첫 번째 ATR 손절선 도달 기록
+                        if stock_code in self.positions:
+                            self.positions[stock_code]['first_atr_hit_time'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        atr_override_elapsed = 0
+
+                    if atr_override_elapsed > atr_override_max_min:
+                        reason = f"ATR 유예 시간 초과 ({atr_override_elapsed:.1f}분 > {atr_override_max_min}분)"
+                        logger.info(f"        │   ⏰ ATR 유예 시간 초과!")
+                        logger.info(f"        │   경과: {atr_override_elapsed:.1f}분 > {atr_override_max_min}분")
+                        logger.info(f"        │   → 신호 무시, 강제 손절")
+                        logger.info(f"        └─────────────────┘")
+                        return True, reason
+
+                    # ATR 유예 횟수 제한 (최대 1회)
+                    atr_override_max_cnt = config.get("atr_override_max_count", 1)
+                    atr_override_count = position.get('atr_override_count', 0)
+
+                    if atr_override_count >= atr_override_max_cnt:
+                        reason = f"ATR 유예 횟수 초과 ({atr_override_count}회 >= {atr_override_max_cnt}회)"
+                        logger.info(f"        │   🚫 ATR 유예 횟수 초과!")
+                        logger.info(f"        │   이미 {atr_override_count}회 유예 → 추가 유예 불가")
+                        logger.info(f"        │   → 강제 손절")
+                        logger.info(f"        └─────────────────┘")
+                        return True, reason
+
                     logger.info(f"        │   유예 버퍼: {grace_buffer*100:.0f}%")
                     logger.info(f"        │   최종 손절: {final_stop*100:.2f}%")
-                    
+
                     if profit_rate <= final_stop:
                         reason = f"최종 손절 ({profit_rate*100:+.2f}%, {signal_type} 신호에도 불구)"
                         logger.info(f"        │   ⚠️ ✅ 최종 손절선도 돌파 → 손절")
                         logger.info(f"        └─────────────────┘")
                         return True, reason
                     else:
+                        # 유예 횟수 증가
+                        if stock_code in self.positions:
+                            self.positions[stock_code]['atr_override_count'] = atr_override_count + 1
+
                         logger.info(f"        │   ✅ 유예 적용: {profit_rate*100:.2f}% > {final_stop*100:.2f}%")
+                        logger.info(f"        │   유예 경과: {atr_override_elapsed:.1f}분/{atr_override_max_min}분")
+                        logger.info(f"        │   유예 횟수: {atr_override_count+1}/{atr_override_max_cnt}회")
                         logger.info(f"        │   → {signal_type} 강세로 관찰 지속")
                         logger.info(f"        └─────────────────┘")
                         return False, None
-                
+
                 # 신호 없거나 약함 → 손절
                 reason = f"ATR 손절 ({profit_rate*100:+.2f}%, 기준: {dynamic_stop*100:.1f}%)"
                 logger.info(f"        │   ✅ 매수 신호 없음 or 약함 → 손절")
@@ -3077,6 +3221,109 @@ class SignalTradingBot:
         }
         
         return sector_map.get(stock_code, "unknown")
+
+    def _get_stock_volatility_level(self, stock_code):
+        """
+        🆕 종목의 변동성 수준 반환 (개선 3️⃣-B)
+
+        Returns:
+            str: "high", "medium", "low"
+        """
+        # 섹터별 변동성 수준 매핑
+        sector = self._get_stock_sector(stock_code)
+
+        high_volatility_sectors = ["bio", "battery", "robot", "entertainment"]
+        low_volatility_sectors = ["semiconductor"]  # 대형주 위주
+
+        if sector in high_volatility_sectors:
+            return "high"
+        elif sector in low_volatility_sectors:
+            return "low"
+        else:
+            return "medium"
+
+    def _check_price_trend_up(self, stock_code, bars=3):
+        """
+        🆕 가격 상승 추세 확인 (개선 1️⃣-C)
+
+        Args:
+            stock_code: 종목코드
+            bars: 확인할 봉 수 (기본 3)
+
+        Returns:
+            bool: 상승 추세면 True
+        """
+        try:
+            minute_data = call_with_timeout(
+                KiwoomAPI.GetMinuteData,
+                timeout=10,
+                stock_code=stock_code,
+                count=bars + 1
+            )
+
+            if not minute_data or len(minute_data) < bars:
+                return True  # 데이터 부족 시 보수적으로 True
+
+            # 최근 N봉의 종가 추세 확인
+            closes = [float(d.get('ClosePrice', 0)) for d in minute_data[:bars]]
+
+            # 연속 상승 또는 최근 종가 > 첫 종가
+            if len(closes) >= 2:
+                # 최근이 첫번째보다 높으면 상승 추세
+                if closes[0] > closes[-1]:
+                    logger.debug(f"📈 {stock_code} 가격 상승 추세: {closes[-1]:,} → {closes[0]:,}")
+                    return True
+                else:
+                    logger.debug(f"📉 {stock_code} 가격 하락 추세: {closes[-1]:,} → {closes[0]:,}")
+                    return False
+
+            return True
+
+        except Exception as e:
+            logger.debug(f"가격 추세 확인 실패: {e}")
+            return True  # 실패 시 보수적으로 True
+
+    def _check_volume_increase(self, stock_code, ratio=1.2):
+        """
+        🆕 거래량 증가 확인 (개선 1️⃣-C)
+
+        Args:
+            stock_code: 종목코드
+            ratio: 평균 대비 배율 (기본 1.2)
+
+        Returns:
+            bool: 거래량 증가면 True
+        """
+        try:
+            minute_data = call_with_timeout(
+                KiwoomAPI.GetMinuteData,
+                timeout=10,
+                stock_code=stock_code,
+                count=20
+            )
+
+            if not minute_data or len(minute_data) < 5:
+                return True  # 데이터 부족 시 보수적으로 True
+
+            # 최근 거래량과 평균 비교
+            volumes = [float(d.get('Volume', 0)) for d in minute_data]
+            current_volume = volumes[0] if volumes else 0
+            avg_volume = sum(volumes[1:]) / len(volumes[1:]) if len(volumes) > 1 else 1
+
+            if avg_volume > 0:
+                volume_ratio = current_volume / avg_volume
+                if volume_ratio >= ratio:
+                    logger.debug(f"📊 {stock_code} 거래량 증가: {volume_ratio:.2f}배 >= {ratio}배")
+                    return True
+                else:
+                    logger.debug(f"📊 {stock_code} 거래량 부족: {volume_ratio:.2f}배 < {ratio}배")
+                    return False
+
+            return True
+
+        except Exception as e:
+            logger.debug(f"거래량 확인 실패: {e}")
+            return True  # 실패 시 보수적으로 True
 
     def execute_sell(self, stock_code, reason):
         """
@@ -3826,8 +4073,10 @@ def main():
         start_msg += f"• 일반 트레일링: -{config.get('trailing_stop_rate', 0.003)*100:.1f}%\n"  # 🔥 default 0.01 → 0.003
         start_msg += f"• 타이트 트레일링: -{config.get('tight_trailing_rate', 0.002)*100:.1f}% (+2% 달성 시)\n"  # 🔥 default 0.005 → 0.002, 주석 +3% → +2%
         start_msg += f"• 본전 보호: +{config.get('breakeven_protection_rate', 0.015)*100:.1f}% 달성 시\n"  # 🔥 default 0.02 → 0.015
-        start_msg += f"• ATR 손절: {config.get('atr_min_stop_loss', 0.02)*100:.0f}%~{config.get('atr_max_stop_loss', 0.08)*100:.0f}% (메인)\n"
+        start_msg += f"• ATR 손절: {config.get('atr_min_stop_loss', 0.02)*100:.0f}%~{config.get('atr_max_stop_loss', 0.05)*100:.0f}% (메인)\n"
+        start_msg += f"• 중간 손절: {config.get('mid_stop_loss', -0.06)*100:.0f}% (유예 중 보호)\n"
         start_msg += f"• 극단 손절: {config.get('extreme_stop_loss', -0.12)*100:.0f}% (최후 안전장치)\n"
+        start_msg += f"• 유예 제한: 트레일링 {config.get('trailing_override_max_minutes', 3)}분/{config.get('trailing_override_max_count', 2)}회, ATR {config.get('atr_override_max_minutes', 5)}분/{config.get('atr_override_max_count', 1)}회\n"
         start_msg += f"• 쿨다운: {config.get('cooldown_hours')}시간\n"
         start_msg += f"{'─'*30}\n"
         start_msg += "✅ 시스템 준비 완료!"
