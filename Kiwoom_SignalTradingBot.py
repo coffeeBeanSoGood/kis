@@ -3726,18 +3726,25 @@ class SignalTradingBot:
                     stock_name = position.get('stock_name', stock_code)
 
                     # 🔥🔥🔥 중복 매도 방지: 매도 미체결 주문 확인 🔥🔥🔥
+                    has_pending_sell = False
                     with self.lock:
                         if stock_code in self.pending_orders:
                             pending = self.pending_orders[stock_code]
                             if pending.get('order_type') == 'sell':
                                 logger.info("")
                                 logger.info("─" * 80)
-                                logger.info(f"⏸️ [{stock_name}] 매도 미체결 중 - 매도 체크 스킵")
+                                logger.info(f"⏸️ [{stock_name}] 매도 미체결 중 - 트레일링 업데이트만 실행")
                                 logger.info(f"   주문번호: {pending.get('order_no', 'N/A')}")
                                 logger.info(f"   주문가격: {pending.get('order_price', 0):,}원")
                                 logger.info(f"   주문시간: {pending.get('order_time', 'N/A')}")
                                 logger.info("─" * 80)
-                                continue
+                                has_pending_sell = True
+
+                    if has_pending_sell:
+                        # 🔥 미체결 중에도 트레일링 업데이트 실행
+                        # → 가격 상승 시 기존 주문 취소 + 높은 가격으로 재주문
+                        self.update_trailing_stop(stock_code)
+                        continue  # check_sell_conditions()는 스킵 (중복 매도 방지)
 
                     logger.info("")
                     logger.info("─" * 80)
